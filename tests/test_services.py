@@ -35,6 +35,8 @@ def test_valeurs_helm():
     assert v["resources"]["limits"]["nvidia.com/gpu"] == "1" and v["persistence"]["size"] == "10Gi"
     assert v["vault"]["secret"] == "Claude" and v["vault"]["token"] == "s.tok"
     assert "vault" not in svc.helm_values(p, {})
+    g = svc.helm_values(p, {}, {"name": "Théo", "email": "t@x.fr", "token": "ghp_x", "repository": "pirate"})["git"]
+    assert g["token"] == "ghp_x" and g["name"] == "Théo" and g["repository"] == GOOD["depot_git"]
     args = svc.helm_args(p, "ns", "/tmp/v.yaml")
     assert args[:4] == ["helm", "upgrade", "--install", "cockpit-test"] and "s.tok" not in " ".join(args)
 

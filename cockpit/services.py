@@ -70,14 +70,16 @@ class Launch:
         return self
 
 
-def helm_values(p: Launch, vault: dict[str, str]) -> dict:
+def helm_values(p: Launch, vault: dict[str, str], git: dict[str, str] | None = None) -> dict:
     """Valeurs du chart `vscode-python` pour un pod de projet : rôle `view`, clone du dépôt, init du worker."""
     limits = {"cpu": p.cpu, "memory": p.memoire}
     if p.gpu:
         limits["nvidia.com/gpu"] = "1"
     values: dict = {
         "kubernetes": {"enabled": True, "role": "view"},  # jamais admin pour un projet
-        "git": {"enabled": True, "repository": p.depot_git, "branch": p.branche},
+        # Identité et token git de l'utilisateur (Onyxia les injecte lui-même ; ici, ceux de l'orchestrateur) :
+        # commits signés à son nom, clone des dépôts privés et push.
+        "git": {**(git or {}), "enabled": True, "repository": p.depot_git, "branch": p.branche},
         "init": {"personalInit": INIT_SCRIPT, "personalInitArgs": p.nom},
         "resources": {"requests": {"cpu": p.cpu, "memory": p.memoire}, "limits": limits},
         "persistence": {"enabled": True, "size": p.disque},
@@ -105,6 +107,13 @@ def namespace() -> str:
 def vault_values() -> dict[str, str]:
     env = os.environ
     keys = {"url": "VAULT_ADDR", "token": "VAULT_TOKEN", "mount": "VAULT_MOUNT", "directory": "VAULT_TOP_DIR"}
+    return {k: env[v] for k, v in keys.items() if env.get(v)}
+
+
+def git_values() -> dict[str, str]:
+    env = os.environ
+    keys = {"name": "GIT_USER_NAME", "email": "GIT_USER_MAIL", "token": "GIT_PERSONAL_ACCESS_TOKEN",
+            "cache": "GIT_CREDENTIALS_CACHE_DURATION"}
     return {k: env[v] for k, v in keys.items() if env.get(v)}
 
 
@@ -163,8 +172,8 @@ async def lancer(p: Launch) -> str:
     ns = namespace()
     fd, path = tempfile.mkstemp(suffix=".yaml")  # 0600 : contient le jeton Vault
     try:
-        with os.fdopen(fd, "w") as f:
-            yaml.safe_dump(helm_values(p, vault_values()), f)
+        with os.fdopen(fd, "w") as f:  # contient aussi le token git
+            yaml.safe_dump(helm_values(p, vault_values(), git_values()), f)
         await _run(*helm_args(p, ns, path))
     finally:
         os.unlink(path)
