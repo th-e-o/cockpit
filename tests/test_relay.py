@@ -230,17 +230,20 @@ def test_circuit_complet(relay, monkeypatch, tmp_path):
 
 def test_redemarrage_et_annulation(relay):
     p = paired_phone(relay)
-    worker_call(relay, "w_poll", {"wait": 0, "projects": [{"id": "onyxia", "name": "Onyxia"}]})
+    W = {"instance": "test"}
+    worker_call(relay, "w_poll", {**W, "wait": 0, "hello": True, "projects": [{"id": "onyxia", "name": "Onyxia"}]})
     # Annulée avant prise en charge : annulée directement par le relais
     t1 = call(p, "tache", {"instruction": "a", "project": "onyxia"}).json()
     call(p, "annuler", {"task_id": t1["id"]})
     # Prise en charge puis worker redémarré : marquée en erreur, validation en attente expirée
     t2 = call(p, "tache", {"instruction": "b", "project": "onyxia"}).json()
-    got = worker_call(relay, "w_poll", {"wait": 0}).json()
+    got = worker_call(relay, "w_poll", {**W, "wait": 0}).json()
     assert [t["id"] for t in got["tasks"]] == [t2["id"]]
     worker_call(relay, "w_evenements", {"events": [{"kind": "approval", "task_id": t2["id"],
         "approval": {"id": "a1", "task_id": t2["id"], "tool": "Bash", "tool_input": {}, "reason": "r", "expires": 0}}]})
-    worker_call(relay, "w_poll", {"wait": 0, "hello": True})
+    # Un nouveau worker remplace l'ancien : l'ancien ne reçoit plus rien
+    worker_call(relay, "w_poll", {"instance": "nouveau", "wait": 0, "hello": True})
+    assert worker_call(relay, "w_poll", {**W, "wait": 0}).json() == {"superseded": True}
     evts = call(p, "etat").json()["events"]
     last = {}
     for e in evts:

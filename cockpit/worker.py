@@ -125,11 +125,18 @@ class Worker:
             try:
                 msg = await self.relay.poll(self.projects_payload(), hello=hello)
                 hello, delay = False, 2
-                self.handle(msg)
             except Exception as e:
                 log.warning("relais injoignable (%s), nouvel essai dans %ss", e, delay)
                 await asyncio.sleep(delay)
                 delay = min(delay * 2, 60)
+                continue
+            if msg.get("superseded"):
+                log.error("un autre worker s'est connecté au relais : arrêt de celui-ci")
+                return
+            try:
+                self.handle(msg)
+            except Exception:
+                log.exception("message du relais non traité : %s", msg)
 
 
 def main() -> None:

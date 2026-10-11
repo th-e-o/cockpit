@@ -459,6 +459,11 @@ switch ($route) {
     case 'w_poll':
         exiger_worker();
         set_time_limit(LONG_POLL + 15);
+        // Chaque processus worker a son identifiant : un long-poll resté ouvert côté serveur après l'arrêt
+        // d'un worker (PHP ne détecte pas la déconnexion) ne doit plus livrer de tâches.
+        $instance = (string)($in['instance'] ?? '');
+        if (!empty($in['hello'])) reglage('worker_instance', $instance);
+        if (reglage('worker_instance') !== $instance) repondre(['superseded' => true]);
         if (isset($in['projects'])) reglage('projets', json_encode($in['projects'], JSON_UNESCAPED_UNICODE));
         if (!empty($in['hello'])) {
             // Le worker vient de (re)démarrer : ce qu'il exécutait est perdu.
@@ -476,8 +481,12 @@ switch ($route) {
         }
         $fin = microtime(true) + ($in['wait'] ?? LONG_POLL);
         do {
-            reglage('worker_vu_le', (string)time());
             db()->beginTransaction();
+            if (reglage('worker_instance') !== $instance) {
+                db()->rollBack();
+                repondre(['superseded' => true]);
+            }
+            reglage('worker_vu_le', (string)time());
             $taches = q("SELECT id, instruction, projet, nouvelle_session FROM taches WHERE livree = 0 AND statut = 'pending'")->fetchAll();
             q("UPDATE taches SET livree = 1 WHERE livree = 0 AND statut = 'pending'");
             $decisions = q('SELECT id, decision FROM validations WHERE decision IS NOT NULL AND decision_livree = 0')->fetchAll();

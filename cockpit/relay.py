@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 from pathlib import Path
 
 import httpx
@@ -20,6 +21,7 @@ class Relay:
             headers={"Authorization": f"Bearer {key}"},
             timeout=httpx.Timeout(10, read=40),
         )
+        self.instance = secrets.token_hex(8)  # identifie ce processus auprès du relais
         self.events: list[dict] = []
         self.audit: list[dict] = []
         self._wake = asyncio.Event()
@@ -31,7 +33,7 @@ class Relay:
         return r.json()
 
     async def poll(self, projects: list[dict], hello: bool = False, wait: float | None = None) -> dict:
-        body: dict = {"projects": projects, "hello": hello}
+        body: dict = {"projects": projects, "hello": hello, "instance": self.instance}
         if wait is not None:
             body["wait"] = wait
         return await self.call("w_poll", body)
