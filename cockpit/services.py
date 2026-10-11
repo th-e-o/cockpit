@@ -134,8 +134,8 @@ async def quota(ns: str) -> dict:
 
 
 def _quota_summary(q: dict) -> str:
-    keys = ("pods", "requests.cpu", "requests.memory", "requests.storage", "requests.nvidia.com/gpu")
-    parts = [f"{k.removeprefix('requests.')} {q[k]['used']}/{q[k]['hard']}" for k in keys if k in q]
+    keys = ("count/pods", "pods", "requests.cpu", "requests.memory", "requests.storage", "requests.nvidia.com/gpu")
+    parts = [f"{k.removeprefix('requests.').removeprefix('count/')} {q[k]['used']}/{q[k]['hard']}" for k in keys if k in q]
     return ", ".join(parts) or "quota illisible"
 
 
