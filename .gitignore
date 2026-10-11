@@ -1,5 +1,6 @@
 .venv/
-data/
+/data/
 __pycache__/
 web/config.php
-web/data/*.db*
+web/data/*
+!web/data/.htaccess

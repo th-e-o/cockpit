@@ -2,9 +2,10 @@ DirectoryIndex index.html
 Options -Indexes
 
 # Fichiers de configuration jamais servis
-<FilesMatch "^(config\.php|\.ovhconfig)$">
+<FilesMatch "^(config\.php|\.ovhconfig)$|\.(db|db-wal|db-shm|sqlite)$">
     Require all denied
 </FilesMatch>
+RedirectMatch 403 ^/data(/|$)
 
 # Transmettre l'en-tête Authorization du worker à PHP (supprimé par défaut en CGI/FPM)
 RewriteEngine On

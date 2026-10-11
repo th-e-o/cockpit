@@ -45,6 +45,7 @@ function db(): PDO {
     if ($pdo) return $pdo;
     $dir = __DIR__ . '/data';
     if (!is_dir($dir)) mkdir($dir, 0700, true);
+    if (!is_file("$dir/.htaccess")) file_put_contents("$dir/.htaccess", "Require all denied\n");
     $pdo = new PDO('sqlite:' . $dir . '/cockpit.db', null, null, [
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
