@@ -141,6 +141,7 @@ class Worker:
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+    logging.getLogger("httpx").setLevel(logging.WARNING)  # une ligne par long-poll sinon
     cmd = sys.argv[1] if len(sys.argv) > 1 else "run"
     if cmd == "init":
         init_key()
