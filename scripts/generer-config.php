@@ -7,13 +7,16 @@ if (!preg_match('/^[0-9a-f]{64}$/', $empreinte)) {
     fwrite(STDERR, "config/worker_key.sha256 absent ou invalide : lancer « ./run.sh init » puis versionner le fichier.\n");
     exit(1);
 }
-$hote = getenv('COCKPIT_HOTE') ?: 'cockpit.deltastat.fr';
+$hote = getenv('COCKPIT_HOTE') ?: 'deltastat.fr';
+$base = '/' . trim(getenv('COCKPIT_BASE') ?: 'cockpit', '/') . '/';  // sous-dossier du site ('/' si sous-domaine dédié)
+$base = $base === '//' ? '/' : $base;
 $config = [
     'worker_cle_sha256' => $empreinte,
     'hote' => $hote,                       // identifiant des passkeys (rpId)
     'origine' => getenv('COCKPIT_ORIGINE') ?: "https://$hote",
+    'base' => $base,
     'debug' => false,
 ];
 file_put_contents("$racine/web/config.php",
     "<?php\n// Généré par le déploiement : ne pas modifier sur le serveur.\nreturn " . var_export($config, true) . ";\n");
-echo "web/config.php généré pour $hote.\n";
+echo "web/config.php généré pour https://$hote$base\n";

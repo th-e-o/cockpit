@@ -20,6 +20,7 @@ jobs:
       - name: Générer web/config.php
         env:
           COCKPIT_HOTE: ${{ vars.COCKPIT_HOTE }}
+          COCKPIT_BASE: ${{ vars.COCKPIT_BASE }}
         run: php scripts/generer-config.php
 
       - name: Versionner CSS et JS (contourne le cache des navigateurs)
@@ -32,8 +33,9 @@ jobs:
           username: ${{ secrets.FTP_USERNAME }}
           password: ${{ secrets.FTP_PASSWORD }}
           local-dir: ./web/
-          # Dossier à côté de www/ (pas dedans) : le cockpit n'est servi que par son sous-domaine.
-          server-dir: ${{ vars.FTP_DOSSIER || 'cockpit/' }}
+          # Sous-dossier de www/ : https://deltastat.fr/cockpit/. Indépendant de PLFMarket : chaque
+          # déploiement ne met à jour ou ne supprime que les fichiers qu'il a lui-même envoyés.
+          server-dir: ${{ vars.FTP_DOSSIER || 'www/cockpit/' }}
           exclude: |
             **/.git*
             **/.git*/**

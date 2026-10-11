@@ -24,7 +24,7 @@ from .store import Task
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG = Path(os.environ.get("COCKPIT_CONFIG", ROOT / "config"))
 DATA = Path(os.environ.get("COCKPIT_DATA", ROOT / "data"))
-RELAY_URL = os.environ.get("COCKPIT_RELAY_URL", "https://cockpit.deltastat.fr")
+RELAY_URL = os.environ.get("COCKPIT_RELAY_URL", "https://deltastat.fr/cockpit")
 KEY_FILE = DATA / "worker_key"
 KEY_HASH_FILE = CONFIG / "worker_key.sha256"  # versionné : seule l'empreinte est publique
 

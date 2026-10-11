@@ -1,6 +1,6 @@
 # Cockpit Onyxia × Claude Code
 
-PWA mobile (`https://cockpit.deltastat.fr`) pour piloter des agents Claude Code qui tournent dans Onyxia,
+PWA mobile (`https://deltastat.fr/cockpit/`) pour piloter des agents Claude Code qui tournent dans Onyxia,
 avec une forte autonomie et une validation humaine pour les opérations sensibles.
 
 ```
@@ -19,25 +19,19 @@ avec une forte autonomie et une validation humaine pour les opérations sensible
 
 ## Mise en place (une seule fois)
 
-### 1. GitHub : dépôt privé + 3 secrets
-Créer le dépôt **privé** `th-e-o/cockpit`, puis y pousser ce dossier :
-```bash
-git remote add origin https://github.com/th-e-o/cockpit.git && git push -u origin main
-```
-*Settings → Secrets and variables → Actions* : `FTP_SERVER`, `FTP_USERNAME`, `FTP_PASSWORD`, avec les
-**mêmes valeurs que pour PLFMarket** (même hébergement OVH). Aucun autre secret : la clé du worker n'est
-connue du relais que par son empreinte, versionnée dans `config/worker_key.sha256`.
+### 1. GitHub : dépôt + 3 secrets
+Dépôt `th-e-o/cockpit`. *Settings → Secrets and variables → Actions* : `FTP_SERVER`, `FTP_USERNAME`,
+`FTP_PASSWORD`, avec les **mêmes valeurs que pour PLFMarket** (même hébergement OVH). Aucun autre secret : la clé du
+worker n'est connue du relais que par son empreinte, versionnée dans `config/worker_key.sha256`.
 
 Chaque `git push` sur `main` qui touche `web/` redéploie le relais (*Actions → Déploiement OVH*).
-Il est envoyé dans le dossier `cockpit/`, **à côté de** `www/` (PLFMarket) : il n'est donc pas accessible
-par `deltastat.fr/cockpit`.
 
-### 2. OVH : le sous-domaine
-Espace client → Hébergements → onglet **Multisite** → *Ajouter un domaine ou un sous-domaine* :
-- domaine : `cockpit.deltastat.fr`, dossier racine : `cockpit` ;
-- cocher **SSL** (Let's Encrypt). Si la zone DNS de deltastat.fr est chez OVH, l'enregistrement est créé automatiquement.
-
-Le certificat peut mettre jusqu'à une heure. Les passkeys et les notifications exigent HTTPS.
+### 2. OVH : rien à faire
+Le cockpit est déployé dans `www/cockpit/` et servi sur **https://deltastat.fr/cockpit/**, car la formule
+d'hébergement n'autorise pas de domaine rattaché supplémentaire. Les deux projets restent indépendants : chaque
+workflow ne met à jour ou ne supprime que les fichiers qu'il a lui-même envoyés (pas de `dangerous-clean-slate`).
+Pour passer plus tard sur un sous-domaine dédié : variables GitHub `COCKPIT_HOTE`, `COCKPIT_BASE=/` et
+`FTP_DOSSIER`, plus `COCKPIT_RELAY_URL` côté worker. Les passkeys sont liées au domaine : il faudra en recréer.
 
 ### 3. Onyxia : identifiant Claude
 Le CLI du pod n'est pas connecté (l'extension VSCode utilise sa propre session). Dans un terminal :
@@ -70,8 +64,7 @@ Puis, sur iPhone : Partager → *Sur l'écran d'accueil*. Ouvre le cockpit depui
 - `config/policy.yaml` : règles `deny > ask > allow > défaut (ask)` par outil, chemin de fichier et commande shell.
   Les commandes composées (`&&`, `|`, `;`) sont évaluées segment par segment. Les substitutions et les redirections
   `>` passent toujours en validation.
-- Variables : `COCKPIT_RELAY_URL` (défaut `https://cockpit.deltastat.fr`), `COCKPIT_WORKER_KEY`, et la variable
-  GitHub `COCKPIT_HOTE` pour changer de sous-domaine.
+- Variables : `COCKPIT_RELAY_URL` (défaut `https://deltastat.fr/cockpit`) et `COCKPIT_WORKER_KEY`.
 
 ## Sécurité : ce qu'il faut savoir
 
@@ -88,6 +81,11 @@ Puis, sur iPhone : Partager → *Sur l'écran d'accueil*. Ouvre le cockpit depui
   puis `./run.sh init` et pousser la nouvelle empreinte.
 
 ## Limites connues
+
+- **Même origine web que PLFMarket** (`deltastat.fr`). Une faille XSS dans PLFMarket permettrait à un script
+  d'utiliser ta session cockpit, toujours bornée par les validations. Une relecture de PLFMarket (octobre 2026)
+  n'a rien montré d'évident : saisies échappées, liens d'articles limités à `http(s)`. À garder en tête quand
+  PLFMarket évolue.
 
 - Les agents tournent dans le pod où le worker est lancé : les projets doivent être sur son disque.
   Le worker s'arrête avec le pod ; il faut le relancer avec `./run.sh` (ou via le script d'initialisation du service Onyxia).

@@ -35,24 +35,26 @@ def relay():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
-    web = Path(tempfile.mkdtemp()) / "web"
+    # Comme en production : le cockpit est un sous-dossier du site (https://deltastat.fr/cockpit/)
+    docroot = Path(tempfile.mkdtemp())
+    web = docroot / "cockpit"
     shutil.copytree(ROOT / "web", web, ignore=shutil.ignore_patterns("*.db*", "config.php"))
     origin = f"http://localhost:{port}"
     (web / "config.php").write_text(
         f"<?php return ['worker_cle_sha256' => '{hashlib.sha256(KEY.encode()).hexdigest()}',"
-        f" 'hote' => 'localhost', 'origine' => '{origin}', 'debug' => true];"
+        f" 'hote' => 'localhost', 'origine' => '{origin}', 'base' => '/cockpit/', 'debug' => true];"
     )
-    proc = subprocess.Popen([PHP, "-S", f"127.0.0.1:{port}", "-t", str(web)],
+    proc = subprocess.Popen([PHP, "-S", f"127.0.0.1:{port}", "-t", str(docroot)],
                             env={**os.environ, "PHP_CLI_SERVER_WORKERS": "4"},
                             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    base = f"http://127.0.0.1:{port}"
+    base = f"http://127.0.0.1:{port}/cockpit"
     for _ in range(50):
         try:
             httpx.get(base + "/index.html")
             break
         except httpx.ConnectError:
             time.sleep(0.1)
-    yield {"base": base, "origin": origin}
+    yield {"base": base, "origin": origin, "app": origin + "/cockpit/"}
     proc.terminate()
 
 
@@ -114,10 +116,12 @@ def test_acces_protege(relay):
 
 def test_appairage_usage_unique(relay):
     url = worker_call(relay, "w_appairage", {}).json()["url"]
+    assert url.startswith(relay["app"] + "#pair=")  # lien vers le sous-dossier
     token = url.split("#pair=")[1]
     p = phone(relay)
     assert call(p, "appairer", {"token": token}).status_code == 200
     assert call(p, "moi").json()["authed"] is True
+    assert all(c.path == "/cockpit/" for c in p.cookies.jar)  # cookie limité au cockpit
     assert call(phone(relay), "appairer", {"token": token}).status_code == 401
 
 

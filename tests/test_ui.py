@@ -64,12 +64,13 @@ def test_parcours_mobile(relay, tmp_path, monkeypatch):
                 "hasUserVerification": True, "isUserVerified": True, "automaticPresenceSimulation": True}})
 
             # 1. Sans appairage : instructions
-            page.goto(relay["origin"] + "/")
+            page.goto(relay["app"])
             page.wait_for_selector("text=./run.sh pair")
             page.screenshot(path=SHOTS / "1-bienvenue.png")
 
             # 2. Scan du QR code -> passkey
-            url = worker_call(relay, "w_appairage", {}).json()["url"].replace(relay["base"], relay["origin"])
+            url = worker_call(relay, "w_appairage", {}).json()["url"]
+            assert url.startswith(relay["app"] + "#pair=")
             page.goto(url)
             page.wait_for_selector("text=Téléphone connecté")
             page.screenshot(path=SHOTS / "2-appaire.png")

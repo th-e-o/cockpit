@@ -123,6 +123,12 @@ function origine(): string {
     return ($https ? 'https://' : 'http://') . ($_SERVER['HTTP_HOST'] ?? 'localhost');
 }
 
+/** Chemin du cockpit sur le site (ex. /cockpit/), pour le cookie et le lien d'appairage. */
+function base(): string {
+    global $CONFIG;
+    return $CONFIG['base'] ?? (rtrim(dirname($_SERVER['SCRIPT_NAME'] ?? '/'), '/') . '/');
+}
+
 function ip(): string { return $_SERVER['REMOTE_ADDR'] ?? '?'; }
 
 function limiter_echecs(): void {
@@ -149,7 +155,7 @@ function ouvrir_session(): void {
 
 function poser_cookie(string $valeur, int $expire): void {
     setcookie(SESSION_COOKIE, $valeur, [
-        'expires' => $expire, 'path' => '/', 'httponly' => true,
+        'expires' => $expire, 'path' => base(), 'httponly' => true,
         'secure' => str_starts_with(origine(), 'https://'), 'samesite' => 'Strict',
     ]);
 }
@@ -454,7 +460,7 @@ switch ($route) {
         $jeton = jeton();
         q('DELETE FROM appairages WHERE expire_le < ?', [time()]);
         q('INSERT INTO appairages(jeton_hash, expire_le) VALUES(?, ?)', [h($jeton), time() + APPAIRAGE_DUREE]);
-        repondre(['url' => origine() . '/#pair=' . $jeton, 'expires_in' => APPAIRAGE_DUREE]);
+        repondre(['url' => origine() . base() . '#pair=' . $jeton, 'expires_in' => APPAIRAGE_DUREE]);
 
     case 'w_poll':
         exiger_worker();
