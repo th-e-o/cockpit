@@ -43,3 +43,14 @@ def test_routage_avec_contexte():
 
 def test_toolsearch_autorise():
     assert Policy.load(ROOT / "config" / "policy.yaml").evaluate("ToolSearch", {"query": "x"}, "/").action == "allow"
+
+
+def test_etapes_lisibles():
+    from cockpit.agent import tool_label
+
+    assert tool_label("Read", {"file_path": "/a/b/README.md"}) == "📖 Lit README.md"
+    assert tool_label("Bash", {"command": "pytest -q", "description": "Lance les tests"}) == "⚙️ Lance les tests"
+    assert tool_label("Bash", {"command": "ls"}) == "⚙️ ls"
+    assert tool_label("mcp__services__lancer_service", {"nom": "drones"}) == "🚀 Lance le service drones"
+    assert tool_label("ToolSearch", {}) is None
+    assert tool_label("Inconnu", {}) == "🔧 Inconnu"

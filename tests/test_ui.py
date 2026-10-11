@@ -33,6 +33,13 @@ def start_worker(relay, tmp_path, monkeypatch):
         async def fake_run(task, project, resume=True):
             w.store.task_update(task, status="running", project=project.id)
             w.store.publish("message", {"task_id": task.id, "type": "text", "text": "Je vérifie la release **mlflow**…"})
+            w.store.publish("message", {"task_id": task.id, "type": "tool_use", "tool": "TodoWrite", "text": "{}",
+                                        "label": "📋 Met à jour son plan", "todos": [
+                {"content": "Lire la release", "status": "completed", "activeForm": "Lit la release"},
+                {"content": "Mettre à jour mlflow", "status": "in_progress", "activeForm": "Met à jour mlflow"}]})
+            w.store.publish("message", {"task_id": task.id, "type": "tool_use", "tool": "ToolSearch", "text": "{}", "label": None})
+            w.store.publish("message", {"task_id": task.id, "type": "tool_use", "tool": "Bash", "text": "{}",
+                                        "label": "⚙️ Met à jour la release mlflow"})
             ok = await w.runner.request_approval(task, project, "Bash",
                                                  {"command": "helm upgrade mlflow-563237 inseefrlab/mlflow"},
                                                  "opération sensible : helm upgrade")
@@ -85,10 +92,16 @@ def test_parcours_mobile(relay, tmp_path, monkeypatch):
             page.click("#send")
             page.wait_for_selector(".approval:not(.resolved)")
             page.wait_for_selector("#pendingBtn:not(.hidden)")
+            page.wait_for_selector(".todos >> text=Plan · 1/2")
+            page.wait_for_selector(".todo.in_progress >> text=Met à jour mlflow")
+            assert "Met à jour la release mlflow" in page.inner_text(".now")
+            assert "ToolSearch" not in page.inner_text(".log")
             page.screenshot(path=SHOTS / "3-validation.png")
             page.click("text=Approuver")
             page.wait_for_selector(".pill.st-done")
             assert "REVISION: 4" in page.inner_text(".result")
+            assert "$" not in page.inner_text(".meta")
+            page.wait_for_selector(".steps summary >> text=2 étape(s)")
             assert page.locator("#pendingBtn.hidden").count() == 1
             page.screenshot(path=SHOTS / "4-termine.png")
 

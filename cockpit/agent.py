@@ -34,6 +34,8 @@ Sois autonome :
 - ne t'arrête pour poser une question que si l'information est indispensable et impossible à deviner.
   Tu ne peux pas poser de question en cours de tâche : formule-la dans ta réponse finale ; l'utilisateur
   répondra dans la suite de la conversation, et tu reprendras avec tout le contexte.
+Pour une tâche en plusieurs étapes, tiens ta liste à jour avec TodoWrite : l'utilisateur la voit
+se cocher en direct sur son téléphone.
 Pour la réponse finale : concise, avec ce qui a été fait, les choix faits à sa place et ce qui reste à faire.
 Certaines actions nécessitent une validation humaine ; si une action est refusée, ne tente pas de la
 contourner par un autre moyen, explique plutôt ce qui était prévu.
@@ -46,6 +48,50 @@ lancer_service, lister_services et arreter_service. N'utilise pas helm directeme
 Pour un nouveau projet sans dépôt git, lance le service sans dépôt (un dossier vide sera créé) ; choisis
 toi-même un nom court à partir de la demande et garde les ressources par défaut sauf besoin explicite.
 """
+
+
+def _name(path: str) -> str:
+    return path.rstrip("/").rsplit("/", 1)[-1] or path
+
+
+def _clip(s: str, n: int = 60) -> str:
+    s = " ".join(str(s).split())
+    return s if len(s) <= n else s[: n - 1] + "…"
+
+
+def tool_label(tool: str, i: dict) -> str | None:
+    """Étape lisible sur le téléphone (« 📖 Lit README.md ») ; None pour les outils sans intérêt à afficher."""
+    short = tool.removeprefix(svc.TOOL_PREFIX)
+    match short:
+        case "ToolSearch":
+            return None
+        case "Read":
+            return f"📖 Lit {_name(i.get('file_path', ''))}"
+        case "Write":
+            return f"📝 Crée {_name(i.get('file_path', ''))}"
+        case "Edit" | "MultiEdit" | "NotebookEdit":
+            return f"✏️ Modifie {_name(i.get('file_path') or i.get('notebook_path', ''))}"
+        case "Grep":
+            return f"🔎 Cherche « {_clip(i.get('pattern', ''), 40)} »"
+        case "Glob":
+            return f"🔎 Liste {_clip(i.get('pattern', ''), 40)}"
+        case "Bash":
+            return f"⚙️ {_clip(i.get('description') or i.get('command', ''))}"
+        case "WebSearch":
+            return f"🌐 Recherche « {_clip(i.get('query', ''), 50)} »"
+        case "WebFetch":
+            return f"🌐 Consulte {_clip(i.get('url', '').split('//')[-1].split('/')[0], 40)}"
+        case "Task" | "Agent":
+            return f"🤖 {_clip(i.get('description') or 'Sous-agent')}"
+        case "TodoWrite":
+            return "📋 Met à jour son plan"
+        case "lancer_service":
+            return f"🚀 Lance le service {i.get('nom', '')}"
+        case "lister_services":
+            return "📋 Liste les services"
+        case "arreter_service":
+            return f"🛑 Arrête le service {i.get('nom', '')}"
+    return f"🔧 {short}"
 
 
 def _short(value, limit: int = 600) -> str:
@@ -187,7 +233,9 @@ class Runner:
                 if isinstance(b, TextBlock) and b.text.strip():
                     pub(type="text", text=b.text)
                 elif isinstance(b, ToolUseBlock):
-                    pub(type="tool_use", tool=b.name, text=_short(b.input, 300))
+                    extra = {"todos": b.input.get("todos", [])[:30]} if b.name == "TodoWrite" else {}
+                    pub(type="tool_use", tool=b.name, text=_short(b.input, 300),
+                        label=tool_label(b.name, b.input), **extra)
         elif isinstance(msg, UserMessage) and isinstance(msg.content, list):
             for b in msg.content:
                 if isinstance(b, ToolResultBlock) and b.is_error:

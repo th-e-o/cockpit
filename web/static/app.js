@@ -191,19 +191,56 @@ function approvalHtml(a) {
     <pre><code>${esc(String(input).slice(0, 4000))}</code></pre>${done}</div>`;
 }
 
+const duree = (s) => (s < 60 ? `${Math.max(1, Math.round(s))} s` : `${Math.floor(s / 60)} min${s % 60 >= 1 ? ` ${String(Math.floor(s % 60)).padStart(2, '0')}` : ''}`);
+
+/** Étapes lisibles (« 📖 Lit README.md ») ; repli sur le nom de l'outil pour les anciens événements. */
+function stepsOf(e) {
+  const steps = [];
+  for (const x of e.events) {
+    if (x.type === 'tool_use' && x.label !== null) steps.push({ label: x.label || `🔧 ${x.tool}`, detail: x.text });
+    else if (x.type === 'tool_error' && steps.length) steps[steps.length - 1].error = x.text;
+  }
+  return steps;
+}
+
+function progressHtml(e, active) {
+  const steps = stepsOf(e);
+  const todos = [...e.events].reverse().find((x) => x.todos)?.todos;
+  let html = '';
+  if (todos?.length) {
+    const done = todos.filter((x) => x.status === 'completed').length;
+    html += `<div class="todos"><div class="todohead">Plan · ${done}/${todos.length}</div>${todos.map((x) =>
+      `<div class="todo ${esc(x.status)}">${x.status === 'completed' ? '✓' : x.status === 'in_progress' ? '◐' : '○'} ${esc(
+        x.status === 'in_progress' ? x.activeForm || x.content : x.content)}</div>`).join('')}</div>`;
+  }
+  if (!steps.length) {
+    return html + (active && e.task.status === 'running' ? '<div class="now"><span class="spin"></span> Réfléchit…</div>' : '');
+  }
+  const row = (s) => `<div class="step${s.error ? ' err' : ''}" title="${esc(s.detail || '')}">${esc(s.label)}${s.error ? ' <b>✗</b>' : ''}</div>`;
+  if (active) {
+    // En cours : les étapes précédentes repliées, l'étape actuelle mise en avant avec le temps écoulé.
+    const cur = steps[steps.length - 1];
+    const prev = steps.slice(0, -1);
+    if (prev.length) html += `<details class="steps"><summary>${prev.length} étape(s) faite(s)</summary>${prev.map(row).join('')}</details>`;
+    const since = e.task.created ? `<span class="since" data-since="${Number(e.task.created)}"></span>` : '';
+    html += `<div class="now">${e.task.status === 'running' ? '<span class="spin"></span>' : ''} ${esc(cur.label)}${since}</div>`;
+  } else {
+    const end = e.events.length ? e.events[e.events.length - 1].ts : 0;
+    const took = end && e.task.created ? ` · ${duree(end - e.task.created)}` : '';
+    html += `<details class="steps"><summary>${steps.length} étape(s)${took}</summary>${steps.map(row).join('')}</details>`;
+  }
+  return html;
+}
+
 function taskHtml(e) {
   const t = e.task;
   const proj = state.projects.find((p) => p.id === t.project);
-  const tools = e.events.filter((x) => x.type === 'tool_use' || x.type === 'tool_error');
+  const active = ACTIVE.has(t.status);
   const texts = e.events.filter((x) => x.type === 'text');
   const blocked = e.events.filter((x) => x.type === 'blocked');
-  const lastText = ACTIVE.has(t.status) && texts.length ? texts[texts.length - 1].text : '';
+  const lastText = active && texts.length ? texts[texts.length - 1].text : '';
 
-  let body = '';
-  if (tools.length) {
-    body += `<details><summary>${tools.length} action(s)</summary>${tools.map((x) =>
-      `<div class="tool">${x.type === 'tool_error' ? '✗' : '›'} ${esc(x.tool || '')} ${esc(x.text)}</div>`).join('')}</details>`;
-  }
+  let body = progressHtml(e, active);
   body += blocked.map((x) => `<div class="blocked">⛔ ${esc(x.tool)} : ${esc(x.text)}</div>`).join('');
   body += [...e.approvals.values()].map(approvalHtml).join('');
   if (lastText) body += `<div class="text">${md(lastText)}</div>`;
@@ -218,7 +255,6 @@ function taskHtml(e) {
       <span class="pill st-${esc(t.status)}">${STATUS[t.status] || esc(t.status)}</span>
       ${proj ? `<span class="pill">${esc(proj.name)}</span>` : ''}
       ${t.route_reason && t.project ? `<span title="${esc(t.route_reason)}">auto</span>` : ''}
-      ${t.cost_usd ? `<span>${Number(t.cost_usd).toFixed(3)} $</span>` : ''}
       ${ACTIVE.has(t.status) ? `<button class="btn ghost" data-cancel="${esc(t.id)}">Arrêter</button>`
         : t.id !== state.replyTo ? `<button class="btn ghost" data-reply="${esc(t.id)}">Répondre</button>` : ''}
     </div><div class="log">${body}</div>`;
@@ -297,6 +333,9 @@ setInterval(() => {
   document.querySelectorAll('[data-expires]').forEach((el) => {
     const s = Math.max(0, Math.round(el.dataset.expires - Date.now() / 1000));
     el.textContent = `refus automatique dans ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  });
+  document.querySelectorAll('[data-since]').forEach((el) => {
+    el.textContent = ` · ${duree(Date.now() / 1000 - Number(el.dataset.since))}`;
   });
 }, 1000);
 
