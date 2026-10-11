@@ -15,6 +15,9 @@ GOOD = dict(nom="test", depot_git="https://github.com/th-e-o/PLFMarket")
 def test_validation():
     svc.Launch(**GOOD).validate()
     svc.Launch(**GOOD, branche="feat/x", cpu="500m", memoire="512Mi", disque="20Gi").validate()
+    svc.Launch(nom="drones").validate()  # sans dépôt : dossier vide
+    with pytest.raises(svc.ServiceError):
+        svc.Launch(nom="drones", branche="main").validate()
     for bad in [dict(nom="Bad_Name"), dict(nom="-x"), dict(nom="a" * 40), dict(nom="x; rm -rf"),
                 dict(depot_git="http://github.com/a/b"), dict(depot_git="https://u:p@github.com/a/b"),
                 dict(depot_git="https://github.com/a/b,init.x=1"), dict(depot_git="https://github.com/a/../b"),
@@ -72,3 +75,4 @@ def test_politique_et_validation(monkeypatch):
     text = asyncio.run(svc.describe(svc.LAUNCH_TOOL, GOOD))
     assert "cockpit-test" in text and "PLFMarket" in text and "2 CPU" in text and "pods 5/100" in text
     assert asyncio.run(svc.describe("Bash", {})) is None
+    assert "sans dépôt" in asyncio.run(svc.describe(svc.LAUNCH_TOOL, {"nom": "drones"}))

@@ -1,7 +1,9 @@
 'use strict';
 
 const $ = (s) => document.querySelector(s);
-const state = { projects: [], selected: null, tasks: new Map(), order: [], lastId: 0, workerOnline: false, replay: false };
+// replyTo : tâche dont le prochain message est la suite (undefined tant que l'historique n'est pas chargé)
+const state = { projects: [], selected: null, tasks: new Map(), order: [], lastId: 0, workerOnline: false, replay: false, replyTo: undefined };
+const REPRISE_AUTO = 2 * 3600; // à l'ouverture, la dernière conversation continue si elle a moins de 2 h
 
 const STATUS = {
   pending: 'en attente', routing: 'routage…', queued: 'en file', running: 'en cours',
@@ -168,14 +170,14 @@ const SERVICE_TOOLS = { lancer_service: '🚀 Lancer un service', arreter_servic
 function serviceInput(a) {
   const i = a.tool_input;
   if (a.tool.endsWith('arreter_service')) return `cockpit-${i.nom}`;
-  return [`Nom : cockpit-${i.nom}`, `Dépôt : ${i.depot_git}${i.branche ? ` (${i.branche})` : ''}`,
+  return [`Nom : cockpit-${i.nom}`, `Dépôt : ${i.depot_git ? `${i.depot_git}${i.branche ? ` (${i.branche})` : ''}` : 'aucun (dossier vide)'}`,
     `Ressources : ${i.cpu || 2} CPU · ${i.memoire || '8Gi'} · ${i.disque || '10Gi'} de disque${i.gpu ? ' · 1 GPU' : ''}`].join('\n');
 }
 
 function approvalHtml(a) {
   const service = SERVICE_TOOLS[a.tool.replace(/^mcp__services__/, '')];
-  const input = service ? serviceInput(a) :
-    a.tool === 'Bash' ? a.tool === 'Bash' ? a.tool_input.command
+  const input = service ? serviceInput(a)
+    : a.tool === 'Bash' ? a.tool_input.command
     : a.tool_input.file_path ? `${a.tool_input.file_path}\n\n${a.tool_input.content ?? a.tool_input.new_string ?? ''}`
     : JSON.stringify(a.tool_input, null, 2);
   const done = a.decision
@@ -217,7 +219,8 @@ function taskHtml(e) {
       ${proj ? `<span class="pill">${esc(proj.name)}</span>` : ''}
       ${t.route_reason && t.project ? `<span title="${esc(t.route_reason)}">auto</span>` : ''}
       ${t.cost_usd ? `<span>${Number(t.cost_usd).toFixed(3)} $</span>` : ''}
-      ${ACTIVE.has(t.status) ? `<button class="btn ghost" data-cancel="${esc(t.id)}">Arrêter</button>` : ''}
+      ${ACTIVE.has(t.status) ? `<button class="btn ghost" data-cancel="${esc(t.id)}">Arrêter</button>`
+        : t.id !== state.replyTo ? `<button class="btn ghost" data-reply="${esc(t.id)}">Répondre</button>` : ''}
     </div><div class="log">${body}</div>`;
 }
 
@@ -237,9 +240,30 @@ function render(ids) {
     }
     wrap.querySelector('.user').textContent = e.task.instruction || '';
     wrap.querySelector('.task').innerHTML = taskHtml(e);
+    wrap.classList.toggle('suite', !!e.task.reply_to);
+    wrap.classList.toggle('current', !!state.replyTo && conversationOf(id) === conversationOf(state.replyTo));
   }
   if (nearBottom || state.replay) feed.scrollTop = feed.scrollHeight;
   updatePending();
+}
+
+// ---------- conversations
+const conversationOf = (id) => state.tasks.get(id)?.task.conversation || id;
+
+function setReplyTo(id) {
+  state.replyTo = id;
+  const t = id && state.tasks.get(id)?.task;
+  $('#thread').classList.toggle('hidden', !t);
+  if (t) $('#threadText').textContent = `↪ Suite de « ${t.instruction?.length > 50 ? `${t.instruction.slice(0, 50)}…` : t.instruction} »`;
+  render(state.order);
+}
+
+/** Le dernier message envoyé dans la conversation suivie est la tâche à laquelle on répond. */
+function followConversation() {
+  if (!state.replyTo) return;
+  const conv = conversationOf(state.replyTo);
+  const last = [...state.order].reverse().find((id) => conversationOf(id) === conv);
+  if (last && last !== state.replyTo) setReplyTo(last);
 }
 
 function updatePending() {
@@ -290,6 +314,12 @@ async function poll() {
     const touched = new Set();
     for (const evt of s.events) { onEvent(evt); touched.add(evt.task_id); }
     state.lastId = s.last_id;
+    if (state.replyTo === undefined) {
+      const last = state.tasks.get(state.order[state.order.length - 1])?.task;
+      state.replyTo = null;
+      if (last?.created && Date.now() / 1000 - last.created < REPRISE_AUTO) setReplyTo(last.id);
+    }
+    followConversation();
     if (JSON.stringify(s.projects) !== JSON.stringify(state.projects)) { state.projects = s.projects; renderProjects(); }
     if (s.worker_online !== state.workerOnline) {
       state.workerOnline = s.worker_online;
@@ -343,6 +373,12 @@ document.addEventListener('click', async (ev) => {
     } else if (b.dataset.cancel) {
       await api('annuler', { task_id: b.dataset.cancel });
       poll();
+    } else if (b.dataset.reply) {
+      setReplyTo(b.dataset.reply);
+      input.focus();
+    } else if (b.id === 'newConv') {
+      setReplyTo(null);
+      input.focus();
     } else if (b.dataset.choose) {
       await api('choisir_projet', { task_id: b.closest('section').dataset.task, project: b.dataset.choose });
       poll();
@@ -418,10 +454,11 @@ $('#composer').addEventListener('submit', async (ev) => {
   if (!instruction) return;
   $('#send').disabled = true;
   try {
-    await api('tache', { instruction, project: state.selected, new_session: $('#newSession').checked });
+    const t = await api('tache', { instruction, project: state.selected, reply_to: state.replyTo || null });
     input.value = '';
     input.style.height = 'auto';
-    $('#newSession').checked = false;
+    onEvent({ kind: 'task', task_id: t.id, task: t });
+    setReplyTo(t.id);
     await poll();
   } catch (e) {
     if (e instanceof AuthError) start(); else alert(e.message);

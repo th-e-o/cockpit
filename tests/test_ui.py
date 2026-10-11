@@ -92,6 +92,19 @@ def test_parcours_mobile(relay, tmp_path, monkeypatch):
             assert page.locator("#pendingBtn.hidden").count() == 1
             page.screenshot(path=SHOTS / "4-termine.png")
 
+            # 3 bis. Le message suivant continue la conversation ; « Nouvelle conversation » la referme
+            page.wait_for_selector("#thread:not(.hidden) >> text=Suite de")
+            page.fill("#input", "Et vérifie que le pod redémarre bien")
+            page.click("#send")
+            page.wait_for_selector("section.suite.current")
+            page.click(".approval:not(.resolved) >> text=Approuver")
+            page.wait_for_function("document.querySelectorAll('.pill.st-done').length === 2")
+            assert page.locator("section.current").count() == 2
+            page.screenshot(path=SHOTS / "4b-conversation.png")
+            page.click("#newConv")
+            page.wait_for_selector("#thread.hidden", state="attached")
+            assert page.locator("section.current").count() == 0
+
             # 4. Cookie perdu (PWA installée, nouveau navigateur) -> Face ID seul
             ctx.clear_cookies()
             page.reload()

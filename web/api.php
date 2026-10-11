@@ -20,6 +20,7 @@ const LONG_POLL = 20;                   // secondes d'attente côté worker
 const WORKER_EN_LIGNE = 45;             // worker considéré hors ligne au-delà
 const LIMITE_ECHECS_IP = [20, 900];     // échecs d'authentification par IP
 const TACHES_VISIBLES = 30;
+const CONTEXTE_ECHANGES = 6;              // échanges précédents transmis au worker (routage, reprise sans session)
 
 $CONFIG = require __DIR__ . '/config.php';
 
@@ -77,8 +78,9 @@ CREATE TABLE IF NOT EXISTS workers (
     id TEXT PRIMARY KEY, nom TEXT NOT NULL, instance TEXT NOT NULL, projets TEXT NOT NULL DEFAULT '[]',
     orchestrateur INTEGER NOT NULL DEFAULT 1, vu_le INTEGER NOT NULL DEFAULT 0);
 SQL);
-    if (!in_array('worker_id', array_column($pdo->query('PRAGMA table_info(taches)')->fetchAll(), 'name'), true)) {
-        $pdo->exec('ALTER TABLE taches ADD COLUMN worker_id TEXT');
+    $colonnes = array_column($pdo->query('PRAGMA table_info(taches)')->fetchAll(), 'name');
+    foreach (['worker_id', 'conversation', 'suite_de', 'session'] as $c) {
+        if (!in_array($c, $colonnes, true)) $pdo->exec("ALTER TABLE taches ADD COLUMN $c TEXT");
     }
     return $pdo;
 }
@@ -303,8 +305,24 @@ function tache_publique(array $t): array {
     return [
         'id' => $t['id'], 'instruction' => $t['instruction'], 'project' => $t['projet'], 'status' => $t['statut'],
         'route_reason' => $t['raison_routage'], 'result' => $t['resultat'], 'cost_usd' => (float)$t['cout'],
-        'created' => (int)$t['cree_le'],
+        'created' => (int)$t['cree_le'], 'conversation' => $t['conversation'] ?? $t['id'], 'reply_to' => $t['suite_de'] ?? null,
     ];
+}
+
+/** Échanges précédents de la conversation (du plus ancien au plus récent), pour le routage et la reprise. */
+function contexte(array $t): array {
+    $lignes = q('SELECT instruction, resultat, projet FROM taches WHERE conversation = ? AND cree_le <= ? AND id != ?
+                 ORDER BY cree_le DESC, rowid DESC LIMIT ' . CONTEXTE_ECHANGES, [$t['conversation'], $t['cree_le'], $t['id']])->fetchAll();
+    return array_reverse(array_map(fn($l) => ['instruction' => mb_substr($l['instruction'], 0, 1500),
+        'result' => mb_substr($l['resultat'], 0, 1500), 'project' => $l['projet']], $lignes));
+}
+
+/** Dernière session Claude de la conversation pour ce projet (reprise après redémarrage du worker). */
+function session_conversation(array $t): ?string {
+    if (!$t['projet']) return null;
+    $s = q('SELECT session FROM taches WHERE conversation = ? AND projet = ? AND session IS NOT NULL AND id != ?
+            ORDER BY maj_le DESC LIMIT 1', [$t['conversation'], $t['projet'], $t['id']])->fetchColumn();
+    return $s === false ? null : $s;
 }
 
 function evenement_tache(string $id): void {
@@ -438,8 +456,18 @@ switch ($route) {
         $projet = $in['project'] ?? null;
         if ($projet !== null && !in_array($projet, array_column(projets(), 'id'), true)) erreur('projet inconnu');
         $id = bin2hex(random_bytes(5));
-        q('INSERT INTO taches(id, instruction, projet, nouvelle_session, cree_le, maj_le, worker_id) VALUES(?, ?, ?, ?, ?, ?, ?)',
-          [$id, $instruction, $projet, empty($in['new_session']) ? 0 : 1, time(), time(), worker_du_projet($projet)]);
+        $conversation = $id;
+        $suite = null;
+        if (!empty($in['reply_to'])) {
+            // Suite d'une conversation : même projet par défaut, la session Claude sera reprise.
+            $parent = q('SELECT id, projet, conversation FROM taches WHERE id = ?', [(string)$in['reply_to']])->fetch() ?: erreur('conversation introuvable');
+            $suite = $parent['id'];
+            $conversation = $parent['conversation'] ?? $parent['id'];
+            $projet ??= $parent['projet'];
+        }
+        q('INSERT INTO taches(id, instruction, projet, nouvelle_session, cree_le, maj_le, worker_id, conversation, suite_de)
+           VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [$id, $instruction, $projet, empty($in['new_session']) ? 0 : 1, time(), time(), worker_du_projet($projet), $conversation, $suite]);
         evenement_tache($id);
         repondre(tache_publique(q('SELECT * FROM taches WHERE id = ?', [$id])->fetch()));
 
@@ -528,7 +556,7 @@ switch ($route) {
                 repondre(['superseded' => true]);
             }
             q('UPDATE workers SET vu_le = ? WHERE id = ?', [time(), $wid]);
-            $taches = q("SELECT id, instruction, projet, nouvelle_session FROM taches WHERE livree = 0 AND statut = 'pending' AND $mienne", [$wid])->fetchAll();
+            $taches = q("SELECT * FROM taches WHERE livree = 0 AND statut = 'pending' AND $mienne", [$wid])->fetchAll();
             foreach ($taches as $t) q('UPDATE taches SET livree = 1, worker_id = COALESCE(worker_id, ?) WHERE id = ?', [$wid, $t['id']]);
             $decisions = q('SELECT v.id, v.decision FROM validations v JOIN taches t ON t.id = v.tache_id
                             WHERE v.decision IS NOT NULL AND v.decision_livree = 0 AND t.worker_id = ?', [$wid])->fetchAll();
@@ -543,7 +571,9 @@ switch ($route) {
         } while (microtime(true) < $fin && !connection_aborted());
         repondre([
             'tasks' => array_map(fn($t) => ['id' => $t['id'], 'instruction' => $t['instruction'],
-                'project' => $t['projet'], 'new_session' => (bool)$t['nouvelle_session']], $taches),
+                'project' => $t['projet'], 'new_session' => (bool)$t['nouvelle_session'],
+                'conversation' => $t['conversation'] ?? $t['id'], 'context' => $t['conversation'] ? contexte($t) : [],
+                'resume_session' => $t['conversation'] ? session_conversation($t) : null], $taches),
             'decisions' => $decisions, 'cancels' => $annulations,
             'choices' => array_map(fn($c) => ['task_id' => $c['id'], 'project' => $c['choix_projet']], $choix),
             // Liste globale : l'orchestrateur route les tâches sans projet parmi tous les projets.
@@ -575,9 +605,10 @@ switch ($route) {
                 case 'task':
                     $t = $evt['task'];
                     $avant = q('SELECT statut FROM taches WHERE id = ?', [$tacheId])->fetchColumn();
-                    q('UPDATE taches SET statut = ?, projet = COALESCE(?, projet), raison_routage = ?, resultat = ?, cout = ?, maj_le = ? WHERE id = ?',
+                    q('UPDATE taches SET statut = ?, projet = COALESCE(?, projet), raison_routage = ?, resultat = ?, cout = ?, maj_le = ?,
+                       session = COALESCE(?, session) WHERE id = ?',
                       [$t['status'], $t['project'] ?? null, (string)($t['route_reason'] ?? ''), (string)($t['result'] ?? ''),
-                       (float)($t['cost_usd'] ?? 0), time(), $tacheId]);
+                       (float)($t['cost_usd'] ?? 0), time(), $t['session_id'] ?? null, $tacheId]);
                     $notifier = $notifier || ($avant !== $t['status'] && in_array($t['status'], ['done', 'error', 'needs_project'], true));
                     evenement_tache($tacheId);
                     break;

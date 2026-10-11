@@ -6,7 +6,8 @@ default: ask
 approval_timeout_s: 900   # sans réponse => refus
 
 # Outils toujours autorisés (lecture seule / sans effet de bord)
-allow_tools: [Read, Glob, Grep, TodoWrite, Task, Agent, WebSearch, mcp__services__lister_services]
+# ToolSearch ne fait que charger la définition d'un outil : son usage reste soumis à la politique.
+allow_tools: [Read, Glob, Grep, TodoWrite, Task, Agent, WebSearch, ToolSearch, mcp__services__lister_services]
 
 # Outils jamais autorisés
 deny_tools: [AskUserQuestion]

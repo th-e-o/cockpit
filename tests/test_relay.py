@@ -335,3 +335,28 @@ def test_worker_hors_ligne(relay):
     t = call(p, "tache", {"instruction": "x", "project": "mp-off"}).json()
     assert wpoll(relay, "orch", True, instance="inst-orch-2")["tasks"] == []
     assert [x["id"] for x in wpoll(relay, "pod-off", False)["tasks"]] == [t["id"]]
+
+
+def test_conversation(relay):
+    """Une réponse continue la conversation : même projet, session Claude reprise, contexte transmis."""
+    p = paired_phone(relay)
+    wpoll(relay, "pod-c", False, [{"id": "mp-c", "name": "Conv"}], hello=True)
+    t1 = call(p, "tache", {"instruction": "lance un service pour les drones", "project": "mp-c"}).json()
+    assert t1["conversation"] == t1["id"] and t1["reply_to"] is None
+    assert wpoll(relay, "pod-c", False)["tasks"][0]["context"] == []
+    worker_call(relay, "w_evenements", {"worker_id": "pod-c", "events": [{"kind": "task", "task_id": t1["id"], "task": {
+        "status": "done", "project": "mp-c", "result": "Quel dépôt git ?", "session_id": "sess-1"}}]})
+
+    # Réponse sans projet choisi : hérite du projet de la conversation
+    t2 = call(p, "tache", {"instruction": "aucun, crée un dossier vide", "reply_to": t1["id"]}).json()
+    assert t2["conversation"] == t1["id"] and t2["reply_to"] == t1["id"] and t2["project"] == "mp-c"
+    got = wpoll(relay, "pod-c", False)["tasks"]
+    assert [t["id"] for t in got] == [t2["id"]]
+    assert got[0]["resume_session"] == "sess-1" and got[0]["conversation"] == t1["id"]
+    assert got[0]["context"] == [{"instruction": "lance un service pour les drones", "result": "Quel dépôt git ?", "project": "mp-c"}]
+
+    # Nouvelle conversation : ni contexte ni session
+    t3 = call(p, "tache", {"instruction": "autre chose", "project": "mp-c"}).json()
+    got = wpoll(relay, "pod-c", False)["tasks"]
+    assert got[0]["id"] == t3["id"] and got[0]["context"] == [] and got[0]["resume_session"] is None
+    assert call(p, "tache", {"instruction": "x", "reply_to": "inexistante"}).status_code == 400

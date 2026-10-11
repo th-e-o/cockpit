@@ -25,7 +25,10 @@ class Task:
     session_id: str | None = None
     cost_usd: float = 0.0
     created: float = field(default_factory=time.time)
+    conversation: str | None = None  # id de la première tâche de la conversation
     events: list[dict] = field(default_factory=list)
+    context: list[dict] = field(default_factory=list)  # échanges précédents (fournis par le relais)
+    resume_session: str | None = None  # session de la conversation connue du relais
 
 
 @dataclass
@@ -53,6 +56,7 @@ class Store:
         self.tasks: dict[str, Task] = {}
         self.approvals: dict[str, Approval] = {}
         self.sessions: dict[str, str] = self._load_sessions()  # projet -> session_id
+        self.conversations: dict[str, str] = {}  # "conversation:projet" -> session_id
 
     # --- sessions Claude par projet (persistées pour survivre aux redémarrages)
     def _load_sessions(self) -> dict[str, str]:
@@ -85,7 +89,8 @@ class Store:
     @staticmethod
     def task_public(task: Task) -> dict:
         d = asdict(task)
-        d.pop("events")
+        for k in ("events", "context", "resume_session"):
+            d.pop(k)
         return d
 
     # --- audit

@@ -14,4 +14,6 @@ projects:
     description: >
       Administration du namespace Kubernetes user-theof sur SSP Cloud : services Onyxia
       (vscode, mlflow, bases de données), releases helm, pods, stockage S3 MinIO.
-    keywords: [onyxia, kubectl, helm, pod, service, namespace, mlflow, s3, minio, cluster]
+      C'est aussi ici qu'on crée un NOUVEAU projet : lancer, lister ou arrêter un service
+      (pod VSCode dédié, avec ou sans dépôt git), quel que soit le sujet du futur projet.
+    keywords: [onyxia, kubectl, helm, pod, service, services, namespace, mlflow, s3, minio, cluster, projet, nouveau, créer, lancer, vscode]

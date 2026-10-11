@@ -96,13 +96,22 @@ class Worker:
             for p in self.projects.values()
         ]
 
-    async def dispatch(self, task: Task, project_id: str | None, new_session: bool) -> None:
+    @staticmethod
+    def routing_text(task: Task) -> str:
+        """Instruction à router, précédée des échanges de la conversation (« ce projet », « oui », …)."""
+        if not task.context:
+            return task.instruction
+        prev = "\n".join(f"- {c['instruction'][:300]}" + (f" (projet {c['project']})" if c.get("project") else "")
+                         for c in task.context)
+        return f"{task.instruction}\n\nMessages précédents de la conversation :\n{prev}"
+
+    async def dispatch(self, task: Task, project_id: str | None) -> None:
         if project_id not in self.projects and project_id in self.all_projects:
             await self.hand_over(task, project_id)
             return
         if project_id not in self.projects:
             self.store.task_update(task, status="routing")
-            r = await route(task.instruction, self.all_projects or self.projects)
+            r = await route(self.routing_text(task), self.all_projects or self.projects)
             self.store.audit("route", task=task.id, project=r.project, confidence=r.confidence, reason=r.reason)
             if r.project is None:
                 self.store.task_update(task, status="needs_project", route_reason=r.reason)
@@ -112,7 +121,7 @@ class Worker:
             if project_id not in self.projects:
                 await self.hand_over(task, project_id)
                 return
-        await self.runner.run(task, self.projects[project_id], resume=not new_session)
+        await self.runner.run(task, self.projects[project_id])
 
     async def hand_over(self, task: Task, project_id: str) -> None:
         """Projet hébergé par un autre worker : le relais lui réaffecte la tâche."""
@@ -131,9 +140,11 @@ class Worker:
                 for p in msg.get("all_projects", [])
             } | self.projects
         for t in msg.get("tasks", []):
-            task = Task(id=t["id"], instruction=t["instruction"], project=t.get("project"))
+            task = Task(id=t["id"], instruction=t["instruction"], project=t.get("project"),
+                        conversation=t.get("conversation"), context=t.get("context") or [],
+                        resume_session=t.get("resume_session"))
             self.store.tasks[task.id] = task
-            self.spawn(self.dispatch(task, t.get("project"), t.get("new_session", False)))
+            self.spawn(self.dispatch(task, t.get("project")))
         for d in msg.get("decisions", []):
             a = self.store.approvals.get(d["id"])
             if a and a.future and not a.future.done():

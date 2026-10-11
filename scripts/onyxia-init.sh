@@ -6,10 +6,16 @@ set -euo pipefail
 
 PROJECT_ID="${1:?identifiant du projet attendu}"
 [[ "$PROJECT_ID" =~ ^[a-z0-9-]{1,30}$ ]] || { echo "identifiant de projet invalide" >&2; exit 1; }
-REPO="${GIT_REPOSITORY:?GIT_REPOSITORY absent (service sans dépôt git)}"
+REPO="${GIT_REPOSITORY:-}"
 WORK="${HOME:-/home/onyxia}/work"
 COCKPIT="$WORK/.cockpit"
-CWD="$WORK/$(basename "$REPO" .git)"
+if [ -n "$REPO" ]; then
+  CWD="$WORK/$(basename "$REPO" .git)"   # cloné par le chart Onyxia
+else
+  CWD="$WORK/$PROJECT_ID"                 # nouveau projet : dossier vide sous git
+  mkdir -p "$CWD"
+  [ -d "$CWD/.git" ] || git -C "$CWD" init -q
+fi
 
 # Installation de Claude (CLI, extension VSCode, thème) : script commun https://github.com/th-e-o/script_init.
 # Non bloquant : le worker n'a besoin que de CLAUDE_CODE_OAUTH_TOKEN, pas de l'interface VSCode.
@@ -29,7 +35,7 @@ projects:
   - id: $PROJECT_ID
     name: $PROJECT_ID
     cwd: $CWD
-    description: Dépôt $REPO
+    description: ${REPO:+Dépôt $REPO}${REPO:-Nouveau projet $PROJECT_ID}
 YAML
 
 # Un worker de projet n'orchestre rien ; son identité est celle du pod.

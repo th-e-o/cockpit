@@ -26,18 +26,25 @@ from .router import Project
 from .store import Approval, Store, Task, new_id
 
 SYSTEM_APPEND = """
-Tu es piloté à distance depuis un cockpit mobile. L'utilisateur lit tes réponses sur téléphone :
-- sois concis, termine par un résumé clair de ce qui a été fait et de ce qui reste à faire ;
-- tu ne peux pas poser de question en cours de tâche : si une information manque, arrête-toi
-  et formule la question dans ta réponse finale ;
-- certaines actions nécessitent une validation humaine ; si une action est refusée, ne tente
-  pas de la contourner par un autre moyen, explique plutôt ce qui était prévu.
+Tu es piloté à distance depuis un cockpit mobile. L'utilisateur lit tes réponses sur téléphone.
+Sois autonome :
+- mène la tâche jusqu'au bout sans t'arrêter aux étapes intermédiaires : explore, agis, vérifie ;
+- quand un détail n'est pas précisé (nom, valeur par défaut, emplacement, choix technique courant),
+  choisis toi-même l'option la plus raisonnable, puis signale ce choix dans ta réponse ;
+- ne t'arrête pour poser une question que si l'information est indispensable et impossible à deviner.
+  Tu ne peux pas poser de question en cours de tâche : formule-la dans ta réponse finale ; l'utilisateur
+  répondra dans la suite de la conversation, et tu reprendras avec tout le contexte.
+Pour la réponse finale : concise, avec ce qui a été fait, les choix faits à sa place et ce qui reste à faire.
+Certaines actions nécessitent une validation humaine ; si une action est refusée, ne tente pas de la
+contourner par un autre moyen, explique plutôt ce qui était prévu.
 """
 
 
 SERVICES_APPEND = """
 Tu peux lancer, lister et arrêter des services Onyxia (chacun devient un projet pilotable) avec les outils
 lancer_service, lister_services et arreter_service. N'utilise pas helm directement pour cela.
+Pour un nouveau projet sans dépôt git, lance le service sans dépôt (un dossier vide sera créé) ; choisis
+toi-même un nom court à partir de la demande et garde les ressources par défaut sauf besoin explicite.
 """
 
 
@@ -88,7 +95,7 @@ class Runner:
             self.store.task_update(task, status="running")
         return decision == "approve"
 
-    def _options(self, task: Task, project: Project, resume: bool) -> ClaudeAgentOptions:
+    def _options(self, task: Task, project: Project, session: str | None) -> ClaudeAgentOptions:
         approved: set[str] = set()
 
         async def pre_tool(input_data, tool_use_id, context):
@@ -134,20 +141,36 @@ class Runner:
             hooks={"PreToolUse": [HookMatcher(matcher=None, hooks=[pre_tool],
                                               timeout=self.policy.timeout + 60)]},
             can_use_tool=can_use_tool,
-            resume=self.store.sessions.get(project.id) if resume else None,
+            resume=session,
         )
 
-    async def run(self, task: Task, project: Project, resume: bool = True) -> None:
+    def _session(self, task: Task, project: Project) -> str | None:
+        """Session Claude à reprendre : celle de la conversation pour ce projet (jamais une autre conversation)."""
+        if not task.conversation:
+            return None
+        return self.store.conversations.get(f"{task.conversation}:{project.id}") or task.resume_session
+
+    @staticmethod
+    def _prompt(task: Task, session: str | None) -> str:
+        """Sans session à reprendre, les échanges précédents de la conversation sont rappelés dans l'instruction."""
+        if session or not task.context:
+            return task.instruction
+        history = "\n\n".join(f"Utilisateur : {c['instruction']}\nRéponse : {c.get('result') or '(aucune)'}"
+                              for c in task.context)
+        return f"Échanges précédents de cette conversation :\n\n{history}\n\nNouvelle instruction : {task.instruction}"
+
+    async def run(self, task: Task, project: Project) -> None:
         self.store.task_update(task, status="queued", project=project.id)
-        async with self._lock(project.id):
+        async with self._lock(project.id):  # la tâche précédente de la conversation est terminée ici
             if task.status == "cancelled":
                 return
+            session = self._session(task, project)
             self.store.task_update(task, status="running")
             self.store.audit("task_start", task=task.id, project=project.id, instruction=task.instruction)
             try:
-                async with ClaudeSDKClient(self._options(task, project, resume)) as client:
+                async with ClaudeSDKClient(self._options(task, project, session)) as client:
                     self.clients[task.id] = client
-                    await client.query(task.instruction)
+                    await client.query(self._prompt(task, session))
                     async for msg in client.receive_response():
                         self._relay(task, msg)
             except Exception as e:
@@ -171,6 +194,8 @@ class Runner:
                     pub(type="tool_error", text=_short(b.content, 300))
         elif isinstance(msg, ResultMessage):
             self.store.save_session(task.project, msg.session_id)
+            if task.conversation and msg.session_id:
+                self.store.conversations[f"{task.conversation}:{task.project}"] = msg.session_id
             if task.status != "cancelled":
                 self.store.task_update(
                     task,

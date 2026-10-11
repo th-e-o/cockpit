@@ -42,7 +42,7 @@ class ServiceError(Exception):
 @dataclass
 class Launch:
     nom: str
-    depot_git: str
+    depot_git: str = ""  # vide : nouveau projet, dossier vide initialisé avec git
     branche: str = ""
     cpu: str = "2"
     memoire: str = "8Gi"
@@ -56,8 +56,10 @@ class Launch:
     def validate(self) -> "Launch":
         if not _NAME.match(self.nom):
             raise ServiceError("nom invalide : 1 à 30 caractères, minuscules, chiffres et tirets")
-        if not _REPO.match(self.depot_git) or ".." in self.depot_git:
+        if self.depot_git and (not _REPO.match(self.depot_git) or ".." in self.depot_git):
             raise ServiceError("dépôt invalide : URL https:// sans identifiants")
+        if self.branche and not self.depot_git:
+            raise ServiceError("une branche n'a de sens qu'avec un dépôt")
         if self.branche and not _BRANCH.match(self.branche):
             raise ServiceError("nom de branche invalide")
         if not _CPU.match(self.cpu):
@@ -193,8 +195,8 @@ async def describe(tool_name: str, tool_input: dict) -> str | None:
     except Exception as e:
         return f"Lancer un service ({e})"
     gpu = " + 1 GPU" if p.gpu else ""
-    return (f"Lancer le service {p.release} depuis {p.depot_git}"
-            f"{' @' + p.branche if p.branche else ''} : {p.cpu} CPU, {p.memoire}, {p.disque}{gpu}. Quota : {q}")
+    source = f"depuis {p.depot_git}{' @' + p.branche if p.branche else ''}" if p.depot_git else "sans dépôt (dossier vide)"
+    return f"Lancer le service {p.release} {source} : {p.cpu} CPU, {p.memoire}, {p.disque}{gpu}. Quota : {q}"
 
 
 def _launch_from(args: dict) -> Launch:
@@ -208,8 +210,9 @@ def _reply(text: str, error: bool = False) -> dict:
 
 
 @tool("lancer_service",
-      "Lance un service Onyxia (VSCode + worker cockpit) cloné depuis un dépôt git : il devient un projet pilotable. "
-      "Nécessite une validation sur le téléphone. Ressources par défaut : 2 CPU, 8Gi, 10Gi.",
+      "Lance un service Onyxia (VSCode + worker cockpit) qui devient un projet pilotable. depot_git (https) est "
+      "facultatif : sans dépôt, le projet démarre dans un dossier vide initialisé avec git. Seul nom est obligatoire "
+      "(minuscules, chiffres, tirets). Nécessite une validation sur le téléphone. Ressources par défaut : 2 CPU, 8Gi, 10Gi.",
       {"nom": str, "depot_git": str, "branche": str, "cpu": str, "memoire": str, "disque": str, "gpu": bool})
 async def lancer_service(args: dict) -> dict:
     try:

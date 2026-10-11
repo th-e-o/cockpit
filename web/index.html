@@ -23,15 +23,17 @@
   </header>
 
   <main id="feed" aria-live="polite">
-    <div class="empty">Envoie une instruction. Le cockpit choisit le projet si tu restes sur <b>Auto</b>.</div>
+    <div class="empty">Envoie une instruction. Le cockpit choisit le projet si tu restes sur <b>Auto</b>.
+      Les messages suivants continuent la conversation.</div>
   </main>
 
   <footer>
     <div id="projects" class="chips" role="radiogroup" aria-label="projet"></div>
+    <div id="thread" class="thread hidden">
+      <span id="threadText"></span>
+      <button type="button" id="newConv" class="btn ghost">Nouvelle conversation</button>
+    </div>
     <form id="composer">
-      <label class="newsess" title="Démarrer une nouvelle conversation au lieu de reprendre la précédente">
-        <input type="checkbox" id="newSession"> nouv.
-      </label>
       <textarea id="input" rows="1" placeholder="Ton instruction…" enterkeyhint="send"></textarea>
       <button type="submit" id="send" aria-label="envoyer">➤</button>
     </form>
