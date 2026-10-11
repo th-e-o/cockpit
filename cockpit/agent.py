@@ -20,6 +20,7 @@ from claude_agent_sdk import (
     UserMessage,
 )
 
+from . import services as svc
 from .policy import ALLOW, DENY, Policy
 from .router import Project
 from .store import Approval, Store, Task, new_id
@@ -34,13 +35,20 @@ Tu es piloté à distance depuis un cockpit mobile. L'utilisateur lit tes répon
 """
 
 
+SERVICES_APPEND = """
+Tu peux lancer, lister et arrêter des services Onyxia (chacun devient un projet pilotable) avec les outils
+lancer_service, lister_services et arreter_service. N'utilise pas helm directement pour cela.
+"""
+
+
 def _short(value, limit: int = 600) -> str:
     s = value if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
     return s if len(s) <= limit else s[:limit] + "…"
 
 
 class Runner:
-    def __init__(self, store: Store, policy: Policy):
+    def __init__(self, store: Store, policy: Policy, services: bool = False):
+        self.services = services  # orchestrateur : outils de gestion des services
         self.store = store
         self.policy = policy
         self.locks: dict[str, asyncio.Lock] = {}
@@ -87,6 +95,8 @@ class Runner:
             tool = input_data["tool_name"]
             tool_input = input_data.get("tool_input", {})
             d = self.policy.evaluate(tool, tool_input, project.cwd)
+            if d.action != DENY and tool.startswith(svc.TOOL_PREFIX):
+                d.reason = await svc.describe(tool, tool_input) or d.reason
             if d.action == ALLOW:
                 ok = True
             elif d.action == DENY:
@@ -116,7 +126,9 @@ class Runner:
 
         return ClaudeAgentOptions(
             cwd=project.cwd,
-            system_prompt={"type": "preset", "preset": "claude_code", "append": SYSTEM_APPEND},
+            system_prompt={"type": "preset", "preset": "claude_code",
+                           "append": SYSTEM_APPEND + (SERVICES_APPEND if self.services else "")},
+            mcp_servers={svc.SERVER_NAME: svc.server()} if self.services else {},
             permission_mode="default",
             setting_sources=["project"],  # CLAUDE.md du projet, sans les permissions utilisateur
             hooks={"PreToolUse": [HookMatcher(matcher=None, hooks=[pre_tool],

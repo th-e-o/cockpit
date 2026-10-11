@@ -73,7 +73,13 @@ CREATE TABLE IF NOT EXISTS defis (defi TEXT PRIMARY KEY, type TEXT NOT NULL, exp
 CREATE TABLE IF NOT EXISTS abonnements_push (endpoint TEXT PRIMARY KEY, cree_le INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS echecs (ip TEXT NOT NULL, ts INTEGER NOT NULL);
 CREATE TABLE IF NOT EXISTS reglages (cle TEXT PRIMARY KEY, valeur TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS workers (
+    id TEXT PRIMARY KEY, nom TEXT NOT NULL, instance TEXT NOT NULL, projets TEXT NOT NULL DEFAULT '[]',
+    orchestrateur INTEGER NOT NULL DEFAULT 1, vu_le INTEGER NOT NULL DEFAULT 0);
 SQL);
+    if (!in_array('worker_id', array_column($pdo->query('PRAGMA table_info(taches)')->fetchAll(), 'name'), true)) {
+        $pdo->exec('ALTER TABLE taches ADD COLUMN worker_id TEXT');
+    }
     return $pdo;
 }
 
@@ -266,11 +272,26 @@ function notifier(): void {
 // ---------------------------------------------------------------- état
 
 function worker_en_ligne(): bool {
-    return time() - (int)(reglage('worker_vu_le') ?? 0) < WORKER_EN_LIGNE;
+    return (bool)q('SELECT 1 FROM workers WHERE vu_le > ?', [time() - WORKER_EN_LIGNE])->fetchColumn();
 }
 
+/** Projets de tous les workers connus, avec leur worker et leur statut (en ligne ou non). */
 function projets(): array {
-    return json_decode(reglage('projets') ?? '[]', true) ?: [];
+    $out = [];
+    foreach (q('SELECT id, nom, projets, vu_le FROM workers ORDER BY vu_le DESC')->fetchAll() as $w) {
+        $enLigne = time() - (int)$w['vu_le'] < WORKER_EN_LIGNE;
+        foreach (json_decode($w['projets'], true) ?: [] as $p) {
+            if (isset($out[$p['id']]) && !$enLigne) continue; // un worker en ligne l'emporte
+            $out[$p['id']] = $p + ['worker' => $w['id'], 'worker_name' => $w['nom'], 'online' => $enLigne];
+        }
+    }
+    return array_values($out);
+}
+
+/** Worker qui héberge un projet (null si inconnu). */
+function worker_du_projet(?string $projet): ?string {
+    foreach (projets() as $p) if ($p['id'] === $projet) return $p['worker'];
+    return null;
 }
 
 function inserer_evenement(string $tacheId, array $evt): void {
@@ -417,8 +438,8 @@ switch ($route) {
         $projet = $in['project'] ?? null;
         if ($projet !== null && !in_array($projet, array_column(projets(), 'id'), true)) erreur('projet inconnu');
         $id = bin2hex(random_bytes(5));
-        q('INSERT INTO taches(id, instruction, projet, nouvelle_session, cree_le, maj_le) VALUES(?, ?, ?, ?, ?, ?)',
-          [$id, $instruction, $projet, empty($in['new_session']) ? 0 : 1, time(), time()]);
+        q('INSERT INTO taches(id, instruction, projet, nouvelle_session, cree_le, maj_le, worker_id) VALUES(?, ?, ?, ?, ?, ?, ?)',
+          [$id, $instruction, $projet, empty($in['new_session']) ? 0 : 1, time(), time(), worker_du_projet($projet)]);
         evenement_tache($id);
         repondre(tache_publique(q('SELECT * FROM taches WHERE id = ?', [$id])->fetch()));
 
@@ -465,19 +486,31 @@ switch ($route) {
     case 'w_poll':
         exiger_worker();
         set_time_limit(LONG_POLL + 15);
-        // Chaque processus worker a son identifiant : un long-poll resté ouvert côté serveur après l'arrêt
-        // d'un worker (PHP ne détecte pas la déconnexion) ne doit plus livrer de tâches.
+        // Chaque worker a un identifiant stable (par pod) ; chaque processus a une instance aléatoire : un long-poll
+        // resté ouvert côté serveur après l'arrêt d'un processus (PHP ne détecte pas la déconnexion) ne doit plus
+        // livrer de tâches. Un nouveau processus du même worker remplace l'ancien.
+        $wid = (string)($in['worker_id'] ?? 'principal');
+        if (!preg_match('/^[A-Za-z0-9_.-]{1,64}$/', $wid)) erreur('identifiant de worker invalide');
         $instance = (string)($in['instance'] ?? '');
-        if (!empty($in['hello'])) reglage('worker_instance', $instance);
-        if (reglage('worker_instance') !== $instance) repondre(['superseded' => true]);
-        if (isset($in['projects'])) reglage('projets', json_encode($in['projects'], JSON_UNESCAPED_UNICODE));
+        $orchestrateur = ($in['orchestrateur'] ?? true) ? 1 : 0;
         if (!empty($in['hello'])) {
-            // Le worker vient de (re)démarrer : ce qu'il exécutait est perdu.
-            foreach (q("SELECT id FROM taches WHERE livree = 1 AND statut NOT IN ('done','error','cancelled','needs_project')")->fetchAll(PDO::FETCH_COLUMN) as $id) {
+            q('INSERT INTO workers(id, nom, instance, orchestrateur, vu_le) VALUES(?, ?, ?, ?, ?)
+               ON CONFLICT(id) DO UPDATE SET nom = excluded.nom, instance = excluded.instance,
+                 orchestrateur = excluded.orchestrateur, vu_le = excluded.vu_le',
+              [$wid, mb_substr((string)($in['name'] ?? $wid), 0, 80), $instance, $orchestrateur, time()]);
+        }
+        if (q('SELECT instance FROM workers WHERE id = ?', [$wid])->fetchColumn() !== $instance) repondre(['superseded' => true]);
+        if (isset($in['projects'])) {
+            q('UPDATE workers SET projets = ? WHERE id = ?', [json_encode($in['projects'], JSON_UNESCAPED_UNICODE), $wid]);
+        }
+        if (!empty($in['hello'])) {
+            // Ce worker vient de (re)démarrer : ce qu'il exécutait est perdu.
+            foreach (q("SELECT id FROM taches WHERE livree = 1 AND worker_id = ? AND statut NOT IN ('done','error','cancelled','needs_project')", [$wid])->fetchAll(PDO::FETCH_COLUMN) as $id) {
                 q("UPDATE taches SET statut = 'error', resultat = 'Interrompue : le worker a redémarré.', maj_le = ? WHERE id = ?", [time(), $id]);
                 evenement_tache($id);
             }
-            foreach (q('SELECT id, tache_id, donnees FROM validations WHERE decision IS NULL')->fetchAll() as $v) {
+            foreach (q('SELECT v.id, v.tache_id, v.donnees FROM validations v JOIN taches t ON t.id = v.tache_id
+                        WHERE v.decision IS NULL AND t.worker_id = ?', [$wid])->fetchAll() as $v) {
                 $a = json_decode($v['donnees'], true);
                 $a['decision'] = 'timeout';
                 q("UPDATE validations SET decision = 'timeout', decision_livree = 1, donnees = ? WHERE id = ?",
@@ -485,22 +518,25 @@ switch ($route) {
                 inserer_evenement($v['tache_id'], ['kind' => 'approval', 'task_id' => $v['tache_id'], 'approval' => $a]);
             }
         }
+        // Tâches à livrer : celles de ce worker, et (orchestrateur) celles sans worker, à router.
+        $mienne = $orchestrateur ? '(worker_id = ? OR worker_id IS NULL)' : 'worker_id = ?';
         $fin = microtime(true) + ($in['wait'] ?? LONG_POLL);
         do {
             db()->beginTransaction();
-            if (reglage('worker_instance') !== $instance) {
+            if (q('SELECT instance FROM workers WHERE id = ?', [$wid])->fetchColumn() !== $instance) {
                 db()->rollBack();
                 repondre(['superseded' => true]);
             }
-            reglage('worker_vu_le', (string)time());
-            $taches = q("SELECT id, instruction, projet, nouvelle_session FROM taches WHERE livree = 0 AND statut = 'pending'")->fetchAll();
-            q("UPDATE taches SET livree = 1 WHERE livree = 0 AND statut = 'pending'");
-            $decisions = q('SELECT id, decision FROM validations WHERE decision IS NOT NULL AND decision_livree = 0')->fetchAll();
-            q('UPDATE validations SET decision_livree = 1 WHERE decision IS NOT NULL AND decision_livree = 0');
-            $annulations = q('SELECT id FROM taches WHERE annulation = 1')->fetchAll(PDO::FETCH_COLUMN);
-            q('UPDATE taches SET annulation = 0 WHERE annulation = 1');
-            $choix = q('SELECT id, choix_projet FROM taches WHERE choix_projet IS NOT NULL')->fetchAll();
-            q('UPDATE taches SET choix_projet = NULL WHERE choix_projet IS NOT NULL');
+            q('UPDATE workers SET vu_le = ? WHERE id = ?', [time(), $wid]);
+            $taches = q("SELECT id, instruction, projet, nouvelle_session FROM taches WHERE livree = 0 AND statut = 'pending' AND $mienne", [$wid])->fetchAll();
+            foreach ($taches as $t) q('UPDATE taches SET livree = 1, worker_id = COALESCE(worker_id, ?) WHERE id = ?', [$wid, $t['id']]);
+            $decisions = q('SELECT v.id, v.decision FROM validations v JOIN taches t ON t.id = v.tache_id
+                            WHERE v.decision IS NOT NULL AND v.decision_livree = 0 AND t.worker_id = ?', [$wid])->fetchAll();
+            foreach ($decisions as $d) q('UPDATE validations SET decision_livree = 1 WHERE id = ?', [$d['id']]);
+            $annulations = q('SELECT id FROM taches WHERE annulation = 1 AND worker_id = ?', [$wid])->fetchAll(PDO::FETCH_COLUMN);
+            q('UPDATE taches SET annulation = 0 WHERE annulation = 1 AND worker_id = ?', [$wid]);
+            $choix = q('SELECT id, choix_projet FROM taches WHERE choix_projet IS NOT NULL AND worker_id = ?', [$wid])->fetchAll();
+            q('UPDATE taches SET choix_projet = NULL WHERE choix_projet IS NOT NULL AND worker_id = ?', [$wid]);
             db()->commit();
             if ($taches || $decisions || $annulations || $choix) break;
             usleep(500000);
@@ -510,15 +546,31 @@ switch ($route) {
                 'project' => $t['projet'], 'new_session' => (bool)$t['nouvelle_session']], $taches),
             'decisions' => $decisions, 'cancels' => $annulations,
             'choices' => array_map(fn($c) => ['task_id' => $c['id'], 'project' => $c['choix_projet']], $choix),
+            // Liste globale : l'orchestrateur route les tâches sans projet parmi tous les projets.
+            'all_projects' => $orchestrateur ? projets() : [],
         ]);
+
+    case 'w_affecter': // l'orchestrateur confie une tâche routée au worker qui héberge le projet
+        exiger_worker();
+        $id = (string)($in['task_id'] ?? '');
+        $projet = (string)($in['project'] ?? '');
+        $cible = worker_du_projet($projet) ?? erreur('projet inconnu');
+        $st = q("UPDATE taches SET projet = ?, worker_id = ?, livree = 0, statut = 'pending', maj_le = ?
+                 WHERE id = ? AND statut NOT IN ('done','error','cancelled')", [$projet, $cible, time(), $id]);
+        if (!$st->rowCount()) erreur('tâche introuvable ou terminée', 404);
+        evenement_tache($id);
+        repondre(['ok' => true, 'worker' => $cible]);
 
     case 'w_evenements':
         exiger_worker();
         $notifier = false;
+        $wid = (string)($in['worker_id'] ?? 'principal');
         db()->beginTransaction();
         foreach ($in['events'] ?? [] as $evt) {
             $tacheId = (string)($evt['task_id'] ?? '');
-            if ($tacheId === '' || !q('SELECT 1 FROM taches WHERE id = ?', [$tacheId])->fetchColumn()) continue;
+            $proprio = q('SELECT worker_id FROM taches WHERE id = ?', [$tacheId])->fetch();
+            // Événement d'un worker qui n'est plus responsable de la tâche (réaffectée) : ignoré.
+            if (!$proprio || ($proprio['worker_id'] !== null && $proprio['worker_id'] !== $wid)) continue;
             switch ($evt['kind'] ?? '') {
                 case 'task':
                     $t = $evt['task'];

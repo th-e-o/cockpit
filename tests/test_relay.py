@@ -54,7 +54,7 @@ def relay():
             break
         except httpx.ConnectError:
             time.sleep(0.1)
-    yield {"base": base, "origin": origin, "app": origin + "/cockpit/"}
+    yield {"base": base, "origin": origin, "app": origin + "/cockpit/", "docroot": str(docroot)}
     proc.terminate()
 
 
@@ -255,3 +255,83 @@ def test_redemarrage_et_annulation(relay):
             last[e["task_id"]] = e["task"]["status"]
     assert last[t1["id"]] == "cancelled" and last[t2["id"]] == "error"
     assert [e["approval"].get("decision") for e in evts if e["kind"] == "approval" and e["approval"]["id"] == "a1"][-1] == "timeout"
+
+
+def wpoll(relay, wid, orchestrateur, projects=None, hello=False, instance=None, **extra):
+    body = {"worker_id": wid, "instance": instance or f"inst-{wid}", "orchestrateur": orchestrateur, "wait": 0,
+            "hello": hello, "name": wid, **extra}
+    if projects is not None:
+        body["projects"] = projects
+    return worker_call(relay, "w_poll", body).json()
+
+
+def last_status(p):
+    out = {}
+    for e in call(p, "etat").json()["events"]:
+        if e["kind"] == "task":
+            out[e["task_id"]] = e["task"]
+    return out
+
+
+def test_multi_workers(relay):
+    """Deux workers : affectation par projet, routage via l'orchestrateur, zombies et hors ligne par worker."""
+    p = paired_phone(relay)
+    wpoll(relay, "orch", True, [{"id": "mp-orch", "name": "Orch"}], hello=True)
+    wpoll(relay, "pod-a", False, [{"id": "mp-a", "name": "Projet A"}], hello=True)
+
+    s = call(p, "etat").json()
+    by_id = {x["id"]: x for x in s["projects"]}
+    assert by_id["mp-a"]["worker"] == "pod-a" and by_id["mp-a"]["online"] is True
+    assert by_id["mp-orch"]["worker"] == "orch"
+    # L'orchestrateur voit tous les projets, le pod de projet non
+    assert {x["id"] for x in wpoll(relay, "orch", True)["all_projects"]} >= {"mp-a", "mp-orch"}
+    assert wpoll(relay, "pod-a", False)["all_projects"] == []
+
+    # Tâche avec projet : livrée au seul worker concerné
+    ta = call(p, "tache", {"instruction": "pour A", "project": "mp-a"}).json()
+    assert wpoll(relay, "orch", True)["tasks"] == []
+    assert [t["id"] for t in wpoll(relay, "pod-a", False)["tasks"]] == [ta["id"]]
+
+    # Tâche sans projet : à l'orchestrateur, qui la réaffecte au pod A
+    tr = call(p, "tache", {"instruction": "route-moi"}).json()
+    assert wpoll(relay, "pod-a", False)["tasks"] == []
+    assert [t["id"] for t in wpoll(relay, "orch", True)["tasks"]] == [tr["id"]]
+    assert worker_call(relay, "w_affecter", {"task_id": tr["id"], "project": "mp-inconnu"}).status_code == 400
+    assert worker_call(relay, "w_affecter", {"task_id": tr["id"], "project": "mp-a"}).json()["worker"] == "pod-a"
+    assert [t["id"] for t in wpoll(relay, "pod-a", False)["tasks"]] == [tr["id"]]
+    # Événement tardif de l'orchestrateur sur la tâche réaffectée : ignoré
+    worker_call(relay, "w_evenements", {"worker_id": "orch", "events": [
+        {"kind": "task", "task_id": tr["id"], "task": {"status": "routing", "project": None}}]})
+    assert last_status(p)[tr["id"]]["status"] == "pending"
+    worker_call(relay, "w_evenements", {"worker_id": "pod-a", "events": [
+        {"kind": "task", "task_id": tr["id"], "task": {"status": "running", "project": "mp-a"}}]})
+    assert last_status(p)[tr["id"]]["status"] == "running"
+
+    # Un redémarrage de l'orchestrateur ne touche pas aux tâches du pod A
+    wpoll(relay, "orch", True, hello=True, instance="inst-orch-2")
+    assert last_status(p)[tr["id"]]["status"] == "running"
+    assert last_status(p)[ta["id"]]["status"] != "error"
+    # Zombie par worker : l'ancienne instance de l'orchestrateur est remplacée, pas celle du pod A
+    assert wpoll(relay, "orch", True) == {"superseded": True}
+    assert "superseded" not in wpoll(relay, "pod-a", False)
+
+    # Annulation routée vers le worker propriétaire
+    call(p, "annuler", {"task_id": tr["id"]})
+    assert wpoll(relay, "orch", True, instance="inst-orch-2")["cancels"] == []
+    assert wpoll(relay, "pod-a", False)["cancels"] == [tr["id"]]
+
+
+def test_worker_hors_ligne(relay):
+    import sqlite3
+
+    p = paired_phone(relay)
+    wpoll(relay, "pod-off", False, [{"id": "mp-off", "name": "Hors ligne"}], hello=True)
+    db = sqlite3.connect(next(Path(relay["docroot"]).rglob("cockpit.db")))
+    db.execute("UPDATE workers SET vu_le = vu_le - 3600 WHERE id = 'pod-off'")
+    db.commit()
+    projects = {x["id"]: x for x in call(p, "etat").json()["projects"]}
+    assert projects["mp-off"]["online"] is False  # grisé dans la PWA, mais toujours listé
+    # Une tâche pour ce projet attend la reconnexion du pod
+    t = call(p, "tache", {"instruction": "x", "project": "mp-off"}).json()
+    assert wpoll(relay, "orch", True, instance="inst-orch-2")["tasks"] == []
+    assert [x["id"] for x in wpoll(relay, "pod-off", False)["tasks"]] == [t["id"]]

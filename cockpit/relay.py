@@ -15,12 +15,16 @@ log = logging.getLogger("cockpit.relay")
 
 
 class Relay:
-    def __init__(self, url: str, key: str):
+    def __init__(self, url: str, key: str, worker_id: str = "principal", name: str | None = None,
+                 orchestrator: bool = True):
         self.http = httpx.AsyncClient(
             base_url=url.rstrip("/"),
             headers={"Authorization": f"Bearer {key}"},
             timeout=httpx.Timeout(10, read=40),
         )
+        self.worker_id = worker_id  # stable (un par pod)
+        self.name = name or worker_id
+        self.orchestrator = orchestrator
         self.instance = secrets.token_hex(8)  # identifie ce processus auprès du relais
         self.events: list[dict] = []
         self.audit: list[dict] = []
@@ -33,10 +37,15 @@ class Relay:
         return r.json()
 
     async def poll(self, projects: list[dict], hello: bool = False, wait: float | None = None) -> dict:
-        body: dict = {"projects": projects, "hello": hello, "instance": self.instance}
+        body: dict = {"projects": projects, "hello": hello, "instance": self.instance, "worker_id": self.worker_id,
+                      "name": self.name, "orchestrateur": self.orchestrator}
         if wait is not None:
             body["wait"] = wait
         return await self.call("w_poll", body)
+
+    async def affecter(self, task_id: str, project: str) -> str:
+        """Confie une tâche au worker qui héberge le projet ; renvoie l'id de ce worker."""
+        return (await self.call("w_affecter", {"task_id": task_id, "project": project}))["worker"]
 
     async def pairing_url(self) -> str:
         return (await self.call("w_appairage", {}))["url"]
@@ -53,7 +62,7 @@ class Relay:
         if not (self.events or self.audit):
             return
         events, audit = self.events[:200], self.audit[:200]
-        await self.call("w_evenements", {"events": events, "audit": audit})
+        await self.call("w_evenements", {"events": events, "audit": audit, "worker_id": self.worker_id})
         del self.events[: len(events)]
         del self.audit[: len(audit)]
 

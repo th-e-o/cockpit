@@ -10,10 +10,18 @@ cd "$(dirname "$0")"
 mkdir -p data
 PY=.venv/bin/python
 
-# Identifiant Claude : variable d'env, sinon Vault (secret Onyxia « Claude », champ CLAUDE_CODE_OAUTH_TOKEN)
-if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}${ANTHROPIC_API_KEY:-}" ] && command -v vault >/dev/null; then
-  CLAUDE_CODE_OAUTH_TOKEN="$(vault kv get -field=CLAUDE_CODE_OAUTH_TOKEN "${COCKPIT_VAULT_PATH:-${VAULT_MOUNT:-onyxia-kv}/${VAULT_TOP_DIR:-}/Claude}" 2>/dev/null || true)"
+# Secrets : variable d'env, sinon Vault (secret Onyxia « Claude », champs CLAUDE_CODE_OAUTH_TOKEN et COCKPIT_WORKER_KEY)
+vault_field() {
+  command -v vault >/dev/null || return 0
+  vault kv get -field="$1" "${COCKPIT_VAULT_PATH:-${VAULT_MOUNT:-onyxia-kv}/${VAULT_TOP_DIR:-}/Claude}" 2>/dev/null || true
+}
+if [ -z "${CLAUDE_CODE_OAUTH_TOKEN:-}${ANTHROPIC_API_KEY:-}" ]; then
+  CLAUDE_CODE_OAUTH_TOKEN="$(vault_field CLAUDE_CODE_OAUTH_TOKEN)"
   [ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && export CLAUDE_CODE_OAUTH_TOKEN || unset CLAUDE_CODE_OAUTH_TOKEN
+fi
+if [ -z "${COCKPIT_WORKER_KEY:-}" ] && [ ! -f data/worker_key ]; then
+  COCKPIT_WORKER_KEY="$(vault_field COCKPIT_WORKER_KEY)"
+  [ -n "$COCKPIT_WORKER_KEY" ] && export COCKPIT_WORKER_KEY || unset COCKPIT_WORKER_KEY
 fi
 
 case "${1:-start}" in

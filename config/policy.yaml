@@ -6,13 +6,14 @@ default: ask
 approval_timeout_s: 900   # sans réponse => refus
 
 # Outils toujours autorisés (lecture seule / sans effet de bord)
-allow_tools: [Read, Glob, Grep, TodoWrite, Task, Agent, WebSearch]
+allow_tools: [Read, Glob, Grep, TodoWrite, Task, Agent, WebSearch, mcp__services__lister_services]
 
 # Outils jamais autorisés
 deny_tools: [AskUserQuestion]
 
 # Outils toujours soumis à validation
-ask_tools: [WebFetch, NotebookEdit]
+# Lancement et arrêt de services : toujours validés (la carte affiche dépôt, ressources et quota)
+ask_tools: [WebFetch, NotebookEdit, mcp__services__lancer_service, mcp__services__arreter_service]
 
 # Écriture de fichiers (Write, Edit, MultiEdit)
 files:

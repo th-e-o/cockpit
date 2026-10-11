@@ -66,6 +66,10 @@ footer { background: var(--panel); border-top: 1px solid var(--line); padding: 8
 .chips { display: flex; gap: 6px; overflow-x: auto; padding-bottom: 8px; scrollbar-width: none; }
 .chip { flex: none; border: 1px solid var(--line); background: var(--panel2); border-radius: 99px; padding: 5px 12px; font-size: 13px; }
 .chip[aria-checked="true"] { background: var(--accent); border-color: var(--accent); color: #fff; }
+.chip.off { opacity: .45; }
+.pod { flex: none; align-self: center; font-size: 11px; color: var(--muted, #888); padding-left: 6px; }
+.pod::before { content: '●'; color: #3fb950; margin-right: 4px; }
+.pod.off::before { color: #888; }
 .chip .s { opacity: .7; font-size: 10px; }
 #composer { display: flex; gap: 8px; align-items: flex-end; }
 #input { flex: 1; resize: none; max-height: 140px; background: var(--panel2); color: var(--text); border: 1px solid var(--line);

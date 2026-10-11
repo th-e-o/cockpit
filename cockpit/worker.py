@@ -25,10 +25,18 @@ ROOT = Path(__file__).resolve().parent.parent
 CONFIG = Path(os.environ.get("COCKPIT_CONFIG", ROOT / "config"))
 DATA = Path(os.environ.get("COCKPIT_DATA", ROOT / "data"))
 RELAY_URL = os.environ.get("COCKPIT_RELAY_URL", "https://deltastat.fr/cockpit")
+WORKER_ID = os.environ.get("COCKPIT_WORKER_ID") or os.environ.get("HOSTNAME") or "principal"
+WORKER_NAME = os.environ.get("COCKPIT_WORKER_NAME") or WORKER_ID
+# « orchestrateur » : route les instructions sans projet et gère les services ; « projet » : pod d'un seul projet.
+ORCHESTRATOR = os.environ.get("COCKPIT_ROLE", "orchestrateur") != "projet"
 KEY_FILE = DATA / "worker_key"
 KEY_HASH_FILE = CONFIG / "worker_key.sha256"  # versionné : seule l'empreinte est publique
 
 log = logging.getLogger("cockpit.worker")
+
+
+def make_relay() -> Relay:
+    return Relay(RELAY_URL, worker_key(), WORKER_ID, WORKER_NAME, ORCHESTRATOR)
 
 
 def worker_key() -> str:
@@ -55,7 +63,7 @@ def init_key() -> None:
 
 
 async def pair() -> None:
-    relay = Relay(RELAY_URL, worker_key())
+    relay = make_relay()
     url = await relay.pairing_url()
     try:
         import qrcode
@@ -73,7 +81,8 @@ class Worker:
         self.relay = relay
         self.projects: dict[str, Project] = load_projects(CONFIG / "projects.yaml")
         self.store = RelayStore(DATA, relay)
-        self.runner = Runner(self.store, Policy.load(CONFIG / "policy.yaml"))
+        self.runner = Runner(self.store, Policy.load(CONFIG / "policy.yaml"), services=ORCHESTRATOR)
+        self.all_projects: dict[str, Project] = {}  # projets de tous les workers (orchestrateur)
         self._background: set[asyncio.Task] = set()
 
     def spawn(self, coro) -> None:
@@ -88,18 +97,39 @@ class Worker:
         ]
 
     async def dispatch(self, task: Task, project_id: str | None, new_session: bool) -> None:
+        if project_id not in self.projects and project_id in self.all_projects:
+            await self.hand_over(task, project_id)
+            return
         if project_id not in self.projects:
             self.store.task_update(task, status="routing")
-            r = await route(task.instruction, self.projects)
+            r = await route(task.instruction, self.all_projects or self.projects)
             self.store.audit("route", task=task.id, project=r.project, confidence=r.confidence, reason=r.reason)
             if r.project is None:
                 self.store.task_update(task, status="needs_project", route_reason=r.reason)
                 return
             self.store.task_update(task, route_reason=f"{r.reason} ({r.confidence:.0%})")
             project_id = r.project
+            if project_id not in self.projects:
+                await self.hand_over(task, project_id)
+                return
         await self.runner.run(task, self.projects[project_id], resume=not new_session)
 
+    async def hand_over(self, task: Task, project_id: str) -> None:
+        """Projet hébergé par un autre worker : le relais lui réaffecte la tâche."""
+        try:
+            target = await self.relay.affecter(task.id, project_id)
+        except Exception as e:
+            self.store.task_update(task, status="error", result=f"Réaffectation impossible : {e}")
+            return
+        self.store.audit("hand_over", task=task.id, project=project_id, worker=target)
+
     def handle(self, msg: dict) -> None:
+        if ORCHESTRATOR:
+            self.all_projects = {
+                p["id"]: self.projects.get(p["id"]) or Project(
+                    id=p["id"], name=p.get("name", p["id"]), cwd="", description=p.get("description", ""))
+                for p in msg.get("all_projects", [])
+            } | self.projects
         for t in msg.get("tasks", []):
             task = Task(id=t["id"], instruction=t["instruction"], project=t.get("project"))
             self.store.tasks[task.id] = task
@@ -113,9 +143,13 @@ class Worker:
                 self.spawn(self.runner.cancel(task))
         for c in msg.get("choices", []):
             task = self.store.tasks.get(c["task_id"])
-            if task and c["project"] in self.projects:
-                self.store.audit("route_manual", task=task.id, project=c["project"])
+            if not task:
+                continue
+            self.store.audit("route_manual", task=task.id, project=c["project"])
+            if c["project"] in self.projects:
                 self.spawn(self.runner.run(task, self.projects[c["project"]]))
+            elif c["project"] in self.all_projects:
+                self.spawn(self.hand_over(task, c["project"]))
 
     async def run(self) -> None:
         self.spawn(self.relay.flush_forever())
@@ -148,7 +182,7 @@ def main() -> None:
     elif cmd == "pair":
         asyncio.run(pair())
     elif cmd == "run":
-        asyncio.run(Worker(Relay(RELAY_URL, worker_key())).run())
+        asyncio.run(Worker(make_relay()).run())
     else:
         sys.exit(__doc__)
 

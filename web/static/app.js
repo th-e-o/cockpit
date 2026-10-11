@@ -162,8 +162,20 @@ function onEvent(evt) {
 }
 
 // ---------- rendu
+const SERVICE_TOOLS = { lancer_service: '🚀 Lancer un service', arreter_service: '🛑 Arrêter un service' };
+
+/** Carte dédiée au lancement / à l'arrêt d'un service Onyxia : ressources lisibles, quota dans la raison. */
+function serviceInput(a) {
+  const i = a.tool_input;
+  if (a.tool.endsWith('arreter_service')) return `cockpit-${i.nom}`;
+  return [`Nom : cockpit-${i.nom}`, `Dépôt : ${i.depot_git}${i.branche ? ` (${i.branche})` : ''}`,
+    `Ressources : ${i.cpu || 2} CPU · ${i.memoire || '8Gi'} · ${i.disque || '10Gi'} de disque${i.gpu ? ' · 1 GPU' : ''}`].join('\n');
+}
+
 function approvalHtml(a) {
-  const input = a.tool === 'Bash' ? a.tool_input.command
+  const service = SERVICE_TOOLS[a.tool.replace(/^mcp__services__/, '')];
+  const input = service ? serviceInput(a) :
+    a.tool === 'Bash' ? a.tool === 'Bash' ? a.tool_input.command
     : a.tool_input.file_path ? `${a.tool_input.file_path}\n\n${a.tool_input.content ?? a.tool_input.new_string ?? ''}`
     : JSON.stringify(a.tool_input, null, 2);
   const done = a.decision
@@ -173,7 +185,7 @@ function approvalHtml(a) {
          <button class="btn bad" data-deny="${esc(a.id)}">Refuser</button>
        </div><div class="timer" data-expires="${Number(a.expires)}"></div>`;
   return `<div class="approval ${a.decision ? 'resolved' : ''}">
-    <div class="why">⚠️ ${esc(a.tool)} — ${esc(a.reason)}</div>
+    <div class="why">${service ? esc(service) : `⚠️ ${esc(a.tool)}`} — ${esc(a.reason)}</div>
     <pre><code>${esc(String(input).slice(0, 4000))}</code></pre>${done}</div>`;
 }
 
@@ -241,10 +253,20 @@ function updatePending() {
 }
 
 function renderProjects() {
-  const chips = [{ id: null, name: 'Auto' }, ...state.projects];
-  $('#projects').innerHTML = chips.map((p) =>
-    `<button type="button" class="chip" role="radio" aria-checked="${p.id === state.selected}" data-project="${esc(p.id ?? '')}">
-      ${esc(p.name)}${p.has_session ? ' <span class="s">●</span>' : ''}</button>`).join('');
+  // Projets groupés par pod (étiquette seulement s'il y en a plusieurs), grisés si le worker est hors ligne.
+  const chip = (p) =>
+    `<button type="button" class="chip${p.online === false ? ' off' : ''}" role="radio" aria-checked="${p.id === state.selected}"
+       data-project="${esc(p.id ?? '')}" title="${p.online === false ? 'pod hors ligne : la tâche partira à sa reconnexion' : ''}">
+      ${esc(p.name)}${p.has_session ? ' <span class="s">●</span>' : ''}</button>`;
+  const groups = new Map();
+  for (const p of state.projects) {
+    const key = p.worker ?? '';
+    if (!groups.has(key)) groups.set(key, { name: p.worker_name || key, online: p.online !== false, projects: [] });
+    groups.get(key).projects.push(p);
+  }
+  const labelled = groups.size > 1;
+  $('#projects').innerHTML = chip({ id: null, name: 'Auto' }) + [...groups.values()].map((g) =>
+    `${labelled ? `<span class="pod ${g.online ? 'on' : 'off'}" title="${g.online ? 'en ligne' : 'hors ligne'}">${esc(g.name)}</span>` : ''}${g.projects.map(chip).join('')}`).join('');
 }
 
 setInterval(() => {
