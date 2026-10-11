@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#0f1115">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Cockpit">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Cockpit</title>
+  <link rel="manifest" href="static/manifest.json?v=__VERSION__">
+  <link rel="icon" href="static/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="static/icon-180.png">
+  <link rel="stylesheet" href="static/style.css?v=__VERSION__">
+</head>
+<body>
+  <header>
+    <span id="conn" class="dot" title="worker Onyxia"></span>
+    <h1>Cockpit</h1>
+    <button id="pendingBtn" class="badge hidden" aria-label="validations en attente">0</button>
+    <button id="menuBtn" class="icon" aria-label="menu">☰</button>
+  </header>
+
+  <main id="feed" aria-live="polite">
+    <div class="empty">Envoie une instruction. Le cockpit choisit le projet si tu restes sur <b>Auto</b>.</div>
+  </main>
+
+  <footer>
+    <div id="projects" class="chips" role="radiogroup" aria-label="projet"></div>
+    <form id="composer">
+      <label class="newsess" title="Démarrer une nouvelle conversation au lieu de reprendre la précédente">
+        <input type="checkbox" id="newSession"> nouv.
+      </label>
+      <textarea id="input" rows="1" placeholder="Ton instruction…" enterkeyhint="send"></textarea>
+      <button type="submit" id="send" aria-label="envoyer">➤</button>
+    </form>
+  </footer>
+
+  <!-- Écran de connexion : passkey, ou appairage par QR code -->
+  <section id="auth" class="auth hidden">
+    <div class="authbox">
+      <img src="static/icon.svg" alt="" width="72" height="72">
+      <h2 id="authTitle">Cockpit</h2>
+      <p id="authText"></p>
+      <button id="authBtn" class="btn ok big hidden"></button>
+      <button id="authAlt" class="btn ghost hidden"></button>
+      <p id="authHint" class="hint"></p>
+    </div>
+  </section>
+
+  <dialog id="menuDlg">
+    <div class="dlghead"><h2>Menu</h2><button class="icon" data-close>✕</button></div>
+    <div class="menu">
+      <button class="btn" id="mAudit">📜 Journal d'audit</button>
+      <button class="btn" id="mNotif">🔔 Activer les notifications</button>
+      <button class="btn" id="mDevices">🔑 Passkeys et appareils</button>
+      <button class="btn bad" id="mLogout">Se déconnecter</button>
+    </div>
+    <p class="hint" id="workerInfo"></p>
+  </dialog>
+
+  <dialog id="listDlg">
+    <div class="dlghead"><h2 id="listTitle"></h2><button class="icon" data-close>✕</button></div>
+    <div id="listBody"></div>
+  </dialog>
+
+  <script src="static/app.js?v=__VERSION__"></script>
+</body>
+</html>

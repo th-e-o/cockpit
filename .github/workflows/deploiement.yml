@@ -1,0 +1,40 @@
+name: Déploiement OVH
+
+on:
+  push:
+    branches: [main]
+    paths: ['web/**', 'config/worker_key.sha256', 'scripts/**', '.github/workflows/**']
+  workflow_dispatch:
+
+concurrency: deploiement-ovh-cockpit
+
+jobs:
+  deployer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Vérifier la syntaxe PHP
+        run: for f in web/*.php scripts/*.php; do php -l "$f"; done
+
+      - name: Générer web/config.php
+        env:
+          COCKPIT_HOTE: ${{ vars.COCKPIT_HOTE }}
+        run: php scripts/generer-config.php
+
+      - name: Versionner CSS et JS (contourne le cache des navigateurs)
+        run: sed -i "s/__VERSION__/${GITHUB_SHA::8}/g" web/index.html web/sw.js
+
+      - name: Envoyer sur l'hébergement OVH (FTP)
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
+        with:
+          server: ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          local-dir: ./web/
+          # Dossier à côté de www/ (pas dedans) : le cockpit n'est servi que par son sous-domaine.
+          server-dir: ${{ vars.FTP_DOSSIER || 'cockpit/' }}
+          exclude: |
+            **/.git*
+            **/.git*/**
+            data/*.db*

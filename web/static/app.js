@@ -1,0 +1,425 @@
+'use strict';
+
+const $ = (s) => document.querySelector(s);
+const state = { projects: [], selected: null, tasks: new Map(), order: [], lastId: 0, workerOnline: false, replay: false };
+
+const STATUS = {
+  pending: 'en attente', routing: 'routage…', queued: 'en file', running: 'en cours',
+  waiting_approval: 'validation requise', needs_project: 'projet à choisir',
+  done: 'terminé', error: 'erreur', cancelled: 'annulé',
+};
+const ACTIVE = new Set(['pending', 'routing', 'queued', 'running', 'waiting_approval']);
+const isStandalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
+
+// ---------- utilitaires
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+
+function md(src) {
+  const blocks = [];
+  let s = esc(src).replace(/```[\w-]*\n?([\s\S]*?)```/g, (_, code) => `\u0000${blocks.push(code) - 1}\u0000`);
+  s = s.replace(/`([^`\n]+)`/g, '<code>$1</code>')
+       .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
+       .replace(/^#{1,6}\s+(.+)$/gm, '<b>$1</b>')
+       .replace(/\n/g, '<br>');
+  return s.replace(/\u0000(\d+)\u0000/g, (_, i) => `<pre><code>${blocks[i]}</code></pre>`);
+}
+
+class AuthError extends Error {}
+
+async function api(route, body, params = '') {
+  const res = await fetch(`api.php?r=${route}${params}`, body === undefined ? { credentials: 'same-origin' } : {
+    method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401 && !route.startsWith('passkey') && route !== 'appairer') throw new AuthError(data.detail);
+  if (!res.ok) throw new Error(data.detail || res.statusText);
+  return data;
+}
+
+const b64u = {
+  enc: (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, ''),
+  dec: (s) => Uint8Array.from(atob(s.replace(/-/g, '+').replace(/_/g, '/') + '==='.slice((s.length + 3) % 4)), (c) => c.charCodeAt(0)),
+};
+
+// ---------- connexion : appairage (QR) puis passkey
+function authScreen({ title, text, button, onClick, alt, onAlt, hint }) {
+  $('#auth').classList.remove('hidden');
+  $('#authTitle').textContent = title;
+  $('#authText').textContent = text || '';
+  $('#authHint').textContent = hint || '';
+  for (const [el, label, fn] of [[$('#authBtn'), button, onClick], [$('#authAlt'), alt, onAlt]]) {
+    el.classList.toggle('hidden', !label);
+    el.textContent = label || '';
+    el.disabled = false;
+    el.onclick = fn ? async () => {
+      el.disabled = true;
+      try { await fn(); } catch (e) { $('#authHint').textContent = e.name === 'NotAllowedError' ? 'Opération annulée.' : e.message; }
+      el.disabled = false;
+    } : null;
+  }
+}
+
+async function createPasskey() {
+  const o = await api('passkey_options_creation', {});
+  const cred = await navigator.credentials.create({ publicKey: {
+    challenge: b64u.dec(o.challenge), rp: o.rp,
+    user: { ...o.user, id: b64u.dec(o.user.id) },
+    pubKeyCredParams: [{ type: 'public-key', alg: -7 }],
+    authenticatorSelection: { residentKey: 'required', userVerification: 'required' },
+    excludeCredentials: o.excludeCredentials.map((c) => ({ ...c, id: b64u.dec(c.id) })),
+    timeout: 120000,
+  } });
+  const r = cred.response;
+  if (!r.getPublicKey) throw new Error('Navigateur trop ancien pour les passkeys.');
+  await api('passkey_creer', {
+    id: cred.id, clientDataJSON: b64u.enc(r.clientDataJSON), publicKey: b64u.enc(r.getPublicKey()),
+    alg: r.getPublicKeyAlgorithm(), name: deviceName(),
+  });
+}
+
+async function loginPasskey() {
+  const o = await api('passkey_options_connexion', {});
+  const cred = await navigator.credentials.get({ publicKey: {
+    challenge: b64u.dec(o.challenge), rpId: o.rpId, userVerification: 'required', timeout: 120000,
+  } });
+  const r = cred.response;
+  await api('passkey_connexion', {
+    id: cred.id, clientDataJSON: b64u.enc(r.clientDataJSON),
+    authenticatorData: b64u.enc(r.authenticatorData), signature: b64u.enc(r.signature),
+  });
+}
+
+function deviceName() {
+  const ua = navigator.userAgent;
+  return /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) ? 'iPad' : /Android/.test(ua) ? 'Android'
+    : /Mac/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : 'Appareil';
+}
+
+function installHint() {
+  if (isStandalone) return '';
+  return isIOS ? 'Astuce : Partager ⎋ → « Sur l\'écran d\'accueil » pour l\'ouvrir comme une app (et recevoir les notifications).'
+    : 'Astuce : menu du navigateur → « Installer l\'application ».';
+}
+
+async function ensureAuth() {
+  const pair = location.hash.match(/pair=([\w-]+)/);
+  if (pair) {
+    history.replaceState(null, '', location.pathname);
+    try {
+      await api('appairer', { token: pair[1] });
+      return afterPairing();
+    } catch (e) {
+      authScreen({ title: 'Lien expiré', text: e.message, hint: 'Relance « ./run.sh pair » dans Onyxia pour obtenir un nouveau QR code.' });
+      return false;
+    }
+  }
+  const me = await api('moi');
+  if (me.authed) return true;
+  if (me.has_passkey) {
+    return new Promise((resolve) => authScreen({
+      title: 'Cockpit', text: 'Connexion sécurisée par passkey.',
+      button: isIOS ? 'Se connecter avec Face ID' : 'Se connecter avec ma passkey',
+      onClick: async () => { await loginPasskey(); $('#auth').classList.add('hidden'); resolve(true); },
+      hint: 'Nouvel appareil sans passkey synchronisée ? Lance « ./run.sh pair » dans Onyxia et scanne le QR code.',
+    }));
+  }
+  authScreen({ title: 'Bienvenue', text: 'Pour connecter ce téléphone, lance dans ton terminal Onyxia :',
+    hint: './run.sh pair — puis scanne le QR code avec l\'appareil photo.' });
+  return false;
+}
+
+function afterPairing() {
+  return new Promise((resolve) => authScreen({
+    title: 'Téléphone connecté ✓',
+    text: 'Crée une passkey : tu te reconnecteras d\'un regard, sans jamais taper de code.',
+    button: isIOS ? 'Activer Face ID' : 'Créer ma passkey',
+    onClick: async () => { await createPasskey(); $('#auth').classList.add('hidden'); resolve(true); },
+    alt: 'Plus tard', onAlt: () => { $('#auth').classList.add('hidden'); resolve(true); },
+    hint: installHint(),
+  }));
+}
+
+// ---------- modèle
+function entry(id) {
+  if (!state.tasks.has(id)) {
+    state.tasks.set(id, { task: { id, status: 'pending' }, events: [], approvals: new Map() });
+    state.order.push(id);
+  }
+  return state.tasks.get(id);
+}
+
+function onEvent(evt) {
+  const e = entry(evt.task_id);
+  if (evt.kind === 'task') e.task = evt.task;
+  else if (evt.kind === 'message') e.events.push(evt);
+  else if (evt.kind === 'approval') {
+    const isNew = !e.approvals.has(evt.approval.id);
+    e.approvals.set(evt.approval.id, evt.approval);
+    if (isNew && !evt.approval.decision && !state.replay) navigator.vibrate?.([200, 100, 200]);
+  }
+}
+
+// ---------- rendu
+function approvalHtml(a) {
+  const input = a.tool === 'Bash' ? a.tool_input.command
+    : a.tool_input.file_path ? `${a.tool_input.file_path}\n\n${a.tool_input.content ?? a.tool_input.new_string ?? ''}`
+    : JSON.stringify(a.tool_input, null, 2);
+  const done = a.decision
+    ? `<div class="timer">${{ approve: '✅ approuvé', deny: '⛔ refusé', timeout: '⌛ expiré (refusé)' }[a.decision]}</div>`
+    : `<div class="actions">
+         <button class="btn ok" data-approve="${esc(a.id)}">Approuver</button>
+         <button class="btn bad" data-deny="${esc(a.id)}">Refuser</button>
+       </div><div class="timer" data-expires="${Number(a.expires)}"></div>`;
+  return `<div class="approval ${a.decision ? 'resolved' : ''}">
+    <div class="why">⚠️ ${esc(a.tool)} — ${esc(a.reason)}</div>
+    <pre><code>${esc(String(input).slice(0, 4000))}</code></pre>${done}</div>`;
+}
+
+function taskHtml(e) {
+  const t = e.task;
+  const proj = state.projects.find((p) => p.id === t.project);
+  const tools = e.events.filter((x) => x.type === 'tool_use' || x.type === 'tool_error');
+  const texts = e.events.filter((x) => x.type === 'text');
+  const blocked = e.events.filter((x) => x.type === 'blocked');
+  const lastText = ACTIVE.has(t.status) && texts.length ? texts[texts.length - 1].text : '';
+
+  let body = '';
+  if (tools.length) {
+    body += `<details><summary>${tools.length} action(s)</summary>${tools.map((x) =>
+      `<div class="tool">${x.type === 'tool_error' ? '✗' : '›'} ${esc(x.tool || '')} ${esc(x.text)}</div>`).join('')}</details>`;
+  }
+  body += blocked.map((x) => `<div class="blocked">⛔ ${esc(x.tool)} : ${esc(x.text)}</div>`).join('');
+  body += [...e.approvals.values()].map(approvalHtml).join('');
+  if (lastText) body += `<div class="text">${md(lastText)}</div>`;
+  if (t.status === 'pending' && !state.workerOnline) body += '<div class="hint">Le worker Onyxia est hors ligne : la tâche partira dès sa reconnexion.</div>';
+  if (t.status === 'needs_project') {
+    body += `<div class="text">Je n'ai pas pu déterminer le projet${t.route_reason ? ` (${esc(t.route_reason)})` : ''}. Lequel ?</div>
+      <div class="actions">${state.projects.map((p) => `<button class="btn" data-choose="${esc(p.id)}">${esc(p.name)}</button>`).join('')}</div>`;
+  }
+  if (t.result && !ACTIVE.has(t.status)) body += `<div class="result">${md(t.result)}</div>`;
+
+  return `<div class="meta">
+      <span class="pill st-${esc(t.status)}">${STATUS[t.status] || esc(t.status)}</span>
+      ${proj ? `<span class="pill">${esc(proj.name)}</span>` : ''}
+      ${t.route_reason && t.project ? `<span title="${esc(t.route_reason)}">auto</span>` : ''}
+      ${t.cost_usd ? `<span>${Number(t.cost_usd).toFixed(3)} $</span>` : ''}
+      ${ACTIVE.has(t.status) ? `<button class="btn ghost" data-cancel="${esc(t.id)}">Arrêter</button>` : ''}
+    </div><div class="log">${body}</div>`;
+}
+
+function render(ids) {
+  const feed = $('#feed');
+  if (state.order.length) feed.querySelector('.empty')?.remove();
+  const nearBottom = feed.scrollHeight - feed.scrollTop - feed.clientHeight < 120;
+  for (const id of ids) {
+    const e = state.tasks.get(id);
+    let wrap = document.getElementById(`t-${id}`);
+    if (!wrap) {
+      wrap = document.createElement('section');
+      wrap.id = `t-${id}`;
+      wrap.dataset.task = id;
+      wrap.innerHTML = '<div class="user"></div><div class="task"></div>';
+      feed.appendChild(wrap);
+    }
+    wrap.querySelector('.user').textContent = e.task.instruction || '';
+    wrap.querySelector('.task').innerHTML = taskHtml(e);
+  }
+  if (nearBottom || state.replay) feed.scrollTop = feed.scrollHeight;
+  updatePending();
+}
+
+function updatePending() {
+  let n = 0;
+  for (const e of state.tasks.values()) for (const a of e.approvals.values()) if (!a.decision) n++;
+  const b = $('#pendingBtn');
+  b.textContent = n;
+  b.classList.toggle('hidden', n === 0);
+  document.title = n ? `(${n}) Cockpit` : 'Cockpit';
+  navigator.setAppBadge?.(n).catch(() => {});
+}
+
+function renderProjects() {
+  const chips = [{ id: null, name: 'Auto' }, ...state.projects];
+  $('#projects').innerHTML = chips.map((p) =>
+    `<button type="button" class="chip" role="radio" aria-checked="${p.id === state.selected}" data-project="${esc(p.id ?? '')}">
+      ${esc(p.name)}${p.has_session ? ' <span class="s">●</span>' : ''}</button>`).join('');
+}
+
+setInterval(() => {
+  document.querySelectorAll('[data-expires]').forEach((el) => {
+    const s = Math.max(0, Math.round(el.dataset.expires - Date.now() / 1000));
+    el.textContent = `refus automatique dans ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
+  });
+}, 1000);
+
+// ---------- synchronisation (interrogation du relais)
+let pollTimer = null;
+let polling = false;
+
+async function poll() {
+  if (polling) return;
+  polling = true;
+  clearTimeout(pollTimer);
+  try {
+    const s = await api('etat', undefined, `&since=${state.lastId}`);
+    state.replay = state.lastId === 0;
+    const touched = new Set();
+    for (const evt of s.events) { onEvent(evt); touched.add(evt.task_id); }
+    state.lastId = s.last_id;
+    if (JSON.stringify(s.projects) !== JSON.stringify(state.projects)) { state.projects = s.projects; renderProjects(); }
+    if (s.worker_online !== state.workerOnline) {
+      state.workerOnline = s.worker_online;
+      state.order.forEach((id) => touched.add(id));
+    }
+    $('#conn').classList.toggle('on', s.worker_online);
+    $('#conn').title = s.worker_online ? 'worker Onyxia connecté' : 'worker Onyxia hors ligne';
+    render(touched);
+    state.replay = false;
+  } catch (e) {
+    $('#conn').classList.remove('on');
+    if (e instanceof AuthError) { polling = false; return start(); }
+  }
+  polling = false;
+  if (!document.hidden) pollTimer = setTimeout(poll, 2000);
+}
+
+document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
+
+// ---------- notifications push
+async function enableNotifications() {
+  if (!('PushManager' in window)) {
+    throw new Error(isIOS && !isStandalone ? 'Sur iPhone, ajoute d\'abord le cockpit à l\'écran d\'accueil, puis ouvre-le depuis l\'icône.' : 'Notifications non prises en charge par ce navigateur.');
+  }
+  if (await Notification.requestPermission() !== 'granted') throw new Error('Notifications refusées dans les réglages.');
+  const reg = await navigator.serviceWorker.ready;
+  const { key } = await api('vapid');
+  const sub = await reg.pushManager.getSubscription() || await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64u.dec(key) });
+  await api('push_abonner', { endpoint: sub.endpoint });
+  localStorage.setItem('cockpit_push', '1');
+}
+
+async function refreshPushSubscription() {
+  // Réenregistre l'abonnement existant (il peut changer ou avoir été purgé côté serveur).
+  try {
+    if (window.Notification?.permission !== 'granted') return;
+    const sub = await (await navigator.serviceWorker.ready).pushManager.getSubscription();
+    if (sub) await api('push_abonner', { endpoint: sub.endpoint });
+  } catch { /* sans importance */ }
+}
+
+// ---------- actions
+document.addEventListener('click', async (ev) => {
+  const b = ev.target.closest('button');
+  if (!b) return;
+  try {
+    if (b.dataset.approve || b.dataset.deny) {
+      b.parentElement.querySelectorAll('button').forEach((x) => (x.disabled = true));
+      await api('decider', { approval_id: b.dataset.approve || b.dataset.deny, decision: b.dataset.approve ? 'approve' : 'deny' });
+      poll();
+    } else if (b.dataset.cancel) {
+      await api('annuler', { task_id: b.dataset.cancel });
+      poll();
+    } else if (b.dataset.choose) {
+      await api('choisir_projet', { task_id: b.closest('section').dataset.task, project: b.dataset.choose });
+      poll();
+    } else if ('project' in b.dataset) {
+      state.selected = b.dataset.project || null;
+      renderProjects();
+    } else if ('close' in b.dataset) {
+      b.closest('dialog').close();
+    } else if (b.id === 'pendingBtn') {
+      document.querySelector('.approval:not(.resolved)')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } else if (b.id === 'menuBtn') {
+      $('#mNotif').classList.toggle('hidden', window.Notification?.permission === 'granted' && localStorage.getItem('cockpit_push') === '1');
+      $('#workerInfo').textContent = state.workerOnline ? '🟢 Worker Onyxia connecté' : '🔴 Worker Onyxia hors ligne (lance ./run.sh dans ton service VSCode)';
+      $('#menuDlg').showModal();
+    } else if (b.id === 'mNotif') {
+      await enableNotifications();
+      b.classList.add('hidden');
+      alert('Notifications activées : tu seras prévenu des validations à faire, même écran verrouillé.');
+    } else if (b.id === 'mAudit') {
+      await openAudit();
+    } else if (b.id === 'mDevices') {
+      await openDevices();
+    } else if (b.dataset.delDevice) {
+      if (confirm('Supprimer cette passkey ?')) { await api('appareil_supprimer', { id: b.dataset.delDevice }); await openDevices(); }
+    } else if (b.id === 'addPasskey') {
+      await createPasskey();
+      await openDevices();
+    } else if (b.id === 'mLogout') {
+      await api('deconnexion', {});
+      location.reload();
+    }
+  } catch (e) {
+    if (e instanceof AuthError) return start();
+    if (e.name !== 'NotAllowedError') alert(e.message);
+  }
+});
+
+function showList(title, html) {
+  $('#menuDlg').close();
+  $('#listTitle').textContent = title;
+  $('#listBody').innerHTML = html;
+  if (!$('#listDlg').open) $('#listDlg').showModal();
+}
+
+async function openAudit() {
+  const rows = await api('audit', undefined, '&limit=150');
+  showList('Journal d\'audit', `<div class="auditList">${rows.map((r) => {
+    const tag = r.decision || r.policy || '';
+    const what = r.tool ? `${r.tool} ${typeof r.input === 'string' ? r.input : JSON.stringify(r.input)}` : (r.instruction || r.result || r.reason || '');
+    return `<div class="row">${esc(r.ts)} · ${esc(r.event)} ${r.project ? `· ${esc(r.project)}` : ''} ${tag ? `<b class="${esc(tag)}">${esc(tag)}</b>` : ''}<br>${esc(String(what).slice(0, 300))}</div>`;
+  }).join('') || 'Vide.'}</div>`);
+}
+
+async function openDevices() {
+  const list = await api('appareils');
+  const fmt = (ts) => (ts ? new Date(ts * 1000).toLocaleDateString('fr-FR') : 'jamais');
+  showList('Passkeys', list.map((d) => `<div class="dev"><div>${esc(d.nom)}<small>créée le ${fmt(d.cree_le)} · utilisée ${fmt(d.utilisee_le)}</small></div>
+    <button class="btn ghost" data-del-device="${esc(d.id)}">Supprimer</button></div>`).join('')
+    + '<div class="actions"><button class="btn ok" id="addPasskey">+ Ajouter une passkey sur cet appareil</button></div>'
+    + '<p class="hint">Les passkeys iCloud / Google se synchronisent entre tes appareils. Pour un appareil d\'un autre écosystème : « ./run.sh pair ».</p>');
+}
+
+// ---------- saisie
+const input = $('#input');
+input.addEventListener('input', () => { input.style.height = 'auto'; input.style.height = `${input.scrollHeight}px`; });
+input.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey && !matchMedia('(pointer: coarse)').matches) { e.preventDefault(); $('#composer').requestSubmit(); }
+});
+
+$('#composer').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const instruction = input.value.trim();
+  if (!instruction) return;
+  $('#send').disabled = true;
+  try {
+    await api('tache', { instruction, project: state.selected, new_session: $('#newSession').checked });
+    input.value = '';
+    input.style.height = 'auto';
+    $('#newSession').checked = false;
+    await poll();
+  } catch (e) {
+    if (e instanceof AuthError) start(); else alert(e.message);
+  }
+  $('#send').disabled = false;
+});
+
+// ---------- démarrage
+async function start() {
+  try {
+    if (!(await ensureAuth())) return;
+    $('#auth').classList.add('hidden');
+    refreshPushSubscription();
+    poll();
+  } catch (e) {
+    authScreen({ title: 'Hors ligne', text: e.message, button: 'Réessayer', onClick: start });
+  }
+}
+
+if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(console.error);
+// Lien d'appairage ouvert alors que le cockpit est déjà affiché : seul le #hash change.
+window.addEventListener('hashchange', () => { if (location.hash.includes('pair=')) start(); });
+start();

@@ -1,0 +1,6 @@
+claude-agent-sdk>=0.2.165
+httpx
+pyyaml
+qrcode
+pytest
+playwright

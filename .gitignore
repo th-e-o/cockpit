@@ -1,0 +1,5 @@
+.venv/
+data/
+__pycache__/
+web/config.php
+web/data/*.db*

@@ -1,0 +1,17 @@
+# Registre des projets pilotables.
+# cwd : dossier de travail de l'agent (doit exister dans ce pod).
+# description / keywords : utilisés par le routeur automatique.
+projects:
+  - id: cockpit
+    name: Cockpit
+    cwd: /home/onyxia/work/cockpit
+    description: Le cockpit lui-même (API FastAPI, PWA mobile, politique de sécurité des agents).
+    keywords: [cockpit, pwa, politique, policy, validation]
+
+  - id: onyxia
+    name: Environnement Onyxia
+    cwd: /home/onyxia/work
+    description: >
+      Administration du namespace Kubernetes user-theof sur SSP Cloud : services Onyxia
+      (vscode, mlflow, bases de données), releases helm, pods, stockage S3 MinIO.
+    keywords: [onyxia, kubectl, helm, pod, service, namespace, mlflow, s3, minio, cluster]

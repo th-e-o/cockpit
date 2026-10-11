@@ -1,0 +1,56 @@
+# Politique de sécurité des agents.
+# Ordre d'évaluation : deny > ask > allow > défaut (ask).
+# Les motifs sont des regex Python (re.search, insensible à la casse).
+
+default: ask
+approval_timeout_s: 900   # sans réponse => refus
+
+# Outils toujours autorisés (lecture seule / sans effet de bord)
+allow_tools: [Read, Glob, Grep, TodoWrite, Task, Agent, WebSearch]
+
+# Outils jamais autorisés
+deny_tools: [AskUserQuestion]
+
+# Outils toujours soumis à validation
+ask_tools: [WebFetch, NotebookEdit]
+
+# Écriture de fichiers (Write, Edit, MultiEdit)
+files:
+  # dans le dossier du projet => auto, sauf ces chemins
+  ask_paths: ['/\.git/', '\.github/workflows/', '(^|/)\.env', 'Dockerfile$', '(^|/)values.*\.ya?ml$']
+  deny_paths: ['/\.claude/', '/\.ssh/', '/\.kube/', '/\.aws/', '/etc/']
+  # hors du dossier du projet => ask
+
+bash:
+  # Si un segment correspond => refus immédiat
+  deny:
+    - 'kubectl\s+delete\s+(ns|namespace)\b'
+    - 'rm\s+(-\w*\s+)*-\w*[rR]\w*\s+(-\w+\s+)*(/|~|\$HOME)(\s|$)'
+    - 'git\s+push\s+.*(--force|-f\b).*\b(main|master)\b'
+    - '\bvault\s+(kv\s+)?(put|delete|write|destroy)'
+    - '\b(cat|less|head|tail)\b.*(\.ssh|\.kube/config|credentials|\.env\b)'
+    - 'printenv|^env$|\benv\s*\|'
+    - 'mkfs|dd\s+if=|:\(\)\s*\{'
+    - '\bcurl\b.*\|\s*(ba|z)?sh'
+  # Si un segment correspond => validation humaine
+  ask:
+    - '\bgit\s+(push|reset\s+--hard|clean|rebase|branch\s+-D)'
+    - '\bhelm\s+(install|upgrade|uninstall|delete|rollback)'
+    - '\bkubectl\s+(apply|create|delete|patch|scale|edit|replace|exec|rollout|drain|cordon)'
+    - '\b(pip|uv\s+pip|npm|apt(-get)?|conda|mamba)\s+(install|uninstall|remove)'
+    - '\buv\s+(add|remove)'
+    - '\b(mc|aws\s+s3|s3cmd|rclone)\b.*\b(rm|cp|mv|sync|put|del|rb)\b'
+    - '\brm\s'
+    - '\bfind\b.*\s-(delete|exec|execdir|ok)\b'
+    - '\bxargs\b'
+    - '\b(sudo|chmod|chown|kill|pkill)\b'
+    - '\b(curl|wget)\b.*(-X\s*(POST|PUT|DELETE|PATCH)|--data|-d\s)'
+  # Un segment est auto-autorisé seulement s'il correspond à un de ces motifs
+  allow:
+    - '^(ls|pwd|cat|head|tail|wc|grep|rg|find|tree|file|stat|du|df|echo|which|date|whoami|sort|uniq|cut|diff|jq|yq)\b'
+    - '^git\s+(status|log|diff|show|branch|fetch|pull|add|commit|checkout|switch|stash|remote\s+-v)\b'
+    - '^(python3?|uv\s+run|pytest|ruff|black|mypy|node|npm\s+(test|run))\b'
+    - '^kubectl\s+(get|describe|logs|top|explain|config\s+(view|current-context)|auth\s+can-i)\b'
+    - '^helm\s+(list|ls|status|get|history|show|search|template|lint)\b'
+    - '^(mc\s+(ls|cat|stat)|aws\s+s3\s+ls)\b'
+    - '^(mkdir|touch|cd)\b'

@@ -1,0 +1,26 @@
+DirectoryIndex index.html
+Options -Indexes
+
+# Fichiers de configuration jamais servis
+<FilesMatch "^(config\.php|\.ovhconfig)$">
+    Require all denied
+</FilesMatch>
+
+# Transmettre l'en-tête Authorization du worker à PHP (supprimé par défaut en CGI/FPM)
+RewriteEngine On
+RewriteCond %{HTTP:Authorization} .
+RewriteRule .* - [E=HTTP_AUTHORIZATION:%{HTTP:Authorization}]
+
+# Forcer le HTTPS (requis par les passkeys et les notifications)
+RewriteCond %{SERVER_PORT} ^80$
+RewriteRule ^ https://%{HTTP_HOST}%{REQUEST_URI} [R=301,L]
+
+<IfModule mod_headers.c>
+    Header always set Strict-Transport-Security "max-age=31536000"
+    Header always set X-Frame-Options "DENY"
+    Header always set Referrer-Policy "no-referrer"
+    Header always set Content-Security-Policy "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'"
+    <FilesMatch "\.(html|js)$">
+        Header set Cache-Control "no-cache"
+    </FilesMatch>
+</IfModule>
