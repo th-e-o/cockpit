@@ -21,13 +21,27 @@ def bash(cmd: str) -> str:
     "grep -rn foo . | head -20",
     "python3 script.py 2>&1 | tail",
     "FOO=1 uv run pytest",
+    "git push origin feature",
+    "git push -u origin feat/drones-v2",
+    "git add -A && git commit -m 'x' && git push origin cockpit/essai",
 ])
 def test_bash_allow(cmd):
     assert bash(cmd) == ALLOW
 
 
 @pytest.mark.parametrize("cmd", [
-    "git push origin feature",
+    "git push",  # branche courante : peut-être main
+    "git push origin main",
+    "git push -u origin master",
+    "git push origin HEAD",
+    "git push origin feature:main",
+    "git push --force origin feature",
+    "git push origin feature --force",
+    "git push --all origin",
+    "git push origin --delete feature",
+    "git push upstream feature",
+    "git push origin feature main",
+    "git status && git push origin main",
     "helm upgrade mlflow ./chart",
     "kubectl delete pod vscode-0",
     "pip install requests",

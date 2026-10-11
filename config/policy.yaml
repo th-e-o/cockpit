@@ -36,7 +36,9 @@ bash:
     - '\bcurl\b.*\|\s*(ba|z)?sh'
   # Si un segment correspond => validation humaine
   ask:
-    - '\bgit\s+(push|reset\s+--hard|clean|rebase|branch\s+-D)'
+    - '\bgit\s+(reset\s+--hard|clean|rebase|branch\s+-D)'
+    # git push : validation, sauf la forme sûre autorisée plus bas (branche de travail nommée explicitement)
+    - '^(?!git\s+push(\s+(-u|--set-upstream))?\s+origin\s+(?!(main|master|HEAD)\s*$)[\w./-]+\s*$).*\bgit\s+push\b'
     - '\bhelm\s+(install|upgrade|uninstall|delete|rollback)'
     - '\bkubectl\s+(apply|create|delete|patch|scale|edit|replace|exec|rollout|drain|cordon)'
     - '\b(pip|uv\s+pip|npm|apt(-get)?|conda|mamba)\s+(install|uninstall|remove)'
@@ -51,6 +53,9 @@ bash:
   allow:
     - '^(ls|pwd|cat|head|tail|wc|grep|rg|find|tree|file|stat|du|df|echo|which|date|whoami|sort|uniq|cut|diff|jq|yq)\b'
     - '^git\s+(status|log|diff|show|branch|fetch|pull|add|commit|checkout|switch|stash|remote\s+-v)\b'
+    # Push d'une branche de travail : « git push [-u] origin <branche> », sans main/master/HEAD, sans
+    # refspec (« a:main »), sans option (--force, --all, --tags, --delete…) => validation sinon.
+    - '^git\s+push(\s+(-u|--set-upstream))?\s+origin\s+(?!(main|master|HEAD)\s*$)[\w./-]+\s*$'
     - '^(python3?|uv\s+run|pytest|ruff|black|mypy|node|npm\s+(test|run))\b'
     - '^kubectl\s+(get|describe|logs|top|explain|config\s+(view|current-context)|auth\s+can-i)\b'
     - '^helm\s+(list|ls|status|get|history|show|search|template|lint)\b'
