@@ -14,7 +14,8 @@ deny_tools: [AskUserQuestion]
 
 # Outils toujours soumis à validation
 # Lancement et arrêt de services : toujours validés (la carte affiche dépôt, ressources et quota)
-ask_tools: [WebFetch, NotebookEdit, mcp__services__lancer_service, mcp__services__arreter_service]
+# Agents en parallèle (lancer_en_parallele) : validés, la carte liste les sous-tâches
+ask_tools: [WebFetch, NotebookEdit, mcp__services__lancer_service, mcp__services__arreter_service, mcp__cockpit__lancer_en_parallele]
 
 # Écriture de fichiers (Write, Edit, MultiEdit)
 files:

@@ -29,6 +29,9 @@ class Task:
     events: list[dict] = field(default_factory=list)
     context: list[dict] = field(default_factory=list)  # échanges précédents (fournis par le relais)
     resume_session: str | None = None  # session de la conversation connue du relais
+    changes: dict | None = None  # résumé des modifications (fichiers, lignes, commits, branche)
+    worktree: dict | None = None  # {"branch", "path", "state": active|merged|discarded} si exécutée en parallèle
+    parent: str | None = None  # tâche qui l'a lancée (lancer_en_parallele)
 
 
 @dataclass

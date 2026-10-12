@@ -13,9 +13,12 @@ import logging
 import os
 import secrets
 import sys
+import time
 from pathlib import Path
 
+from . import gitstate
 from .agent import Runner
+from .podstate import PodState
 from .policy import Policy
 from .relay import Relay, RelayStore
 from .router import Project, load_projects, route
@@ -84,6 +87,11 @@ class Worker:
         self.runner = Runner(self.store, Policy.load(CONFIG / "policy.yaml"), services=ORCHESTRATOR)
         self.all_projects: dict[str, Project] = {}  # projets de tous les workers (orchestrateur)
         self._background: set[asyncio.Task] = set()
+        self.runner.spawn_tasks = self.spawn_children
+        self.pod = PodState()
+        self.started = time.time()
+        self._state: dict | None = None
+        self._state_ts = 0.0
 
     def spawn(self, coro) -> None:
         t = asyncio.create_task(coro)
@@ -95,6 +103,56 @@ class Worker:
             {"id": p.id, "name": p.name, "description": p.description, "has_session": p.id in self.store.sessions}
             for p in self.projects.values()
         ]
+
+    async def pod_state(self) -> dict:
+        """État du pod pour le tableau de bord : ressources, agents, état git des projets, worktrees actifs."""
+        if self._state and time.monotonic() - self._state_ts < 20:
+            return self._state
+        projects = {}
+        for p in self.projects.values():
+            try:
+                projects[p.id] = await gitstate.repo_status(p.cwd)
+            except Exception:
+                projects[p.id] = None
+        worktrees = []
+        if gitstate.WORKTREES.is_dir():
+            for d in sorted(gitstate.WORKTREES.iterdir()):
+                pid = next((p for p in self.projects if d.name.startswith(p + "-")), None)
+                if pid:
+                    conv = d.name.removeprefix(pid + "-")
+                    worktrees.append({"project": pid, "conversation": conv, "branch": gitstate.branch_name(conv)})
+        tasks = self.store.tasks.values()
+        self._state = {
+            "resources": self.pod.resources(), "projects": projects, "worktrees": worktrees,
+            "running": len(self.runner.running), "max_agents": self.runner.max_agents,
+            "queued": sum(1 for t in tasks if t.status == "queued"), "started": self.started,
+        }
+        self._state_ts = time.monotonic()
+        return self._state
+
+    async def spawn_children(self, parent: Task, items: list[dict]) -> list[str]:
+        """Tâches filles (outil lancer_en_parallele) : chacune devient une conversation, sur le projet demandé."""
+        payload = [{"instruction": str(t["instruction"]).strip()[:10000], "project": t.get("projet") or parent.project}
+                   for t in items]
+        ids = await self.relay.creer_taches(parent.id, payload)
+        self.store.audit("spawn", task=parent.id, project=parent.project, children=ids)
+        return ids
+
+    async def worktree_action(self, a: dict) -> None:
+        task = self.store.tasks.get(a["task_id"]) or Task(id=a["task_id"], instruction="", project=a.get("project"),
+                                                         conversation=a.get("conversation"))
+        project = self.projects.get(a.get("project") or task.project or "")
+        try:
+            if not project:
+                raise gitstate.GitError("projet inconnu de ce worker")
+            text, state = await self.runner.worktree_action(task, project, a["action"]), (
+                "merged" if a["action"] == "merge" else "discarded")
+        except Exception as e:
+            text, state = f"{e}", "active"
+        self.store.audit("worktree", task=task.id, project=task.project, action=a["action"], result=text)
+        self.store.publish("message", {"task_id": task.id, "type": "worktree", "state": state, "text": text,
+                                       "ok": state != "active"})
+        self._state = None  # tableau de bord à jour au prochain poll
 
     @staticmethod
     def routing_text(task: Task) -> str:
@@ -142,7 +200,7 @@ class Worker:
         for t in msg.get("tasks", []):
             task = Task(id=t["id"], instruction=t["instruction"], project=t.get("project"),
                         conversation=t.get("conversation"), context=t.get("context") or [],
-                        resume_session=t.get("resume_session"))
+                        resume_session=t.get("resume_session"), parent=t.get("parent"))
             self.store.tasks[task.id] = task
             self.spawn(self.dispatch(task, t.get("project")))
         for d in msg.get("decisions", []):
@@ -152,6 +210,8 @@ class Worker:
         for task_id in msg.get("cancels", []):
             if task := self.store.tasks.get(task_id):
                 self.spawn(self.runner.cancel(task))
+        for a in msg.get("worktree_actions", []):
+            self.spawn(self.worktree_action(a))
         for c in msg.get("choices", []):
             task = self.store.tasks.get(c["task_id"])
             if not task:
@@ -168,7 +228,7 @@ class Worker:
         log.info("connecté au relais %s — projets : %s", RELAY_URL, ", ".join(self.projects))
         while True:
             try:
-                msg = await self.relay.poll(self.projects_payload(), hello=hello)
+                msg = await self.relay.poll(self.projects_payload(), hello=hello, state=await self.pod_state())
                 hello, delay = False, 2
             except Exception as e:
                 log.warning("relais injoignable (%s), nouvel essai dans %ss", e, delay)

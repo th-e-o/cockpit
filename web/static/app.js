@@ -2,7 +2,8 @@
 
 const $ = (s) => document.querySelector(s);
 // replyTo : tâche dont le prochain message est la suite (undefined tant que l'historique n'est pas chargé)
-const state = { projects: [], selected: null, tasks: new Map(), order: [], lastId: 0, workerOnline: false, replay: false, replyTo: undefined };
+const state = { projects: [], selected: null, tasks: new Map(), order: [], lastId: 0, workerOnline: false, replay: false, replyTo: undefined,
+  workers: [], diffs: new Map(), view: 'chat' };
 const REPRISE_AUTO = 2 * 3600; // à l'ouverture, la dernière conversation continue si elle a moins de 2 h
 
 const STATUS = {
@@ -20,7 +21,8 @@ const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '
 function md(src) {
   const blocks = [];
   let s = esc(src).replace(/```[\w-]*\n?([\s\S]*?)```/g, (_, code) => `\u0000${blocks.push(code) - 1}\u0000`);
-  s = s.replace(/`([^`\n]+)`/g, '<code>$1</code>')
+  s = s.replace(/^\s*[-*]\s+/gm, '• ')
+       .replace(/`([^`\n]+)`/g, '<code>$1</code>')
        .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
        .replace(/^#{1,6}\s+(.+)$/gm, '<b>$1</b>')
        .replace(/\n/g, '<br>');
@@ -164,7 +166,7 @@ function onEvent(evt) {
 }
 
 // ---------- rendu
-const SERVICE_TOOLS = { lancer_service: '🚀 Lancer un service', arreter_service: '🛑 Arrêter un service' };
+const SERVICE_TOOLS = { lancer_service: '🚀 Lancer un service', arreter_service: '🛑 Arrêter un service', lancer_en_parallele: '🔀 Claude en parallèle' };
 
 /** Carte dédiée au lancement / à l'arrêt d'un service Onyxia : ressources lisibles, quota dans la raison. */
 function serviceInput(a) {
@@ -176,7 +178,9 @@ function serviceInput(a) {
 
 function approvalHtml(a) {
   const service = SERVICE_TOOLS[a.tool.replace(/^mcp__services__/, '')];
-  const input = service ? serviceInput(a)
+  const input = a.tool.endsWith('lancer_en_parallele')
+    ? (a.tool_input.taches || []).map((t, i) => `${i + 1}. ${t.projet ? `[${t.projet}] ` : ''}${t.instruction}`).join('\n\n')
+    : service ? serviceInput(a)
     : a.tool === 'Bash' ? a.tool_input.command
     : a.tool_input.file_path ? `${a.tool_input.file_path}\n\n${a.tool_input.content ?? a.tool_input.new_string ?? ''}`
     : JSON.stringify(a.tool_input, null, 2);
@@ -221,13 +225,13 @@ function progressHtml(e, active) {
     // En cours : les étapes précédentes repliées, l'étape actuelle mise en avant avec le temps écoulé.
     const cur = steps[steps.length - 1];
     const prev = steps.slice(0, -1);
-    if (prev.length) html += `<details class="steps"><summary>${prev.length} étape(s) faite(s)</summary>${prev.map(row).join('')}</details>`;
+    if (prev.length) html += `<details class="steps" data-k="steps"><summary>${prev.length} étape(s) faite(s)</summary>${prev.map(row).join('')}</details>`;
     const since = e.task.created ? `<span class="since" data-since="${Number(e.task.created)}"></span>` : '';
     html += `<div class="now">${e.task.status === 'running' ? '<span class="spin"></span>' : ''} ${esc(cur.label)}${since}</div>`;
   } else {
     const end = e.events.length ? e.events[e.events.length - 1].ts : 0;
     const took = end && e.task.created ? ` · ${duree(end - e.task.created)}` : '';
-    html += `<details class="steps"><summary>${steps.length} étape(s)${took}</summary>${steps.map(row).join('')}</details>`;
+    html += `<details class="steps" data-k="steps"><summary>${steps.length} étape(s)${took}</summary>${steps.map(row).join('')}</details>`;
   }
   return html;
 }
@@ -250,11 +254,14 @@ function taskHtml(e) {
       <div class="actions">${state.projects.map((p) => `<button class="btn" data-choose="${esc(p.id)}">${esc(p.name)}</button>`).join('')}</div>`;
   }
   if (t.result && !ACTIVE.has(t.status)) body += `<div class="result">${md(t.result)}</div>`;
+  if (!active) body += changesHtml(e) + worktreeHtml(e);
 
   return `<div class="meta">
       <span class="pill st-${esc(t.status)}">${STATUS[t.status] || esc(t.status)}</span>
       ${proj ? `<span class="pill">${esc(proj.name)}</span>` : ''}
       ${t.route_reason && t.project ? `<span title="${esc(t.route_reason)}">auto</span>` : ''}
+      ${t.worktree ? `<span class="pill wt" title="Claude en parallèle, dans son propre worktree git">🌿 ${esc(t.worktree.branch)}</span>` : ''}
+      ${t.parent ? `<span class="pill" title="lancée par un autre Claude (lancer_en_parallele)">🔀 sous-tâche</span>` : ''}
       ${ACTIVE.has(t.status) ? `<button class="btn ghost" data-cancel="${esc(t.id)}">Arrêter</button>`
         : t.id !== state.replyTo ? `<button class="btn ghost" data-reply="${esc(t.id)}">Répondre</button>` : ''}
     </div><div class="log">${body}</div>`;
@@ -275,13 +282,251 @@ function render(ids) {
       feed.appendChild(wrap);
     }
     wrap.querySelector('.user').textContent = e.task.instruction || '';
-    wrap.querySelector('.task').innerHTML = taskHtml(e);
+    const box = wrap.querySelector('.task');
+    const open = new Set([...box.querySelectorAll('details[data-k][open]')].map((d) => d.dataset.k));
+    box.innerHTML = taskHtml(e);
+    box.querySelectorAll('details[data-k]').forEach((d) => { if (open.has(d.dataset.k)) d.open = true; });
     wrap.classList.toggle('suite', !!e.task.reply_to);
     wrap.classList.toggle('current', !!state.replyTo && conversationOf(id) === conversationOf(state.replyTo));
   }
   if (nearBottom || state.replay) feed.scrollTop = feed.scrollHeight;
   updatePending();
 }
+
+// ---------- modifications (résumé git calculé par le worker) et branches parallèles
+const FST = { A: 'ajouté', M: 'modifié', D: 'supprimé', T: 'type modifié' };
+const plural = (n, w) => `${n} ${w}${n > 1 ? 's' : ''}`;
+
+/** Résumé des modifications : l'événement « changes » (avec diffs à la demande), sinon celui de la tâche. */
+function changesOf(e) {
+  const ev = [...e.events].reverse().find((x) => x.type === 'changes');
+  return { c: ev?.changes || e.task.changes, patches: !!ev?.has_patches };
+}
+
+function changesLine(c) {
+  const parts = [plural(c.file_count, 'fichier')];
+  if (c.git !== false && (c.added || c.removed)) parts.push(`<span class="add">+${c.added}</span> <span class="del">−${c.removed}</span>`);
+  if (c.commits?.length) parts.push(plural(c.commits.length, 'commit'));
+  return parts.join(' · ');
+}
+
+function branchLine(c) {
+  if (!c.branch || c.branch === 'HEAD') return '';
+  const push = !c.upstream ? 'non publiée' : c.ahead ? `${c.ahead} commit(s) à pousser` : 'à jour sur le dépôt ✓';
+  return `<div class="branch">⎇ <b>${esc(c.branch)}</b> · ${push}</div>`;
+}
+
+function changesHtml(e) {
+  const { c, patches } = changesOf(e);
+  if (!c) return '';
+  if (!c.file_count && !c.commits?.length) return '<div class="changes none">Aucun fichier modifié.</div>';
+  const files = (c.files || []).map((f) => {
+    const slash = f.path.lastIndexOf('/');
+    const name = `<span class="dir">${esc(f.path.slice(0, slash + 1))}</span>${esc(f.path.slice(slash + 1))}`;
+    const counts = f.binary ? '<span class="fn">binaire</span>'
+      : c.git === false ? '' : `<span class="fn"><span class="add">+${f.added}</span> <span class="del">−${f.removed}</span></span>`;
+    const row = `<span class="fst fst-${esc(f.status)}" title="${FST[f.status] || f.status}">${esc(f.status)}</span><span class="fp">${name}</span>${counts}`;
+    return patches && !f.binary
+      ? `<details class="file" data-k="f:${esc(f.path)}" data-task="${esc(e.task.id)}" data-path="${esc(f.path)}"><summary>${row}</summary><div class="diff">Chargement…</div></details>`
+      : `<div class="file"><div class="frow">${row}</div></div>`;
+  }).join('');
+  const more = c.file_count > (c.files || []).length ? `<div class="hint">… et ${c.file_count - c.files.length} autre(s)</div>` : '';
+  const commits = (c.commits || []).map((x) => `<div class="commit"><code>${esc(x.sha)}</code> ${esc(x.subject)}</div>`).join('');
+  return `<div class="changes"><div class="chhead">📝 ${changesLine(c)}</div>${branchLine(c)}
+    <div class="files">${files}${more}</div>${commits ? `<div class="commits">${commits}</div>` : ''}</div>`;
+}
+
+function diffHtml(patch) {
+  if (!patch) return '<div class="hint">Diff indisponible (fichier trop gros ou limite atteinte).</div>';
+  return `<pre class="diffpre">${patch.split('\n').map((l) => {
+    const cls = l.startsWith('@@') ? 'h' : l.startsWith('+') ? 'a' : l.startsWith('-') ? 'd' : '';
+    return `<span${cls ? ` class="${cls}"` : ''}>${esc(l) || ' '}</span>`;
+  }).join('')}</pre>`;
+}
+
+async function loadDiff(details) {
+  const id = details.dataset.task;
+  if (!state.diffs.has(id)) state.diffs.set(id, api('diff', undefined, `&task=${encodeURIComponent(id)}`).catch((err) => { state.diffs.delete(id); throw err; }));
+  try {
+    const { patches } = await state.diffs.get(id);
+    details.querySelector('.diff').innerHTML = diffHtml(patches[details.dataset.path]);
+  } catch (err) {
+    details.querySelector('.diff').textContent = `Diff introuvable : ${err.message}`;
+  }
+}
+document.addEventListener('toggle', (ev) => { if (ev.target.matches?.('details.file[open]')) loadDiff(ev.target); }, true);
+
+const lastOfConversation = (id) => [...state.order].reverse().find((x) => conversationOf(x) === conversationOf(id));
+
+function worktreeHtml(e) {
+  const t = e.task;
+  const msgs = e.events.filter((x) => x.type === 'worktree')
+    .map((x) => `<div class="wtmsg ${x.ok ? 'ok' : 'bad'}">${x.ok ? '✓' : '⚠️'} ${esc(x.text)}</div>`).join('');
+  if (!t.worktree) return msgs;
+  const st = t.worktree.state;
+  let html = `<div class="wtbox"><div>🌿 Travail en parallèle sur la branche <b>${esc(t.worktree.branch)}</b>${
+    st === 'merged' ? ' — fusionnée ✓' : st === 'discarded' ? ' — jetée' : ''}</div>`;
+  if (st === 'active' && lastOfConversation(t.id) === t.id) {
+    html += `<div class="actions"><button class="btn ok" data-wt="merge" data-task-id="${esc(t.id)}">Fusionner dans le projet</button>
+      <button class="btn bad" data-wt="discard" data-task-id="${esc(t.id)}">Jeter la branche</button></div>`;
+  }
+  return html + msgs + '</div>';
+}
+
+// ---------- tableau de bord
+const GO = 1024 ** 3;
+const fmtGo = (b) => `${(b / GO).toLocaleString('fr-FR', { maximumFractionDigits: b < 10 * GO ? 1 : 0 })} Go`;
+const fmtCost = (x) => `${(x || 0).toLocaleString('fr-FR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} $`;
+const dureeLongue = (s) => (s < 3600 ? duree(s) : s < 86400 ? `${Math.floor(s / 3600)} h ${String(Math.floor(s % 3600 / 60)).padStart(2, '0')}`
+  : `${Math.floor(s / 86400)} j ${Math.floor(s % 86400 / 3600)} h`);
+function ago(ts) {
+  const s = Math.max(0, Date.now() / 1000 - ts);
+  return s < 60 ? 'à l\'instant' : s < 3600 ? `il y a ${Math.floor(s / 60)} min` : s < 86400 ? `il y a ${Math.floor(s / 3600)} h` : `il y a ${Math.floor(s / 86400)} j`;
+}
+
+/** Jauge : piste du même ton, remplissage accent ; au-delà de 85 % passe en alerte, avec icône et libellé. */
+function meter(label, ratio, text, title) {
+  if (ratio == null || Number.isNaN(ratio)) return `<div class="meter"><span>${label}</span><div class="bar"></div><span class="mv">—</span></div>`;
+  const r = Math.min(1, Math.max(0, ratio));
+  const level = r >= 0.95 ? 'bad' : r >= 0.85 ? 'warn' : '';
+  const flag = level === 'bad' ? '⛔ ' : level === 'warn' ? '⚠ ' : '';
+  return `<div class="meter" title="${esc(title || '')}"><span>${label}</span>
+    <div class="bar ${level}" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(r * 100)}" aria-label="${label}"><i style="width:${(r * 100).toFixed(1)}%"></i></div>
+    <span class="mv">${flag}${text}</span></div>`;
+}
+
+function currentStep(e) {
+  if (e.task.status === 'waiting_approval') return '⚠️ Attend ta validation';
+  if (e.task.status === 'queued') return '⏳ En file d\'attente';
+  if (e.task.status === 'routing') return '🧭 Choisit le projet';
+  if (e.task.status === 'pending') return state.workerOnline ? '⏳ Transmise au pod' : '⏳ Pod hors ligne';
+  const steps = stepsOf(e);
+  return steps.length ? steps[steps.length - 1].label : 'Réfléchit…';
+}
+
+function liveCard(e) {
+  const t = e.task;
+  const proj = state.projects.find((p) => p.id === t.project);
+  const todos = [...e.events].reverse().find((x) => x.todos)?.todos;
+  const done = todos ? todos.filter((x) => x.status === 'completed').length : 0;
+  const plan = todos?.length ? `<div class="plan"><div class="bar"><i style="width:${(done / todos.length * 100).toFixed(0)}%"></i></div><span>Plan ${done}/${todos.length}</span></div>` : '';
+  return `<button class="live${t.status === 'waiting_approval' ? ' alert' : ''}" data-jump="${esc(t.id)}">
+    <div class="lhead"><span class="pill st-${esc(t.status)}">${STATUS[t.status] || esc(t.status)}</span>
+      <b>${esc(proj?.name || t.project || 'Auto')}</b>${t.worktree ? `<span class="wt">🌿 parallèle</span>` : ''}
+      <span class="since" data-since="${Number(t.created)}"></span></div>
+    <div class="linst">${esc(t.instruction || '')}</div>
+    <div class="lstep">${t.status === 'running' ? '<span class="spin"></span>' : ''}<span>${esc(currentStep(e))}</span></div>${plan}</button>`;
+}
+
+function podCard(w) {
+  const st = w.state || {};
+  const r = st.resources || {};
+  const cpuTxt = r.cpu == null ? '—' : `${Math.round(r.cpu * 100)} % de ${String(r.cpu_cores).replace('.', ',')} cœurs`;
+  const meters = !w.online ? '' : meter('CPU', r.cpu, cpuTxt, 'part de la limite CPU du pod')
+    + meter('Mémoire', r.mem_limit ? r.mem_used / r.mem_limit : null, r.mem_limit ? `${fmtGo(r.mem_used)} / ${fmtGo(r.mem_limit)}` : '—', 'ensemble de travail / limite du conteneur')
+    + meter('Disque', r.disk_total ? r.disk_used / r.disk_total : null, r.disk_total ? `${fmtGo(r.disk_used)} / ${fmtGo(r.disk_total)}` : '—', 'volume ~/work');
+  const running = [...state.tasks.values()].filter((e) => e.task.worker === w.id && ['running', 'waiting_approval'].includes(e.task.status)).length;
+  const max = st.max_agents || 0;
+  const slots = max ? `<div class="slots" title="${running} Claude actif(s) sur ${max} possibles">${Array.from({ length: max }, (_, i) =>
+    `<i class="${i < running ? 'on' : ''}"></i>`).join('')}<span>${running}/${max} Claude${st.queued ? ` · ${st.queued} en file` : ''}</span></div>` : '';
+  const projects = (w.projects || []).map((pid) => {
+    const p = state.projects.find((x) => x.id === pid);
+    const g = st.projects?.[pid];
+    const git = !g ? '<span class="muted">sans git</span>' : [
+      `⎇ ${esc(g.branch || '?')}`,
+      g.dirty ? `<span class="warnt">● ${plural(g.dirty, 'fichier')} non commité${g.dirty > 1 ? 's' : ''}</span>` : '<span class="okt">propre</span>',
+      g.ahead ? `↑${g.ahead} à pousser` : '', g.behind ? `↓${g.behind} en retard` : '',
+    ].filter(Boolean).join(' · ');
+    const last = g?.last_commit ? `<div class="lastc" title="${esc(g.last_commit.sha)}">${esc(g.last_commit.subject)} · <span data-ago="${g.last_commit.ts}"></span></div>` : '';
+    return `<div class="proj"><div class="pname">${esc(p?.name || pid)}</div><div class="pgit">${git}</div>${last}</div>`;
+  }).join('');
+  const wts = (st.worktrees || []).map((wt) => {
+    const id = [...state.order].reverse().find((x) => conversationOf(x) === wt.conversation);
+    const e = id && state.tasks.get(id);
+    const busy = e && ACTIVE.has(e.task.status);
+    const btns = e?.task.worktree && !busy ? `<button class="btn ghost" data-wt="merge" data-task-id="${esc(id)}">Fusionner</button><button class="btn ghost" data-wt="discard" data-task-id="${esc(id)}">Jeter</button>` : '';
+    return `<div class="wtrow"><span>🌿 <b>${esc(wt.branch)}</b> <span class="muted">${esc(wt.project)}</span>${busy ? ' · <span class="acc">en cours</span>' : ''}</span>
+      <span class="wtbtns">${e ? `<button class="btn ghost" data-jump="${esc(id)}">Voir</button>` : ''}${btns}</span></div>`;
+  }).join('');
+  return `<article class="podcard${w.online ? '' : ' off'}">
+    <div class="podhead"><span class="dot${w.online ? ' on' : ''}"></span><b>${esc(w.name)}</b>
+      <span class="tag">${w.orchestrator ? 'orchestrateur' : 'projet'}</span>
+      <span class="muted podseen">${w.online ? (st.started ? `actif depuis <span data-uptime="${st.started}"></span>` : 'en ligne') : `hors ligne · vu <span data-ago="${w.seen}"></span>`}</span></div>
+    ${slots}${meters ? `<div class="meters">${meters}</div>` : ''}
+    ${projects ? `<div class="projs">${projects}</div>` : ''}
+    ${wts ? `<div class="wts"><div class="sub">Branches parallèles</div>${wts}</div>` : ''}
+    <div class="podfoot">Aujourd'hui : ${plural(w.tasks_today, 'tâche')} · ${fmtCost(w.cost_today)}</div></article>`;
+}
+
+function recentRow(e) {
+  const t = e.task;
+  const { c } = changesOf(e);
+  const proj = state.projects.find((p) => p.id === t.project);
+  const icon = { done: '✅', error: '❌', cancelled: '⏹', needs_project: '❓' }[t.status] || '•';
+  return `<button class="recent" data-jump="${esc(t.id)}"><span class="ri">${icon}</span>
+    <span class="rbody"><span class="rinst">${esc(t.instruction || '')}</span>
+      <span class="rmeta">${esc(proj?.name || t.project || '')}${c && (c.file_count || c.commits?.length) ? ` · ${changesLine(c)}` : ''}${t.worktree ? ' · 🌿' : ''}</span></span>
+    <span class="rtime" data-ago="${Number(t.updated || t.created)}"></span></button>`;
+}
+
+const dashVisible = () => getComputedStyle($('#dash')).display !== 'none';
+
+function renderDash() {
+  const tasks = [...state.tasks.values()];
+  const active = tasks.filter((e) => ACTIVE.has(e.task.status));
+  const working = active.filter((e) => ['running', 'waiting_approval'].includes(e.task.status)).length;
+  $('#tabCount').textContent = active.length;
+  $('#tabCount').classList.toggle('hidden', !active.length);
+  if (!dashVisible()) return;
+  let pending = 0;
+  for (const e of tasks) for (const a of e.approvals.values()) if (!a.decision) pending++;
+  const online = state.workers.filter((w) => w.online);
+  const capacity = online.reduce((n, w) => n + (w.state?.max_agents || 0), 0);
+  const today = state.workers.reduce((n, w) => n + (w.tasks_today || 0), 0);
+  const cost = state.workers.reduce((n, w) => n + (w.cost_today || 0), 0);
+  const recent = tasks.filter((e) => !ACTIVE.has(e.task.status) && e.task.instruction)
+    .sort((a, b) => (b.task.updated || b.task.created) - (a.task.updated || a.task.created)).slice(0, 8);
+
+  const kpi = (v, l, cls = '', title = '') => `<div class="kpi ${cls}" title="${esc(title)}"><div class="v">${v}</div><div class="l">${l}</div></div>`;
+  const html = `<div class="dashwrap">
+    <div class="kpis">
+      ${kpi(`${working}<small>/${capacity || '—'}</small>`, 'Claude au travail', '', 'agents actifs / capacité des pods en ligne')}
+      ${kpi(pending ? `⚠ ${pending}` : '0', 'Validation(s) en attente', pending ? 'warn' : '')}
+      ${kpi(today, 'Tâches aujourd\'hui')}
+      ${kpi(fmtCost(cost), 'Coût du jour')}
+    </div>
+    <section class="sect"><h3>En cours</h3>${active.length
+      ? `<div class="lives">${active.map(liveCard).join('')}</div>`
+      : '<div class="emptyd">Aucun Claude ne travaille. Envoie une instruction ; pour en lancer plusieurs, ouvre une nouvelle conversation par tâche.</div>'}</section>
+    <section class="sect"><h3>Pods · ${online.length} en ligne</h3>${state.workers.length
+      ? `<div class="pods">${state.workers.map(podCard).join('')}</div>`
+      : '<div class="emptyd">Aucun pod connecté. Lance « ./run.sh » dans un service VSCode Onyxia.</div>'}</section>
+    ${recent.length ? `<section class="sect"><h3>Terminées récemment</h3><div class="recents">${recent.map(recentRow).join('')}</div></section>` : ''}
+  </div>`;
+  // Reconstruit seulement si le contenu change (survol, focus et clics préservés) ; les durées vivent dans tick().
+  if (html !== state.dashHtml) { $('#dash').innerHTML = html; state.dashHtml = html; tick(); }
+}
+
+function setView(v) {
+  state.view = v;
+  document.body.classList.toggle('view-dash', v === 'dash');
+  $('#tabChat').setAttribute('aria-selected', String(v === 'chat'));
+  $('#tabDash').setAttribute('aria-selected', String(v === 'dash'));
+  try { localStorage.setItem('cockpit_view', v); } catch { /* sans importance */ }
+  renderDash();
+}
+
+function jumpTo(id) {
+  if (state.view === 'dash' && !matchMedia('(min-width: 1100px)').matches) setView('chat');
+  const el = document.getElementById(`t-${id}`);
+  if (!el) return;
+  el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  el.classList.remove('flash');
+  void el.offsetWidth;
+  el.classList.add('flash');
+}
+
+addEventListener('resize', () => renderDash());
 
 // ---------- conversations
 const conversationOf = (id) => state.tasks.get(id)?.task.conversation || id;
@@ -329,15 +574,18 @@ function renderProjects() {
     `${labelled ? `<span class="pod ${g.online ? 'on' : 'off'}" title="${g.online ? 'en ligne' : 'hors ligne'}">${esc(g.name)}</span>` : ''}${g.projects.map(chip).join('')}`).join('');
 }
 
-setInterval(() => {
+function tick() {
+  document.querySelectorAll('[data-uptime]').forEach((el) => { el.textContent = dureeLongue(Date.now() / 1000 - Number(el.dataset.uptime)); });
   document.querySelectorAll('[data-expires]').forEach((el) => {
     const s = Math.max(0, Math.round(el.dataset.expires - Date.now() / 1000));
     el.textContent = `refus automatique dans ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
   });
+  document.querySelectorAll('[data-ago]').forEach((el) => { el.textContent = ago(Number(el.dataset.ago)); });
   document.querySelectorAll('[data-since]').forEach((el) => {
     el.textContent = ` · ${duree(Date.now() / 1000 - Number(el.dataset.since))}`;
   });
-}, 1000);
+}
+setInterval(tick, 1000);
 
 // ---------- synchronisation (interrogation du relais)
 let pollTimer = null;
@@ -367,6 +615,8 @@ async function poll() {
     $('#conn').classList.toggle('on', s.worker_online);
     $('#conn').title = s.worker_online ? 'worker Onyxia connecté' : 'worker Onyxia hors ligne';
     render(touched);
+    state.workers = s.workers || [];
+    renderDash();
     state.replay = false;
   } catch (e) {
     $('#conn').classList.remove('on');
@@ -411,6 +661,15 @@ document.addEventListener('click', async (ev) => {
       poll();
     } else if (b.dataset.cancel) {
       await api('annuler', { task_id: b.dataset.cancel });
+      poll();
+    } else if (b.dataset.view) {
+      setView(b.dataset.view);
+    } else if (b.dataset.jump) {
+      jumpTo(b.dataset.jump);
+    } else if (b.dataset.wt) {
+      if (b.dataset.wt === 'discard' && !confirm('Jeter cette branche et tout son travail ?')) return;
+      b.disabled = true;
+      await api('worktree', { task_id: b.dataset.taskId, action: b.dataset.wt });
       poll();
     } else if (b.dataset.reply) {
       setReplyTo(b.dataset.reply);
@@ -517,6 +776,7 @@ async function start() {
   }
 }
 
+try { if (localStorage.getItem('cockpit_view') === 'dash') setView('dash'); } catch { /* navigation privée */ }
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(console.error);
 // Lien d'appairage ouvert alors que le cockpit est déjà affiché : seul le #hash change.
 window.addEventListener('hashchange', () => { if (location.hash.includes('pair=')) start(); });

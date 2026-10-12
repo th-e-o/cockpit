@@ -360,3 +360,53 @@ def test_conversation(relay):
     got = wpoll(relay, "pod-c", False)["tasks"]
     assert got[0]["id"] == t3["id"] and got[0]["context"] == [] and got[0]["resume_session"] is None
     assert call(p, "tache", {"instruction": "x", "reply_to": "inexistante"}).status_code == 400
+
+
+def test_tableau_de_bord_modifications_et_parallele(relay):
+    """État des pods, résumé des modifications (diffs à la demande), fusion d'un worktree, tâches filles."""
+    p = paired_phone(relay)
+    state = {"resources": {"cpu": 0.42, "cpu_cores": 2, "mem_used": 3 * 1024**3, "mem_limit": 8 * 1024**3},
+             "projects": {"tb": {"branch": "main", "dirty": 2}}, "running": 1, "max_agents": 3, "worktrees": []}
+    wpoll(relay, "pod-tb", False, [{"id": "tb", "name": "Tableau"}], hello=True, state=state)
+    w = {x["id"]: x for x in call(p, "etat").json()["workers"]}["pod-tb"]
+    assert w["online"] and w["state"]["resources"]["cpu"] == 0.42 and w["projects"] == ["tb"]
+    assert w["orchestrator"] is False and w["tasks_today"] == 0
+
+    t = call(p, "tache", {"instruction": "ajoute une page", "project": "tb"}).json()
+    assert [x["id"] for x in wpoll(relay, "pod-tb", False)["tasks"]] == [t["id"]]
+    changes = {"files": [{"path": "web/page.html", "status": "A", "added": 12, "removed": 0}], "file_count": 1,
+               "added": 12, "removed": 0, "commits": [{"sha": "abc1234", "subject": "Ajoute la page"}], "branch": "cockpit/x"}
+    worktree = {"branch": "cockpit/x", "path": "/w/tb-x", "state": "active"}
+    worker_call(relay, "w_evenements", {"worker_id": "pod-tb", "events": [
+        {"kind": "message", "task_id": t["id"], "type": "changes", "changes": changes,
+         "patches": {"web/page.html": "@@ -0,0 +1 @@\n+<h1>Page</h1>"}},
+        {"kind": "task", "task_id": t["id"], "task": {"status": "done", "project": "tb", "result": "**Fait** — page",
+                                                      "cost_usd": 0.12, "changes": changes, "worktree": worktree}}]})
+    evts = call(p, "etat").json()["events"]
+    ch = [e for e in evts if e.get("type") == "changes"][-1]
+    assert "patches" not in ch and ch["has_patches"] is True  # le fil reste léger
+    task = last_status(p)[t["id"]]
+    assert task["changes"]["added"] == 12 and task["worktree"]["state"] == "active" and task["worker"] == "pod-tb"
+    assert call(p, "diff", task=t["id"]).json()["patches"]["web/page.html"].endswith("<h1>Page</h1>")
+    fini = {x["id"]: x for x in call(p, "resume").json()["finished"]}
+    assert fini[t["id"]]["changes"]["file_count"] == 1  # notification de fin
+    assert {x["id"]: x for x in call(p, "etat").json()["workers"]}["pod-tb"]["cost_today"] == 0.12
+
+    # Fusion demandée par le téléphone -> livrée au worker -> état conservé sur la tâche
+    assert call(p, "worktree", {"task_id": t["id"], "action": "rm -rf"}).status_code == 400
+    assert call(p, "worktree", {"task_id": t["id"], "action": "merge"}).json()["ok"]
+    acts = wpoll(relay, "pod-tb", False)["worktree_actions"]
+    assert acts == [{"task_id": t["id"], "project": "tb", "conversation": t["id"], "action": "merge"}]
+    assert wpoll(relay, "pod-tb", False)["worktree_actions"] == []  # livrée une seule fois
+    worker_call(relay, "w_evenements", {"worker_id": "pod-tb", "events": [
+        {"kind": "message", "task_id": t["id"], "type": "worktree", "state": "merged", "ok": True, "text": "Fusionnée."}]})
+    assert last_status(p)[t["id"]]["worktree"]["state"] == "merged"
+
+    # Tâches filles (lancer_en_parallele) : une conversation chacune, livrées au worker du projet
+    assert worker_call(relay, "w_taches", {"parent": t["id"], "tasks": [{"instruction": "x", "project": "inconnu"}]}).status_code == 400
+    assert worker_call(relay, "w_taches", {"parent": t["id"], "tasks": [{"instruction": "x", "project": "tb"}] * 6}).status_code == 400
+    ids = worker_call(relay, "w_taches", {"parent": t["id"], "tasks": [
+        {"instruction": "module A", "project": "tb"}, {"instruction": "module B", "project": "tb"}]}).json()["ids"]
+    livrees = wpoll(relay, "pod-tb", False)["tasks"]
+    assert [x["id"] for x in livrees] == ids and all(x["parent"] == t["id"] and x["conversation"] == x["id"] for x in livrees)
+    assert last_status(p)[ids[0]]["parent"] == t["id"]

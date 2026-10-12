@@ -55,6 +55,19 @@ Puis, sur iPhone : Partager → *Sur l'écran d'accueil*. Ouvre le cockpit depui
 - Puce **Auto** : le routeur choisit le projet. Sous 70 % de confiance, il te demande lequel.
   Une puce projet envoie directement ; **●** signale une conversation reprise, et **nouv.** repart de zéro.
 - La pastille verte indique que le worker est connecté. Une instruction envoyée hors ligne part dès sa reconnexion.
+- **Résumé des modifications** : à la fin de chaque tâche, le worker compare l'état git du projet avant et après
+  (instantané avec un index temporaire, sans toucher au dépôt) : fichiers ajoutés/modifiés/supprimés, lignes `+/−`,
+  commits, branche et état du push. Toucher un fichier affiche son diff (chargé à la demande). La réponse de Claude
+  suit trois rubriques : **Fait**, **Choix**, **À faire**. La notification de fin reprend ce résumé.
+- **Tableau de bord** (onglet *Pods* sur téléphone, à droite du fil sur un écran large) : Claude au travail,
+  validations en attente, tâches et coût du jour ; pour chaque pod, CPU / mémoire (cgroup, comme `kubectl top`) /
+  disque de `~/work`, agents actifs, état git de chaque projet et branches parallèles. Toucher une carte ouvre la tâche.
+- **Plusieurs Claude en parallèle** : chaque conversation a son agent. Des conversations sur des projets différents
+  tournent ensemble ; sur le même projet, la première travaille dans le dossier principal et les suivantes dans un
+  **worktree git** dédié (`~/work/.cockpit-worktrees/<projet>-<conversation>`, branche `cockpit/<conversation>`).
+  À la fin, *Fusionner* (commit du travail restant puis `merge --no-ff` dans la branche courante du projet) ou
+  *Jeter*. Claude peut aussi découper lui-même une grosse demande avec l'outil `lancer_en_parallele`
+  (jusqu'à 5 sous-tâches, soumis à validation). Au plus `COCKPIT_MAX_AGENTS` agents simultanés par pod (3 par défaut).
 - ☰ : journal d'audit, notifications, passkeys (ajout/suppression), déconnexion.
 - `./run.sh logs | stop | fg` côté Onyxia.
 
@@ -64,7 +77,8 @@ Puis, sur iPhone : Partager → *Sur l'écran d'accueil*. Ouvre le cockpit depui
 - `config/policy.yaml` : règles `deny > ask > allow > défaut (ask)` par outil, chemin de fichier et commande shell.
   Les commandes composées (`&&`, `|`, `;`) sont évaluées segment par segment. Les substitutions et les redirections
   `>` passent toujours en validation.
-- Variables : `COCKPIT_RELAY_URL` (défaut `https://deltastat.fr/cockpit`) et `COCKPIT_WORKER_KEY`.
+- Variables : `COCKPIT_RELAY_URL` (défaut `https://deltastat.fr/cockpit`), `COCKPIT_WORKER_KEY`,
+  `COCKPIT_MAX_AGENTS` (agents simultanés par pod, défaut 3) et `COCKPIT_WORKTREES` (dossier des worktrees).
 
 ## Sécurité : ce qu'il faut savoir
 
@@ -90,6 +104,8 @@ Puis, sur iPhone : Partager → *Sur l'écran d'accueil*. Ouvre le cockpit depui
 - Les agents tournent dans le pod où le worker est lancé : les projets doivent être sur son disque.
   Le worker s'arrête avec le pod ; il faut le relancer avec `./run.sh` (ou via le script d'initialisation du service Onyxia).
 - Une tâche en cours est perdue si le worker redémarre : elle passe en erreur et ses validations expirent.
+- Un worktree part du dernier commit : les modifications non commitées du dossier principal n'y sont pas.
+  Les nouveaux fichiers de plus de 5 Mo (données, modèles) sont ignorés par le résumé des modifications.
 
 ## Tests
 
@@ -97,6 +113,7 @@ Puis, sur iPhone : Partager → *Sur l'écran d'accueil*. Ouvre le cockpit depui
 COCKPIT_PHP=/chemin/vers/php .venv/bin/python -m pytest -q
 ```
 - `test_policy.py` : règles de sécurité.
+- `test_parallel.py` : résumé git des modifications, worktrees (fusion, rejet), deux agents simulés en parallèle.
 - `test_relay.py` : relais PHP réel, avec appairage, passkeys (signatures ECDSA) et circuit complet téléphone ↔ worker.
 - `test_ui.py` : la PWA dans Chromium (vue iPhone, authentificateur WebAuthn virtuel), de l'appairage à la
-  validation. Nécessite `playwright install chromium`.
+  validation, et le tableau de bord sur téléphone et sur ordinateur (captures dans `COCKPIT_SHOTS`). Nécessite `playwright install chromium`.

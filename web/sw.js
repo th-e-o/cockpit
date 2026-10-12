@@ -37,7 +37,12 @@ self.addEventListener('push', (e) => {
       } else if (s.finished?.length) {
         const t = s.finished[0];
         title = { done: '✅ Tâche terminée', error: '❌ Tâche en erreur', needs_project: '❓ Quel projet ?' }[t.status] || 'Cockpit';
-        body = (t.result || t.instruction || '').slice(0, 180);
+        // « 4 fichiers · +120 −35 · 2 commits », puis le début de la réponse (sans la mise en forme markdown)
+        const c = t.changes;
+        const resume = c && (c.file_count || c.commits?.length) ? [`${c.file_count} fichier${c.file_count > 1 ? 's' : ''}`,
+          c.git !== false ? `+${c.added} −${c.removed}` : '', c.commits?.length ? `${c.commits.length} commit${c.commits.length > 1 ? 's' : ''}` : '']
+          .filter(Boolean).join(' · ') + '\n' : '';
+        body = (resume + (t.result || t.instruction || '').replace(/\*\*|`/g, '')).slice(0, 200);
         tag = `tache-${t.id}`;
       }
       if (navigator.setAppBadge) navigator.setAppBadge(s.approvals?.length || 0).catch(() => {});

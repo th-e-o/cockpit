@@ -18,26 +18,37 @@
   <header>
     <span id="conn" class="dot" title="worker Onyxia"></span>
     <h1>Cockpit</h1>
+    <nav class="tabs" role="tablist" aria-label="vue">
+      <button type="button" role="tab" id="tabChat" data-view="chat" aria-selected="true">💬 Fil</button>
+      <button type="button" role="tab" id="tabDash" data-view="dash" aria-selected="false">📊 Pods <span id="tabCount" class="tabcount hidden"></span></button>
+    </nav>
     <button id="pendingBtn" class="badge hidden" aria-label="validations en attente">0</button>
     <button id="menuBtn" class="icon" aria-label="menu">☰</button>
   </header>
 
+  <div id="layout">
+  <div id="chat">
   <main id="feed" aria-live="polite">
     <div class="empty">Envoie une instruction. Le cockpit choisit le projet si tu restes sur <b>Auto</b>.
-      Les messages suivants continuent la conversation.</div>
+      Les messages suivants continuent la conversation ; « Nouvelle conversation » lance un autre Claude en parallèle.</div>
   </main>
 
   <footer>
     <div id="projects" class="chips" role="radiogroup" aria-label="projet"></div>
     <div id="thread" class="thread hidden">
       <span id="threadText"></span>
-      <button type="button" id="newConv" class="btn ghost">Nouvelle conversation</button>
+      <button type="button" id="newConv" class="btn ghost" title="un autre Claude démarre, en parallèle si le projet est occupé">Nouvelle conversation</button>
     </div>
     <form id="composer">
       <textarea id="input" rows="1" placeholder="Ton instruction…" enterkeyhint="send"></textarea>
       <button type="submit" id="send" aria-label="envoyer">➤</button>
     </form>
   </footer>
+  </div>
+
+  <!-- Tableau de bord : Claude actifs, pods (ressources, projets, branches parallèles), dernières modifications -->
+  <aside id="dash" aria-label="Tableau de bord"></aside>
+  </div>
 
   <!-- Écran de connexion : passkey, ou appairage par QR code -->
   <section id="auth" class="auth hidden">

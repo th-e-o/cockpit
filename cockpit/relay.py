@@ -36,9 +36,12 @@ class Relay:
             raise RuntimeError(f"relais {route} : HTTP {r.status_code} {r.text[:200]}")
         return r.json()
 
-    async def poll(self, projects: list[dict], hello: bool = False, wait: float | None = None) -> dict:
+    async def poll(self, projects: list[dict], hello: bool = False, wait: float | None = None,
+                   state: dict | None = None) -> dict:
         body: dict = {"projects": projects, "hello": hello, "instance": self.instance, "worker_id": self.worker_id,
                       "name": self.name, "orchestrateur": self.orchestrator}
+        if state is not None:
+            body["state"] = state
         if wait is not None:
             body["wait"] = wait
         return await self.call("w_poll", body)
@@ -46,6 +49,10 @@ class Relay:
     async def affecter(self, task_id: str, project: str) -> str:
         """Confie une tâche au worker qui héberge le projet ; renvoie l'id de ce worker."""
         return (await self.call("w_affecter", {"task_id": task_id, "project": project}))["worker"]
+
+    async def creer_taches(self, parent: str, tasks: list[dict]) -> list[str]:
+        """Crée des tâches filles (une conversation chacune) ; le relais les livre au worker de leur projet."""
+        return (await self.call("w_taches", {"parent": parent, "tasks": tasks, "worker_id": self.worker_id}))["ids"]
 
     async def pairing_url(self) -> str:
         return (await self.call("w_appairage", {}))["url"]

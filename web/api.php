@@ -21,6 +21,8 @@ const WORKER_EN_LIGNE = 45;             // worker considéré hors ligne au-del�
 const LIMITE_ECHECS_IP = [20, 900];     // échecs d'authentification par IP
 const TACHES_VISIBLES = 30;
 const CONTEXTE_ECHANGES = 6;              // échanges précédents transmis au worker (routage, reprise sans session)
+const WORKERS_VISIBLES = 7 * 86400;     // tableau de bord : pods vus dans les 7 derniers jours
+const TACHES_FILLES_MAX = 5;            // lancer_en_parallele : sous-tâches par appel
 
 $CONFIG = require __DIR__ . '/config.php';
 
@@ -79,8 +81,12 @@ CREATE TABLE IF NOT EXISTS workers (
     orchestrateur INTEGER NOT NULL DEFAULT 1, vu_le INTEGER NOT NULL DEFAULT 0);
 SQL);
     $colonnes = array_column($pdo->query('PRAGMA table_info(taches)')->fetchAll(), 'name');
-    foreach (['worker_id', 'conversation', 'suite_de', 'session'] as $c) {
+    // extra : champs fournis par le worker (modifications, worktree) ; action_worktree : demande du téléphone.
+    foreach (['worker_id', 'conversation', 'suite_de', 'session', 'extra', 'parent', 'action_worktree'] as $c) {
         if (!in_array($c, $colonnes, true)) $pdo->exec("ALTER TABLE taches ADD COLUMN $c TEXT");
+    }
+    if (!in_array('etat', array_column($pdo->query('PRAGMA table_info(workers)')->fetchAll(), 'name'), true)) {
+        $pdo->exec('ALTER TABLE workers ADD COLUMN etat TEXT');
     }
     return $pdo;
 }
@@ -302,11 +308,40 @@ function inserer_evenement(string $tacheId, array $evt): void {
 }
 
 function tache_publique(array $t): array {
+    $extra = json_decode($t['extra'] ?? '', true) ?: [];
     return [
         'id' => $t['id'], 'instruction' => $t['instruction'], 'project' => $t['projet'], 'status' => $t['statut'],
         'route_reason' => $t['raison_routage'], 'result' => $t['resultat'], 'cost_usd' => (float)$t['cout'],
-        'created' => (int)$t['cree_le'], 'conversation' => $t['conversation'] ?? $t['id'], 'reply_to' => $t['suite_de'] ?? null,
+        'created' => (int)$t['cree_le'], 'updated' => (int)$t['maj_le'], 'conversation' => $t['conversation'] ?? $t['id'],
+        'reply_to' => $t['suite_de'] ?? null, 'worker' => $t['worker_id'] ?? null, 'parent' => $t['parent'] ?? null,
+        'changes' => $extra['changes'] ?? null, 'worktree' => $extra['worktree'] ?? null,
     ];
+}
+
+/** Pods pour le tableau de bord : état envoyé par chaque worker, et activité du jour (tâches, coût). */
+function workers_publics(): array {
+    $jour = strtotime('today');
+    $stats = [];
+    foreach (q('SELECT worker_id, COUNT(*) n, SUM(cout) cout FROM taches WHERE cree_le >= ? GROUP BY worker_id', [$jour])->fetchAll() as $r) {
+        $stats[$r['worker_id'] ?? ''] = ['tasks_today' => (int)$r['n'], 'cost_today' => round((float)$r['cout'], 4)];
+    }
+    return array_map(fn($w) => [
+        'id' => $w['id'], 'name' => $w['nom'], 'orchestrator' => (bool)$w['orchestrateur'],
+        'online' => time() - (int)$w['vu_le'] < WORKER_EN_LIGNE, 'seen' => (int)$w['vu_le'],
+        'projects' => array_column(json_decode($w['projets'], true) ?: [], 'id'),
+        'state' => json_decode($w['etat'] ?? '', true) ?: null,
+    ] + ($stats[$w['id']] ?? ['tasks_today' => 0, 'cost_today' => 0]),
+        q('SELECT * FROM workers WHERE vu_le > ? ORDER BY orchestrateur DESC, nom', [time() - WORKERS_VISIBLES])->fetchAll());
+}
+
+/** Événement envoyé au téléphone : les diffs ne partent qu'à la demande (route « diff »), pour alléger le fil. */
+function evenement_public(string $donnees): array {
+    $e = json_decode($donnees, true);
+    if (($e['type'] ?? '') === 'changes' && isset($e['patches'])) {
+        $e['has_patches'] = (bool)$e['patches'];
+        unset($e['patches']);
+    }
+    return $e;
 }
 
 /** Échanges précédents de la conversation (du plus ancien au plus récent), pour le routage et la reprise. */
@@ -432,12 +467,29 @@ switch ($route) {
         }
         $dernier = $evts ? (int)end($evts)['id'] : max($depuis, (int)q('SELECT COALESCE(MAX(id), 0) FROM evenements')->fetchColumn());
         repondre([
-            'events' => array_map(fn($e) => json_decode($e['donnees'], true), $evts),
+            'events' => array_map(fn($e) => evenement_public($e['donnees']), $evts),
             'last_id' => $dernier,
             'projects' => projets(),
             'worker_online' => worker_en_ligne(),
             'pending' => (int)q('SELECT COUNT(*) FROM validations WHERE decision IS NULL')->fetchColumn(),
+            'workers' => workers_publics(),
         ]);
+
+    case 'diff': // diffs par fichier des modifications d'une tâche
+        exiger_session();
+        $d = q("SELECT donnees FROM evenements WHERE tache_id = ? AND donnees LIKE '%\"type\":\"changes\"%' ORDER BY id DESC LIMIT 1",
+               [(string)($_GET['task'] ?? '')])->fetchColumn();
+        repondre(['patches' => $d === false ? (object)[] : ((json_decode($d, true)['patches'] ?? null) ?: (object)[])]);
+
+    case 'worktree': // fusionner ou jeter la branche d'une tâche lancée en parallèle
+        exiger_session();
+        $action = (string)($in['action'] ?? '');
+        if (!in_array($action, ['merge', 'discard'], true)) erreur('action invalide');
+        $t = q('SELECT * FROM taches WHERE id = ?', [(string)($in['task_id'] ?? '')])->fetch() ?: erreur('tâche introuvable', 404);
+        if (!(json_decode($t['extra'] ?? '', true)['worktree'] ?? null)) erreur('cette tâche n\'a pas de worktree');
+        if (in_array($t['statut'], ['pending', 'routing', 'queued', 'running', 'waiting_approval'], true)) erreur('tâche en cours', 409);
+        q('UPDATE taches SET action_worktree = ? WHERE id = ?', [$action, $t['id']]);
+        repondre(['ok' => true]);
 
     case 'resume': // appelé par le service worker à la réception d'une notification push
         exiger_session();
@@ -531,6 +583,10 @@ switch ($route) {
         if (isset($in['projects'])) {
             q('UPDATE workers SET projets = ? WHERE id = ?', [json_encode($in['projects'], JSON_UNESCAPED_UNICODE), $wid]);
         }
+        if (isset($in['state']) && is_array($in['state'])) {
+            $etat = json_encode($in['state'], JSON_UNESCAPED_UNICODE);
+            if (strlen($etat) <= 64000) q('UPDATE workers SET etat = ? WHERE id = ?', [$etat, $wid]);
+        }
         if (!empty($in['hello'])) {
             // Ce worker vient de (re)démarrer : ce qu'il exécutait est perdu.
             foreach (q("SELECT id FROM taches WHERE livree = 1 AND worker_id = ? AND statut NOT IN ('done','error','cancelled','needs_project')", [$wid])->fetchAll(PDO::FETCH_COLUMN) as $id) {
@@ -565,17 +621,21 @@ switch ($route) {
             q('UPDATE taches SET annulation = 0 WHERE annulation = 1 AND worker_id = ?', [$wid]);
             $choix = q('SELECT id, choix_projet FROM taches WHERE choix_projet IS NOT NULL AND worker_id = ?', [$wid])->fetchAll();
             q('UPDATE taches SET choix_projet = NULL WHERE choix_projet IS NOT NULL AND worker_id = ?', [$wid]);
+            $worktrees = q('SELECT id, projet, conversation, action_worktree FROM taches WHERE action_worktree IS NOT NULL AND worker_id = ?', [$wid])->fetchAll();
+            q('UPDATE taches SET action_worktree = NULL WHERE action_worktree IS NOT NULL AND worker_id = ?', [$wid]);
             db()->commit();
-            if ($taches || $decisions || $annulations || $choix) break;
+            if ($taches || $decisions || $annulations || $choix || $worktrees) break;
             usleep(500000);
         } while (microtime(true) < $fin && !connection_aborted());
         repondre([
             'tasks' => array_map(fn($t) => ['id' => $t['id'], 'instruction' => $t['instruction'],
                 'project' => $t['projet'], 'new_session' => (bool)$t['nouvelle_session'],
                 'conversation' => $t['conversation'] ?? $t['id'], 'context' => $t['conversation'] ? contexte($t) : [],
-                'resume_session' => $t['conversation'] ? session_conversation($t) : null], $taches),
+                'resume_session' => $t['conversation'] ? session_conversation($t) : null, 'parent' => $t['parent'] ?? null], $taches),
             'decisions' => $decisions, 'cancels' => $annulations,
             'choices' => array_map(fn($c) => ['task_id' => $c['id'], 'project' => $c['choix_projet']], $choix),
+            'worktree_actions' => array_map(fn($w) => ['task_id' => $w['id'], 'project' => $w['projet'],
+                'conversation' => $w['conversation'] ?? $w['id'], 'action' => $w['action_worktree']], $worktrees),
             // Liste globale : l'orchestrateur route les tâches sans projet parmi tous les projets.
             'all_projects' => $orchestrateur ? projets() : [],
         ]);
@@ -591,6 +651,29 @@ switch ($route) {
         evenement_tache($id);
         repondre(['ok' => true, 'worker' => $cible]);
 
+    case 'w_taches': // tâches filles créées par un agent (lancer_en_parallele) : une conversation chacune
+        exiger_worker();
+        $parent = q('SELECT * FROM taches WHERE id = ?', [(string)($in['parent'] ?? '')])->fetch() ?: erreur('tâche parente introuvable', 404);
+        $liste = $in['tasks'] ?? [];
+        if (!is_array($liste) || !$liste || count($liste) > TACHES_FILLES_MAX) erreur('1 à ' . TACHES_FILLES_MAX . ' tâches');
+        $connus = array_column(projets(), 'id');
+        foreach ($liste as $f) {
+            $instruction = trim((string)($f['instruction'] ?? ''));
+            if ($instruction === '' || mb_strlen($instruction) > 10000) erreur('instruction vide ou trop longue');
+            if (!in_array($f['project'] ?? null, $connus, true)) erreur('projet inconnu : ' . ($f['project'] ?? '?'));
+        }
+        $ids = [];
+        db()->beginTransaction();
+        foreach ($liste as $f) {
+            $id = bin2hex(random_bytes(5));
+            q('INSERT INTO taches(id, instruction, projet, cree_le, maj_le, worker_id, conversation, parent) VALUES(?, ?, ?, ?, ?, ?, ?, ?)',
+              [$id, trim((string)$f['instruction']), $f['project'], time(), time(), worker_du_projet($f['project']), $id, $parent['id']]);
+            evenement_tache($id);
+            $ids[] = $id;
+        }
+        db()->commit();
+        repondre(['ids' => $ids]);
+
     case 'w_evenements':
         exiger_worker();
         $notifier = false;
@@ -605,10 +688,13 @@ switch ($route) {
                 case 'task':
                     $t = $evt['task'];
                     $avant = q('SELECT statut FROM taches WHERE id = ?', [$tacheId])->fetchColumn();
+                    $extra = json_decode((string)q('SELECT extra FROM taches WHERE id = ?', [$tacheId])->fetchColumn(), true) ?: [];
+                    foreach (['changes', 'worktree'] as $k) if (isset($t[$k])) $extra[$k] = $t[$k];
                     q('UPDATE taches SET statut = ?, projet = COALESCE(?, projet), raison_routage = ?, resultat = ?, cout = ?, maj_le = ?,
-                       session = COALESCE(?, session) WHERE id = ?',
+                       session = COALESCE(?, session), extra = ? WHERE id = ?',
                       [$t['status'], $t['project'] ?? null, (string)($t['route_reason'] ?? ''), (string)($t['result'] ?? ''),
-                       (float)($t['cost_usd'] ?? 0), time(), $t['session_id'] ?? null, $tacheId]);
+                       (float)($t['cost_usd'] ?? 0), time(), $t['session_id'] ?? null,
+                       $extra ? json_encode($extra, JSON_UNESCAPED_UNICODE) : null, $tacheId]);
                     $notifier = $notifier || ($avant !== $t['status'] && in_array($t['status'], ['done', 'error', 'needs_project'], true));
                     evenement_tache($tacheId);
                     break;
@@ -627,6 +713,17 @@ switch ($route) {
                     inserer_evenement($tacheId, $evt);
                     break;
                 case 'message':
+                    if (($evt['type'] ?? '') === 'worktree' && isset($evt['state'])) {
+                        // Branche fusionnée ou jetée : l'état est conservé sur la tâche (tableau de bord, rechargement).
+                        $extra = json_decode((string)q('SELECT extra FROM taches WHERE id = ?', [$tacheId])->fetchColumn(), true) ?: [];
+                        if (isset($extra['worktree'])) {
+                            $extra['worktree']['state'] = (string)$evt['state'];
+                            q('UPDATE taches SET extra = ?, maj_le = ? WHERE id = ?', [json_encode($extra, JSON_UNESCAPED_UNICODE), time(), $tacheId]);
+                            inserer_evenement($tacheId, $evt);
+                            evenement_tache($tacheId);
+                            break;
+                        }
+                    }
                     inserer_evenement($tacheId, $evt);
                     break;
             }
