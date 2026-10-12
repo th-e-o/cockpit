@@ -121,3 +121,18 @@ def test_lancement_depuis_le_telephone(tmp_path, monkeypatch):
     assert launched[0].depot_git == "https://github.com/a/drones" and launched[0].cpu == "2"
     assert dup.status == "error" and "existe déjà" in dup.result
     assert bad.status == "error" and "nom invalide" in bad.result and len(launched) == 1
+
+
+def test_carte_sans_gpu(monkeypatch):
+    """La carte de validation dit « sans GPU » et n'affiche le quota GPU que si un GPU est demandé."""
+    q = {"count/pods": {"used": "6", "hard": "100"}, "requests.nvidia.com/gpu": {"used": "0", "hard": "1"}}
+
+    async def quota(ns):
+        return q
+
+    monkeypatch.setattr(svc, "quota", quota)
+    monkeypatch.setattr(svc, "namespace", lambda: "ns")
+    cpu = asyncio.run(svc.describe(svc.LAUNCH_TOOL, {"nom": "etp", "depot_git": "https://github.com/a/b"}))
+    assert "2 CPU, 8Gi, 10Gi, sans GPU" in cpu and "GPU 0/1" not in cpu and "nvidia" not in cpu
+    gpu = asyncio.run(svc.describe(svc.LAUNCH_TOOL, {"nom": "etp", "gpu": True}))
+    assert "+ 1 GPU" in gpu and "GPU 0/1" in gpu

@@ -50,9 +50,13 @@ class Relay:
         """Confie une tâche au worker qui héberge le projet ; renvoie l'id de ce worker."""
         return (await self.call("w_affecter", {"task_id": task_id, "project": project}))["worker"]
 
-    async def creer_taches(self, parent: str, tasks: list[dict]) -> list[str]:
-        """Crée des tâches filles (une conversation chacune) ; le relais les livre au worker de leur projet."""
-        return (await self.call("w_taches", {"parent": parent, "tasks": tasks, "worker_id": self.worker_id}))["ids"]
+    async def creer_taches(self, parent: str, tasks: list[dict], defer: bool = False) -> list[str]:
+        """Crée des tâches filles (une conversation chacune) ; le relais les livre au worker de leur projet.
+
+        defer : le projet peut ne pas exister encore (pod en cours de démarrage) ; la tâche attend son worker.
+        """
+        return (await self.call("w_taches", {"parent": parent, "tasks": tasks, "worker_id": self.worker_id,
+                                             "defer": defer}))["ids"]
 
     async def image(self, task_id: str, jpeg_b64: str, caption: str = "") -> str:
         """Envoie une capture d'écran rattachée à une tâche ; renvoie son identifiant."""

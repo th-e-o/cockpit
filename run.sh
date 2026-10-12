@@ -4,6 +4,7 @@
 #   ./run.sh pair     affiche un QR code pour connecter un téléphone
 #   ./run.sh init     génère la clé du worker (une seule fois)
 #   ./run.sh logs     suit le journal ; ./run.sh stop arrête le worker
+#   ./run.sh usage    usage du forfait Claude tel que le lit le cockpit (diagnostic)
 set -euo pipefail
 cd "$(dirname "$0")"
 [ -x .venv/bin/python ] || { uv venv -q .venv && uv pip install -q --python .venv/bin/python -r requirements.txt; }
@@ -28,6 +29,7 @@ case "${1:-start}" in
   init) exec $PY -m cockpit.worker init ;;
   pair) exec $PY -m cockpit.worker pair ;;
   logs) exec tail -f data/worker.log ;;
+  usage) exec $PY -m cockpit.usage ;;   # diagnostic de la barre d'usage (jamais le jeton)
   stop) pkill -f "cockpit.worker run" && echo "Worker arrêté." || echo "Aucun worker actif." ;;
   fg)   exec $PY -m cockpit.worker run ;;
   start)

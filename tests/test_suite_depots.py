@@ -143,3 +143,24 @@ def test_nouveau_pod_avec_nouveau_depot(tmp_path, monkeypatch):
     assert ok.status == "done" and ok.result.startswith("Dépôt privé th-e-o/drones créé")
     assert launched[0].depot_git == "https://github.com/th-e-o/drones"
     assert dup.status == "error" and created == ["drones"]  # service existant : aucun dépôt orphelin
+
+
+def test_confier_au_projet(tmp_path):
+    """L'orchestrateur confie la demande au projet d'un pod qu'il vient de lancer (tâche différée)."""
+    sent = []
+
+    async def delegate(projet, instruction):
+        sent.append((projet, instruction))
+        return ["t9"]
+
+    created = {}
+    real = agent_mod.create_sdk_mcp_server
+    agent_mod.create_sdk_mcp_server = lambda name, tools: created.update({t.name: t.handler for t in tools}) or {}
+    try:
+        agent_mod.cockpit_server(str(tmp_path), [].extend, delegate=delegate)
+    finally:
+        agent_mod.create_sdk_mcp_server = real
+    r = asyncio.run(created["confier_au_projet"]({"projet": "analyse-etp", "instruction": "Analyse le code des ETP"}))
+    assert "dès que son pod sera connecté" in r["content"][0]["text"] and sent == [("analyse-etp", "Analyse le code des ETP")]
+    assert asyncio.run(created["confier_au_projet"]({"projet": "", "instruction": "x"}))["is_error"]
+    assert Policy.load(ROOT / "config" / "policy.yaml").evaluate("mcp__cockpit__confier_au_projet", {}, "/").action == "allow"

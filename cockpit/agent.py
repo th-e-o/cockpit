@@ -74,6 +74,9 @@ lancer_service, lister_services et arreter_service. N'utilise pas helm directeme
 Si l'utilisateur parle d'un de ses dépôts ou de son code GitHub qui n'est pas encore un projet du cockpit, trouve-le
 avec chercher_depots (plusieurs requêtes si besoin : synonymes, sigles), puis lance un service dessus avec
 lancer_service (depot_git = son URL) pour qu'il devienne un projet ; dis à l'utilisateur ce que tu as trouvé.
+Tu ne peux pas lire le code d'un autre pod depuis ici : après avoir lancé un service pour travailler sur un dépôt,
+transmets la demande de l'utilisateur au nouveau projet avec confier_au_projet (projet = nom du service) ; elle
+partira toute seule dès que son pod sera prêt. Ne propose pas de cloner le dépôt ici.
 Pour un nouveau projet sans dépôt git, lance le service sans dépôt (un dossier vide sera créé) ; choisis
 toi-même un nom court à partir de la demande et garde les ressources par défaut sauf besoin explicite.
 """
@@ -153,6 +156,8 @@ def tool_label(tool: str, i: dict) -> str | None:
             return f"🛑 Arrête le service {i.get('nom', '')}"
         case "proposer_suite":
             return None  # affiché comme « Prochaines étapes » sous la réponse
+        case "confier_au_projet":
+            return f"📨 Confie la demande au projet {i.get('projet', '')}"
         case "chercher_depots":
             return f"🔎 Cherche « {_clip(i.get('requete', ''), 40)} » dans tes dépôts GitHub"
         case "capturer_ecran":
@@ -220,7 +225,7 @@ async def open_pr(cwd: str, args: dict) -> dict:
                                  args.get("base", ""), bool(args.get("brouillon")))
 
 
-def cockpit_server(cwd: str, on_next, spawn=None, pub=None, upload=None):
+def cockpit_server(cwd: str, on_next, spawn=None, pub=None, upload=None, delegate=None):
     """Outils propres au cockpit : prochaines étapes, dépôts et PR GitHub, captures d'écran, agents en parallèle."""
 
     @tool("proposer_suite",
@@ -326,6 +331,26 @@ def cockpit_server(cwd: str, on_next, spawn=None, pub=None, upload=None):
                          "L'utilisateur suit leur avancement dans le cockpit ; tu n'as pas à les attendre.")
 
         tools.append(lancer)
+    if delegate:
+        @tool("confier_au_projet",
+              "Confie une consigne à un autre projet du cockpit (son agent travaille dans son propre pod, sur son code). "
+              "Le projet peut être un service que tu viens de lancer : la consigne partira dès que son pod sera connecté. "
+              "instruction : complète et autonome (l'autre agent ne voit pas cette conversation), en reprenant la demande "
+              "de l'utilisateur.",
+              {"type": "object", "properties": {"projet": {"type": "string"}, "instruction": {"type": "string"}},
+               "required": ["projet", "instruction"]})
+        async def confier(args: dict) -> dict:
+            projet, instruction = str(args.get("projet", "")).strip(), str(args.get("instruction", "")).strip()
+            if not projet or not instruction:
+                return _text("projet et instruction obligatoires", error=True)
+            try:
+                ids = await delegate(projet, instruction)
+            except Exception as e:
+                return _text(f"impossible de confier la consigne : {e}", error=True)
+            return _text(f"Consigne confiée au projet {projet} (tâche {ids[0]}) : elle partira dès que son pod sera "
+                         "connecté, et l'utilisateur la suit dans le cockpit. Tu n'as pas à l'attendre.")
+
+        tools.append(confier)
     return create_sdk_mcp_server("cockpit", tools=tools)
 
 
@@ -441,9 +466,11 @@ class Runner:
         if spawn:
             append += PARALLEL_APPEND
         upload = (lambda b64, caption: self.upload_image(task.id, b64, caption)) if self.upload_image else None
+        delegate = ((lambda projet, instruction: self.spawn_tasks(task, [{"instruction": instruction, "projet": projet}],
+                                                                  defer=True)) if self.spawn_tasks else None)
         servers["cockpit"] = cockpit_server(cwd, lambda steps: setattr(task, "next_steps", steps), spawn,
                                             pub=lambda **kw: self.store.publish("message", {"task_id": task.id, **kw}),
-                                            upload=upload)
+                                            upload=upload, delegate=delegate)
         if self.preview:
             append += PREVIEW_APPEND.format(**self.preview)
         if task.worktree:

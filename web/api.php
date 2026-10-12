@@ -98,10 +98,11 @@ SQL);
     $colonnes = array_column($pdo->query('PRAGMA table_info(taches)')->fetchAll(), 'name');
     // extra : champs fournis par le worker (modifications, worktree) ; action_worktree : demande du téléphone.
     // action : tâche exécutée directement par le worker, sans agent (lancement d'un pod depuis le téléphone).
+    // attente_projet : tâche confiée à un projet dont le pod démarre (livrée quand son worker se connecte) ;
     // modele : rapide|standard|approfondi ; isoler : variante (worktree dédié) ; groupe : variantes d'une même demande ;
     // recadrages : messages envoyés pendant la tâche, à livrer au worker.
     foreach (['worker_id', 'conversation', 'suite_de', 'session', 'extra', 'parent', 'action_worktree', 'action',
-              'modele', 'isoler', 'groupe', 'recadrages'] as $c) {
+              'modele', 'isoler', 'groupe', 'recadrages', 'attente_projet'] as $c) {
         if (!in_array($c, $colonnes, true)) $pdo->exec("ALTER TABLE taches ADD COLUMN $c TEXT");
     }
     // Clé d'appairage à saisir (ordinateur sans appareil photo) : même ligne que le jeton du lien QR.
@@ -355,6 +356,7 @@ function tache_publique(array $t): array {
         'duration_s' => $extra['duration_s'] ?? null, 'kind' => empty($t['action']) ? null : 'service',
         'next_steps' => $extra['next_steps'] ?? null, 'next_steps_dismissed' => !empty($extra['next_steps_dismissed']),
         'model' => $t['modele'] ?? null, 'group' => $t['groupe'] ?? null, 'tests' => $extra['tests'] ?? null,
+        'waiting_project' => !empty($t['attente_projet']),
     ];
 }
 
@@ -851,6 +853,13 @@ switch ($route) {
         if (q('SELECT instance FROM workers WHERE id = ?', [$wid])->fetchColumn() !== $instance) repondre(['superseded' => true]);
         if (isset($in['projects'])) {
             q('UPDATE workers SET projets = ? WHERE id = ?', [json_encode($in['projects'], JSON_UNESCAPED_UNICODE), $wid]);
+            // Tâches qui attendaient l'un de ces projets (pod tout juste lancé) : confiées à ce worker
+            foreach ($in['projects'] as $pr) {
+                foreach (q('SELECT id FROM taches WHERE attente_projet = 1 AND projet = ?', [(string)($pr['id'] ?? '')])->fetchAll(PDO::FETCH_COLUMN) as $tid) {
+                    q('UPDATE taches SET worker_id = ?, attente_projet = NULL, maj_le = ? WHERE id = ?', [$wid, time(), $tid]);
+                    evenement_tache($tid);
+                }
+            }
         }
         if (isset($in['state']) && is_array($in['state'])) {
             $etat = json_encode($in['state'], JSON_UNESCAPED_UNICODE);
@@ -872,7 +881,7 @@ switch ($route) {
             }
         }
         // Tâches à livrer : celles de ce worker, et (orchestrateur) celles sans worker, à router.
-        $mienne = $orchestrateur ? '(worker_id = ? OR worker_id IS NULL)' : 'worker_id = ?';
+        $mienne = $orchestrateur ? '(worker_id = ? OR (worker_id IS NULL AND attente_projet IS NULL))' : 'worker_id = ?';
         $fin = microtime(true) + ($in['wait'] ?? LONG_POLL);
         do {
             db()->beginTransaction();
@@ -971,17 +980,21 @@ switch ($route) {
         $liste = $in['tasks'] ?? [];
         if (!is_array($liste) || !$liste || count($liste) > TACHES_FILLES_MAX) erreur('1 à ' . TACHES_FILLES_MAX . ' tâches');
         $connus = array_column(projets(), 'id');
+        $differe = !empty($in['defer']);  // projet d'un pod qui démarre : la tâche attend que son worker se connecte
         foreach ($liste as $f) {
             $instruction = trim((string)($f['instruction'] ?? ''));
             if ($instruction === '' || mb_strlen($instruction) > 10000) erreur('instruction vide ou trop longue');
-            if (!in_array($f['project'] ?? null, $connus, true)) erreur('projet inconnu : ' . ($f['project'] ?? '?'));
+            $connu = in_array($f['project'] ?? null, $connus, true);
+            if (!$connu && !($differe && preg_match('/^[a-z0-9](?:[a-z0-9-]{0,28}[a-z0-9])?$/', (string)($f['project'] ?? ''))))
+                erreur('projet inconnu : ' . ($f['project'] ?? '?'));
         }
         $ids = [];
         db()->beginTransaction();
         foreach ($liste as $f) {
             $id = bin2hex(random_bytes(5));
-            q('INSERT INTO taches(id, instruction, projet, cree_le, maj_le, worker_id, conversation, parent) VALUES(?, ?, ?, ?, ?, ?, ?, ?)',
-              [$id, trim((string)$f['instruction']), $f['project'], time(), time(), worker_du_projet($f['project']), $id, $parent['id']]);
+            $wk = worker_du_projet($f['project']);
+            q('INSERT INTO taches(id, instruction, projet, cree_le, maj_le, worker_id, conversation, parent, attente_projet) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)',
+              [$id, trim((string)$f['instruction']), $f['project'], time(), time(), $wk, $id, $parent['id'], $wk ? null : 1]);
             evenement_tache($id);
             $ids[] = $id;
         }

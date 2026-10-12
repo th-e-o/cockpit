@@ -597,3 +597,20 @@ def test_mode_confiance(relay):
     assert any(a.get("event") == "trust" and a.get("minutes") == 30 for a in call(p, "audit", limit=20).json())
     call(p, "confiance", {"conversation": t["conversation"], "minutes": 0})
     assert t["conversation"] not in wpoll(relay, "pod-cf", False)["trust"]
+
+
+def test_consigne_pour_un_pod_qui_demarre(relay):
+    """confier_au_projet : la tâche attend le worker du nouveau pod, puis lui est livrée (jamais à l'orchestrateur)."""
+    p = paired_phone(relay)
+    wpoll(relay, "orch-df", True, [{"id": "df-onyxia", "name": "Onyxia"}], hello=True)
+    parent = call(p, "tache", {"instruction": "reprends mon code sur les fonctionnaires", "project": "df-onyxia"}).json()
+    body = {"parent": parent["id"], "tasks": [{"instruction": "Analyse le code", "project": "df-etp"}], "worker_id": "orch-df"}
+    assert worker_call(relay, "w_taches", body).status_code == 400  # projet inconnu sans « defer »
+    assert worker_call(relay, "w_taches", {**body, "tasks": [{"instruction": "x", "project": "Pas Bon"}], "defer": True}).status_code == 400
+    tid = worker_call(relay, "w_taches", {**body, "defer": True}).json()["ids"][0]
+    t = last_status(p)[tid]
+    assert t["waiting_project"] is True and t["status"] == "pending" and t["parent"] == parent["id"]
+    assert tid not in [x["id"] for x in wpoll(relay, "orch-df", True)["tasks"]]  # l'orchestrateur ne la prend pas
+    premier = wpoll(relay, "pod-df-etp", False, [{"id": "df-etp", "name": "df-etp"}], hello=True)  # le pod est prêt
+    assert [x["id"] for x in premier["tasks"]] == [tid]  # livrée dès sa première connexion
+    assert last_status(p)[tid]["waiting_project"] is False

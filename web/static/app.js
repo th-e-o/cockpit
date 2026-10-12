@@ -205,7 +205,7 @@ function serviceInput(a) {
   const i = a.tool_input;
   if (a.tool.endsWith('arreter_service')) return `cockpit-${i.nom}`;
   return [`Nom : cockpit-${i.nom}`, `Dépôt : ${i.depot_git ? `${i.depot_git}${i.branche ? ` (${i.branche})` : ''}` : 'aucun (dossier vide)'}`,
-    `Ressources : ${i.cpu || 2} CPU · ${i.memoire || '8Gi'} · ${i.disque || '10Gi'} de disque${i.gpu ? ' · 1 GPU' : ''}`].join('\n');
+    `Ressources : ${i.cpu || 2} CPU · ${i.memoire || '8Gi'} · ${i.disque || '10Gi'} de disque${i.gpu ? ' · 1 GPU' : ' · sans GPU'}`].join('\n');
 }
 
 function approvalHtml(a) {
@@ -293,7 +293,8 @@ function taskHtml(e) {
   body += blocked.map((x) => `<div class="blocked">⛔ ${esc(x.tool)} : ${esc(x.text)}</div>`).join('');
   body += [...e.approvals.values()].map(approvalHtml).join('');
   if (lastText) body += `<div class="text">${md(lastText)}</div>`;
-  if (t.status === 'pending' && !state.workerOnline) body += '<div class="hint">Le worker Onyxia est hors ligne : la tâche partira dès sa reconnexion.</div>';
+  if (t.status === 'pending' && t.waiting_project) body += `<div class="hint">⏳ En attente du pod « ${esc(t.project)} » : la tâche partira dès que son worker sera connecté (1 à 3 min après le lancement).</div>`;
+  else if (t.status === 'pending' && !state.workerOnline) body += '<div class="hint">Le worker Onyxia est hors ligne : la tâche partira dès sa reconnexion.</div>';
   if (t.status === 'needs_project') {
     body += `<div class="text">Je n'ai pas pu déterminer le projet${t.route_reason ? ` (${esc(t.route_reason)})` : ''}. Lequel ?</div>
       <div class="actions">${state.projects.map((p) => `<button class="btn" data-choose="${esc(p.id)}">${esc(p.name)}</button>`).join('')}</div>`;
@@ -717,7 +718,8 @@ function currentStep(e) {
   if (e.task.status === 'waiting_approval') return '⚠️ Attend ta validation';
   if (e.task.status === 'queued') return '⏳ En file d\'attente';
   if (e.task.status === 'routing') return '🧭 Choisit le projet';
-  if (e.task.status === 'pending') return state.workerOnline ? '⏳ Transmise au pod' : '⏳ Pod hors ligne';
+  if (e.task.status === 'pending') return e.task.waiting_project ? `⏳ Attend le pod « ${e.task.project} »`
+    : state.workerOnline ? '⏳ Transmise au pod' : '⏳ Pod hors ligne';
   const steps = stepsOf(e);
   return steps.length ? steps[steps.length - 1].label : 'Réfléchit…';
 }

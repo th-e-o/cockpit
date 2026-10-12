@@ -152,17 +152,36 @@ class Worker:
             self._state = None
 
     async def poll_usage(self) -> None:
-        """Usage du forfait toutes les 5 minutes ; abandonné (événements seuls) si l'interface le refuse."""
+        """Usage du forfait : interface du compte toutes les 5 min, sinon en-têtes de l'API toutes les 10 min.
+
+        Si aucune ne répond, la barre n'est alimentée que par les événements émis pendant les tâches.
+        """
+        account, reported = True, set()
         while True:
-            try:
-                self.usage.update(await usage.fetch(), "compte")
-                self._state = None
-            except usage.UsageError as e:
-                log.info("usage du forfait indisponible (%s) : barre d'usage alimentée par les tâches seulement", e)
-                return
-            except Exception as e:
-                log.info("usage du forfait : %s", e)
-            await asyncio.sleep(300)
+            how = None
+            if account:
+                try:
+                    self.usage.update(await usage.fetch(), "compte")
+                    how = "compte"
+                except usage.UsageError as e:
+                    account = False  # refus définitif (jeton de « claude setup-token ») : on passe à la sonde
+                    log.info("interface d'usage du compte indisponible (%s) : lecture des en-têtes de l'API", e)
+                except Exception as e:
+                    log.info("interface d'usage du compte : %s", e)
+            if not how:
+                try:
+                    limits, how = await usage.probe()
+                    self.usage.update(limits, "api")
+                except usage.UsageError as e:
+                    log.info("usage du forfait indisponible (%s) : barre alimentée par les tâches seulement", e)
+                    return
+                except Exception as e:
+                    log.info("usage du forfait : %s", e)
+            if how and how not in reported:
+                reported.add(how)
+                log.info("usage du forfait lu par : %s", how)
+            self._state = None
+            await asyncio.sleep(300 if account else 600)
 
     async def publish_memory(self) -> None:
         """CLAUDE.md de chaque projet (mémoire) publié au relais quand il change."""
@@ -199,11 +218,11 @@ class Worker:
         elif task:
             self.store.publish("message", {"task_id": task.id, "type": "steer_late", "text": s.get("text", "")})
 
-    async def spawn_children(self, parent: Task, items: list[dict]) -> list[str]:
-        """Tâches filles (outil lancer_en_parallele) : chacune devient une conversation, sur le projet demandé."""
+    async def spawn_children(self, parent: Task, items: list[dict], defer: bool = False) -> list[str]:
+        """Tâches filles (lancer_en_parallele, confier_au_projet) : chacune devient une conversation, sur son projet."""
         payload = [{"instruction": str(t["instruction"]).strip()[:10000], "project": t.get("projet") or parent.project}
                    for t in items]
-        ids = await self.relay.creer_taches(parent.id, payload)
+        ids = await self.relay.creer_taches(parent.id, payload, defer)
         self.store.audit("spawn", task=parent.id, project=parent.project, children=ids)
         return ids
 

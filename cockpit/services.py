@@ -152,9 +152,12 @@ async def quota(ns: str) -> dict:
     return out
 
 
-def _quota_summary(q: dict) -> str:
-    keys = ("count/pods", "pods", "requests.cpu", "requests.memory", "requests.storage", "requests.nvidia.com/gpu")
-    parts = [f"{k.removeprefix('requests.').removeprefix('count/')} {q[k]['used']}/{q[k]['hard']}" for k in keys if k in q]
+def _quota_summary(q: dict, gpu: bool = True) -> str:
+    """Quota lisible ; le GPU n'y figure que si un GPU est demandé (sinon « nvidia.com/gpu 0/1 » prête à confusion)."""
+    keys = ("count/pods", "pods", "requests.cpu", "requests.memory", "requests.storage") + (("requests.nvidia.com/gpu",) if gpu else ())
+    labels = {"requests.nvidia.com/gpu": "GPU"}
+    parts = [f"{labels.get(k) or k.removeprefix('requests.').removeprefix('count/')} {q[k]['used']}/{q[k]['hard']}"
+             for k in keys if k in q]
     return ", ".join(parts) or "quota illisible"
 
 
@@ -251,10 +254,10 @@ async def describe(tool_name: str, tool_input: dict) -> str | None:
         return None
     try:
         p = _launch_from(tool_input)
-        q = _quota_summary(await quota(namespace()))
+        q = _quota_summary(await quota(namespace()), p.gpu)
     except Exception as e:
         return f"Lancer un service ({e})"
-    gpu = " + 1 GPU" if p.gpu else ""
+    gpu = " + 1 GPU" if p.gpu else ", sans GPU"
     source = f"depuis {p.depot_git}{' @' + p.branche if p.branche else ''}" if p.depot_git else "sans dépôt (dossier vide)"
     pub = f", aperçu PUBLIC sur le port {APERCU_PORT}" if p.apercu else ""
     return f"Lancer le service {p.release} {source} : {p.cpu} CPU, {p.memoire}, {p.disque}{gpu}{pub}. Quota : {q}"
@@ -274,7 +277,8 @@ def _reply(text: str, error: bool = False) -> dict:
       "Lance un service Onyxia (VSCode + worker cockpit) qui devient un projet pilotable. depot_git (https) est "
       "facultatif : sans dépôt, le projet démarre dans un dossier vide initialisé avec git. Seul nom est obligatoire "
       "(minuscules, chiffres, tirets). Nécessite une validation sur le téléphone. Ressources par défaut : 2 CPU, 8Gi, 10Gi. "
-      "apercu=true publie le port 5000 (URL publique) pour un aperçu web.",
+      "apercu=true publie le port 5000 (URL publique) pour un aperçu web. gpu=true seulement si l'utilisateur le demande "
+      "explicitement (calcul sur GPU) : par défaut, un pod n'utilise que des CPU.",
       {"nom": str, "depot_git": str, "branche": str, "cpu": str, "memoire": str, "disque": str, "gpu": bool, "apercu": bool})
 async def lancer_service(args: dict) -> dict:
     try:

@@ -9,8 +9,10 @@ approval_timeout_s: 900   # sans réponse => refus
 # ToolSearch ne fait que charger la définition d'un outil : son usage reste soumis à la politique.
 # proposer_suite : simple proposition affichée sur le téléphone (aucun effet)
 # capturer_ecran : pages du pod seulement (localhost) ; ouvrir_pr : jamais depuis main/master, réversible
+# confier_au_projet : transmet la demande de l'utilisateur à un projet du cockpit (sa politique s'y applique)
 allow_tools: [Read, Glob, Grep, TodoWrite, Task, Agent, WebSearch, ToolSearch, mcp__services__lister_services, mcp__cockpit__proposer_suite,
-              mcp__cockpit__capturer_ecran, mcp__cockpit__ouvrir_pr, mcp__cockpit__chercher_depots]
+              mcp__cockpit__capturer_ecran, mcp__cockpit__ouvrir_pr, mcp__cockpit__chercher_depots,
+              mcp__cockpit__confier_au_projet]
 
 # Outils jamais autorisés
 deny_tools: [AskUserQuestion]

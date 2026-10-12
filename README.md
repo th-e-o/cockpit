@@ -107,12 +107,14 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
   - *Commandes rapides* (puces au-dessus de la saisie, ✎ pour les modifier, communes ou par projet) et *mémoire du
     projet* (🧠 : le `CLAUDE.md`, lu par Claude au début de chaque tâche, modifiable depuis le téléphone).
 - **Usage de Claude** : barre fine sous l'en-tête (session de 5 h, orange au-delà de 80 %) et détail dans le tableau
-  de bord (session, semaine, Opus/Sonnet, heure de réinitialisation). Source : l'interface d'usage du compte
-  (celle de `/usage`, non documentée), interrogée toutes les 5 min avec le jeton du worker ; si elle est refusée,
-  les événements d'usage émis pendant les tâches. Une limite atteinte est signalée sur la carte de la tâche.
+  de bord (session, semaine, heure de réinitialisation). Le jeton de `claude setup-token` n'a pas accès à
+  l'interface d'usage du compte : le worker lit donc toutes les 10 min les en-têtes d'usage de l'API
+  (`anthropic-ratelimit-unified-5h/7d-*`), par un comptage de tokens gratuit ou, à défaut, une mini-requête Haiku
+  d'un token (`COCKPIT_USAGE_SONDE=0` pour la couper). Diagnostic : `./run.sh usage`.
 - **Tes dépôts GitHub** : une demande qui parle d'un dépôt ou d'un code qui n'est pas encore un projet (« reprends
   mon code sur … ») va à l'orchestrateur, qui le cherche (outil `chercher_depots` : nom, description, README,
-  code) puis ouvre un pod dessus (validation).
+  code) puis ouvre un pod dessus (validation), et lui confie ta demande (`confier_au_projet`) : elle part toute
+  seule dès que le worker du nouveau pod est connecté (« ⏳ En attente du pod » en attendant).
 - **Bilan par projet** (tableau de bord, aujourd'hui / 7 / 30 jours) : tâches réussies ou en erreur, temps de travail
   des agents, fichiers distincts touchés, lignes `+/−`, commits, activité par jour, fichiers les plus modifiés,
   dernières tâches et état git actuel du projet.
