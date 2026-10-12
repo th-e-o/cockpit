@@ -25,7 +25,7 @@ from claude_agent_sdk import (
     UserMessage,
 )
 
-from . import gitstate
+from . import github, gitstate
 from . import services as svc
 from .policy import ALLOW, DENY, Policy
 from .router import Project
@@ -45,7 +45,11 @@ se cocher en direct sur son téléphone.
 Pour la réponse finale, sois concis et utilise ces trois rubriques (omets une rubrique vide) :
 **Fait** — ce qui a été fait, en quelques puces ;
 **Choix** — les décisions prises à la place de l'utilisateur ;
-**À faire** — ce qui reste, ou ta question.
+**À faire** — ce qui reste à décider ou ta question, s'il y en a.
+Juste avant cette réponse finale, appelle proposer_suite avec 1 à 4 prochaines étapes concrètes et utiles
+(par exemple : tester, publier, fusionner, l'amélioration suivante) ; l'utilisateur les lance d'un geste.
+Pour une simple question sans suite évidente, tu peux t'en passer.
+Si le projet n'a pas de dépôt distant et qu'il faut publier le travail, crée-le avec creer_depot (validation).
 Le cockpit affiche déjà la liste des fichiers modifiés et leurs diffs : inutile de les recopier.
 Pour publier ton travail, crée une branche et pousse-la avec « git push -u origin <branche> » : c'est
 automatique. Un push sur main ou master demande une validation sur le téléphone.
@@ -77,6 +81,8 @@ la fusionnera ou la jettera depuis le cockpit.
 
 MAX_AGENTS = int(os.environ.get("COCKPIT_MAX_AGENTS", "3"))
 PARALLEL_TOOL = "mcp__cockpit__lancer_en_parallele"
+REPO_TOOL = "mcp__cockpit__creer_depot"
+NEXT_TOOL = "mcp__cockpit__proposer_suite"
 FILE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 log = logging.getLogger("cockpit.agent")
 
@@ -122,6 +128,10 @@ def tool_label(tool: str, i: dict) -> str | None:
             return "📋 Liste les services"
         case "arreter_service":
             return f"🛑 Arrête le service {i.get('nom', '')}"
+        case "proposer_suite":
+            return None  # affiché comme « Prochaines étapes » sous la réponse
+        case "creer_depot":
+            return f"📦 Crée le dépôt GitHub {i.get('nom', '')}"
         case "lancer_en_parallele":
             return f"🔀 Lance {len(i.get('taches') or [])} Claude en parallèle"
     return f"🔧 {short}"
@@ -132,30 +142,91 @@ def _short(value, limit: int = 600) -> str:
     return s if len(s) <= limit else s[:limit] + "…"
 
 
-def parallel_server(spawn):
-    """Outil « lancer_en_parallele » : confie des sous-tâches indépendantes à d'autres agents (une conversation chacune)."""
+def _text(text: str, error: bool = False) -> dict:
+    return {"content": [{"type": "text", "text": text}], **({"is_error": True} if error else {})}
 
-    @tool("lancer_en_parallele",
-          "Lance jusqu'à 5 autres agents Claude en parallèle, chacun avec une instruction autonome et complète (il ne "
-          "voit pas cette conversation). Chaque agent travaille dans son propre worktree git, parti du dernier commit, "
-          "et l'utilisateur suit et fusionne chaque branche depuis le cockpit. projet : identifiant du projet "
-          "(par défaut, le projet courant). Nécessite une validation sur le téléphone.",
-          {"type": "object", "properties": {"taches": {"type": "array", "minItems": 1, "maxItems": 5, "items": {
-              "type": "object", "properties": {"instruction": {"type": "string"}, "projet": {"type": "string"}},
-              "required": ["instruction"]}}}, "required": ["taches"]})
-    async def lancer(args: dict) -> dict:
-        items = args.get("taches")
-        if not isinstance(items, list) or not 1 <= len(items) <= 5 or not all(
-                isinstance(t, dict) and str(t.get("instruction", "")).strip() for t in items):
-            return {"content": [{"type": "text", "text": "taches : 1 à 5 objets avec une instruction"}], "is_error": True}
+
+def clean_next_steps(items) -> list[dict]:
+    """Prochaines étapes proposées par l'agent : 1 à 4, chacune {titre, instruction}."""
+    out = []
+    for x in items if isinstance(items, list) else []:
+        if isinstance(x, dict) and str(x.get("titre", "")).strip() and str(x.get("instruction", "")).strip():
+            out.append({"titre": " ".join(str(x["titre"]).split())[:90], "instruction": str(x["instruction"]).strip()[:2000]})
+    return out[:4]
+
+
+async def create_repo(cwd: str, args: dict) -> str:
+    """Crée le dépôt GitHub, le relie au projet courant (origin) et y pousse la branche courante s'il y a des commits."""
+    repo = await github.creer_depot(args.get("nom", ""), bool(args.get("prive", True)), args.get("description", ""))
+    lines = [f"Dépôt {'privé ' if repo['private'] else ''}{repo['name']} créé : {repo['url']}"]
+    if args.get("relier", True) and await gitstate.toplevel(cwd):
+        rc, _ = await gitstate.git(cwd, "remote", "get-url", "origin")
+        if rc == 0:
+            lines.append("Le projet a déjà un dépôt distant « origin » : il n'a pas été modifié.")
+        else:
+            await gitstate.git(cwd, "remote", "add", "origin", repo["url"] + ".git")
+            if await gitstate.head(cwd):
+                rc, out = await gitstate.git(cwd, "push", "-u", "origin", "HEAD", timeout=120)
+                lines.append("Branche courante poussée (origin)." if rc == 0 else f"Push impossible : {out[-300:]}")
+            else:
+                lines.append("Dépôt relié (origin) ; aucun commit à pousser pour l'instant.")
+    return "\n".join(lines)
+
+
+def cockpit_server(cwd: str, on_next, spawn=None):
+    """Outils propres au cockpit : prochaines étapes, création de dépôt GitHub, agents en parallèle."""
+
+    @tool("proposer_suite",
+          "Propose à l'utilisateur 1 à 4 prochaines étapes concrètes, qu'il pourra lancer d'un geste depuis son "
+          "téléphone (ou depuis la notification de fin). titre : quelques mots ; instruction : la consigne complète "
+          "que tu recevras s'il la choisit. À appeler une fois, juste avant ta réponse finale.",
+          {"type": "object", "properties": {"etapes": {"type": "array", "minItems": 1, "maxItems": 4, "items": {
+              "type": "object", "properties": {"titre": {"type": "string"}, "instruction": {"type": "string"}},
+              "required": ["titre", "instruction"]}}}, "required": ["etapes"]})
+    async def proposer_suite(args: dict) -> dict:
+        steps = clean_next_steps(args.get("etapes"))
+        if not steps:
+            return _text("etapes : 1 à 4 objets {titre, instruction}", error=True)
+        on_next(steps)
+        return _text(f"{len(steps)} prochaine(s) étape(s) proposée(s) à l'utilisateur. Termine par ta réponse finale.")
+
+    @tool("creer_depot",
+          "Crée un dépôt GitHub vide sur le compte de l'utilisateur (privé par défaut), puis le relie au projet courant "
+          "(remote origin) et y pousse la branche courante si le projet a des commits. À utiliser quand un projet "
+          "n'a pas encore de dépôt distant ou quand l'utilisateur en demande un. Nécessite une validation.",
+          {"type": "object", "properties": {"nom": {"type": "string"}, "prive": {"type": "boolean"},
+                                            "description": {"type": "string"}, "relier": {"type": "boolean"}},
+           "required": ["nom"]})
+    async def creer_depot(args: dict) -> dict:
         try:
-            ids = await spawn(items)
-        except Exception as e:
-            return {"content": [{"type": "text", "text": f"lancement impossible : {e}"}], "is_error": True}
-        return {"content": [{"type": "text", "text": f"{len(ids)} agent(s) lancé(s) en parallèle (tâches {', '.join(ids)}). "
-                             "L'utilisateur suit leur avancement dans le cockpit ; tu n'as pas à les attendre."}]}
+            return _text(await create_repo(cwd, args))
+        except github.GitHubError as e:
+            return _text(str(e), error=True)
 
-    return create_sdk_mcp_server("cockpit", tools=[lancer])
+    tools = [proposer_suite, creer_depot]
+    if spawn:
+        @tool("lancer_en_parallele",
+              "Lance jusqu'à 5 autres agents Claude en parallèle, chacun avec une instruction autonome et complète (il ne "
+              "voit pas cette conversation). Chaque agent travaille dans son propre worktree git, parti du dernier commit, "
+              "et l'utilisateur suit et fusionne chaque branche depuis le cockpit. projet : identifiant du projet "
+              "(par défaut, le projet courant). Nécessite une validation sur le téléphone.",
+              {"type": "object", "properties": {"taches": {"type": "array", "minItems": 1, "maxItems": 5, "items": {
+                  "type": "object", "properties": {"instruction": {"type": "string"}, "projet": {"type": "string"}},
+                  "required": ["instruction"]}}}, "required": ["taches"]})
+        async def lancer(args: dict) -> dict:
+            items = args.get("taches")
+            if not isinstance(items, list) or not 1 <= len(items) <= 5 or not all(
+                    isinstance(t, dict) and str(t.get("instruction", "")).strip() for t in items):
+                return _text("taches : 1 à 5 objets avec une instruction", error=True)
+            try:
+                ids = await spawn(items)
+            except Exception as e:
+                return _text(f"lancement impossible : {e}", error=True)
+            return _text(f"{len(ids)} agent(s) lancé(s) en parallèle (tâches {', '.join(ids)}). "
+                         "L'utilisateur suit leur avancement dans le cockpit ; tu n'as pas à les attendre.")
+
+        tools.append(lancer)
+    return create_sdk_mcp_server("cockpit", tools=tools)
 
 
 class Runner:
@@ -219,6 +290,9 @@ class Runner:
             d = self.policy.evaluate(tool, tool_input, cwd)
             if d.action != DENY and tool.startswith(svc.TOOL_PREFIX):
                 d.reason = await svc.describe(tool, tool_input) or d.reason
+            if d.action != DENY and tool == REPO_TOOL:
+                d.reason = (f"Créer le dépôt GitHub {'privé' if tool_input.get('prive', True) else 'PUBLIC'} "
+                            f"« {tool_input.get('nom', '?')} »" + (" et y publier ce projet" if tool_input.get("relier", True) else ""))
             if d.action != DENY and tool == PARALLEL_TOOL:
                 n = len(tool_input.get("taches") or [])
                 d.reason = f"Lancer {n} agent(s) Claude en parallèle, chacun dans son worktree git"
@@ -253,9 +327,10 @@ class Runner:
 
         append = SYSTEM_APPEND + (SERVICES_APPEND if self.services else "")
         servers = {svc.SERVER_NAME: svc.server()} if self.services else {}
-        if self.spawn_tasks:
+        spawn = (lambda items: self.spawn_tasks(task, items)) if self.spawn_tasks else None
+        if spawn:
             append += PARALLEL_APPEND
-            servers["cockpit"] = parallel_server(lambda items: self.spawn_tasks(task, items))
+        servers["cockpit"] = cockpit_server(cwd, lambda steps: setattr(task, "next_steps", steps), spawn)
         if task.worktree:
             append += WORKTREE_APPEND.format(cwd=cwd, branch=task.worktree["branch"])
         return ClaudeAgentOptions(

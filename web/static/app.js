@@ -166,7 +166,8 @@ function onEvent(evt) {
 }
 
 // ---------- rendu
-const SERVICE_TOOLS = { lancer_service: '🚀 Lancer un service', arreter_service: '🛑 Arrêter un service', lancer_en_parallele: '🔀 Claude en parallèle' };
+const SERVICE_TOOLS = { lancer_service: '🚀 Lancer un service', arreter_service: '🛑 Arrêter un service', lancer_en_parallele: '🔀 Claude en parallèle',
+  creer_depot: '📦 Nouveau dépôt GitHub' };
 
 /** Carte dédiée au lancement / à l'arrêt d'un service Onyxia : ressources lisibles, quota dans la raison. */
 function serviceInput(a) {
@@ -177,9 +178,11 @@ function serviceInput(a) {
 }
 
 function approvalHtml(a) {
-  const service = SERVICE_TOOLS[a.tool.replace(/^mcp__services__/, '')];
+  const service = SERVICE_TOOLS[a.tool.replace(/^mcp__(services|cockpit)__/, '')];
   const input = a.tool.endsWith('lancer_en_parallele')
     ? (a.tool_input.taches || []).map((t, i) => `${i + 1}. ${t.projet ? `[${t.projet}] ` : ''}${t.instruction}`).join('\n\n')
+    : a.tool.endsWith('creer_depot') ? [`Nom : ${a.tool_input.nom}`, `Visibilité : ${a.tool_input.prive === false ? 'PUBLIC' : 'privé'}`,
+      a.tool_input.description ? `Description : ${a.tool_input.description}` : ''].filter(Boolean).join('\n')
     : service ? serviceInput(a)
     : a.tool === 'Bash' ? a.tool_input.command
     : a.tool_input.file_path ? `${a.tool_input.file_path}\n\n${a.tool_input.content ?? a.tool_input.new_string ?? ''}`
@@ -254,7 +257,7 @@ function taskHtml(e) {
       <div class="actions">${state.projects.map((p) => `<button class="btn" data-choose="${esc(p.id)}">${esc(p.name)}</button>`).join('')}</div>`;
   }
   if (t.result && !ACTIVE.has(t.status)) body += `<div class="result">${md(t.result)}</div>`;
-  if (!active) body += changesHtml(e) + worktreeHtml(e);
+  if (!active) body += changesHtml(e) + worktreeHtml(e) + nextStepsHtml(e);
 
   return `<div class="meta">
       <span class="pill st-${esc(t.status)}">${STATUS[t.status] || esc(t.status)}</span>
@@ -371,6 +374,57 @@ function worktreeHtml(e) {
       <button class="btn bad" data-wt="discard" data-task-id="${esc(t.id)}">Jeter la branche</button></div>`;
   }
   return html + msgs + '</div>';
+}
+
+// ---------- prochaines étapes proposées par Claude (suivi)
+/** Étapes à suivre : celles de la dernière tâche terminée d'une conversation, tant qu'elles ne sont pas ignorées. */
+function pendingSteps(e) {
+  const t = e.task;
+  return t.status === 'done' && t.next_steps?.length && !t.next_steps_dismissed && lastOfConversation(t.id) === t.id ? t.next_steps : null;
+}
+
+function stepsList(t, steps) {
+  return steps.map((x, i) => `<div class="next">
+      <button class="nmain" data-next-edit="${esc(t.id)}" data-i="${i}" title="${esc(x.instruction)}">${esc(x.titre)}</button>
+      <button class="nrun" data-next-run="${esc(t.id)}" data-i="${i}" aria-label="lancer : ${esc(x.titre)}" title="Lancer maintenant">▶</button></div>`).join('');
+}
+
+function nextStepsHtml(e) {
+  const steps = pendingSteps(e);
+  if (!steps) return '';
+  return `<div class="nexts"><div class="nhead"><span>💡 Prochaines étapes</span>
+      <button class="btn ghost" data-dismiss="${esc(e.task.id)}">Ignorer</button></div>${stepsList(e.task, steps)}
+    <div class="hint">Toucher une étape la prépare dans la saisie ; ▶ la lance tout de suite.</div></div>`;
+}
+
+function followHtml(items) {
+  if (!items.length) return '';
+  return `<section class="sect"><h3>Prochaines étapes · ${items.length}</h3><div class="follows">${items.map((e) => {
+    const proj = state.projects.find((p) => p.id === e.task.project);
+    return `<article class="follow"><div class="fhead"><b>${esc(proj?.name || e.task.project || '')}</b>
+        <span class="muted" data-ago="${Number(e.task.updated || e.task.created)}"></span>
+        <button class="btn ghost" data-dismiss="${esc(e.task.id)}">Ignorer</button></div>
+      <button class="forigin" data-jump="${esc(e.task.id)}">↳ ${esc(e.task.instruction || '')}</button>
+      ${stepsList(e.task, pendingSteps(e))}</article>`;
+  }).join('')}</div></section>`;
+}
+
+async function runNextStep(id, i, now) {
+  const t = state.tasks.get(id)?.task;
+  const step = t?.next_steps?.[i];
+  if (!step) return;
+  if (state.view === 'dash' && !matchMedia('(min-width: 1100px)').matches) setView('chat');
+  if (!now) {
+    setReplyTo(id);
+    input.value = step.instruction;
+    input.dispatchEvent(new Event('input'));
+    input.focus();
+    return;
+  }
+  const n = await api('tache', { instruction: step.instruction, project: t.project, reply_to: id });
+  onEvent({ kind: 'task', task_id: n.id, task: n });
+  setReplyTo(n.id);
+  await poll();
 }
 
 // ---------- tableau de bord
@@ -542,9 +596,29 @@ function bilanHtml() {
 const slug = (url) => (url.replace(/\/+$/, '').replace(/\.git$/, '').split('/').pop() || '').toLowerCase()
   .replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 30).replace(/-$/, '') || 'projet';
 
+function setPodMode(mode) {
+  document.querySelectorAll('[data-pod-mode]').forEach((x) => x.setAttribute('aria-pressed', String(x.dataset.podMode === mode)));
+  $('#podExisting').classList.toggle('hidden', mode === 'new');
+  $('#podNew').classList.toggle('hidden', mode !== 'new');
+  $('#podBranch').closest('label').classList.toggle('hidden', mode === 'new');
+  if (mode === 'new' && !$('#newRepoName').value) $('#newRepoName').value = $('#podName').value;
+}
+const podMode = () => ($('#podNew').classList.contains('hidden') ? 'existing' : 'new');
+$('#podName').addEventListener('input', () => {
+  $('#podName').dataset.touched = '1';
+  if (podMode() === 'new' && !$('#newRepoName').dataset.touched) $('#newRepoName').value = $('#podName').value;
+});
+$('#newRepoName').addEventListener('input', () => {
+  $('#newRepoName').dataset.touched = '1';
+  if (!$('#podName').dataset.touched) $('#podName').value = slug($('#newRepoName').value);
+});
+
 async function openPodDialog() {
   $('#menuDlg').close();
   $('#podForm').reset();
+  delete $('#newRepoName').dataset.touched;
+  delete $('#podName').dataset.touched;
+  setPodMode('existing');
   $('#podHint').textContent = '';
   $('#podSubmit').disabled = false;
   $('#podDlg').showModal();
@@ -594,8 +668,10 @@ $('#podForm').addEventListener('submit', async (ev) => {
   if (!/^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$/.test(nom)) { $('#podHint').textContent = 'Nom : minuscules, chiffres et tirets (30 au plus).'; return; }
   $('#podSubmit').disabled = true;
   try {
-    const t = await api('lancer_pod', { nom, depot_git: $('#podRepo').value.trim(), branche: $('#podBranch').value.trim(),
-      cpu: $('#podCpu').value, memoire: $('#podMem').value, disque: $('#podDisk').value, gpu: $('#podGpu').checked });
+    const nouveau = podMode() === 'new';
+    const t = await api('lancer_pod', { nom, depot_git: nouveau ? '' : $('#podRepo').value.trim(), branche: nouveau ? '' : $('#podBranch').value.trim(),
+      cpu: $('#podCpu').value, memoire: $('#podMem').value, disque: $('#podDisk').value, gpu: $('#podGpu').checked,
+      ...(nouveau ? { creer_depot: { nom: $('#newRepoName').value.trim() || nom, prive: $('#newRepoPrivate').checked } } : {}) });
     onEvent({ kind: 'task', task_id: t.id, task: t });
     $('#podDlg').close();
     await poll();
@@ -635,6 +711,7 @@ function renderDash() {
     <section class="sect"><h3>En cours</h3>${active.length
       ? `<div class="lives">${active.map(liveCard).join('')}</div>`
       : '<div class="emptyd">Aucun Claude ne travaille. Envoie une instruction ; pour en lancer plusieurs, ouvre une nouvelle conversation par tâche.</div>'}</section>
+    ${followHtml(tasks.filter(pendingSteps).sort((a, b) => (b.task.updated || b.task.created) - (a.task.updated || a.task.created)).slice(0, 6))}
     ${bilanHtml()}
     <section class="sect"><div class="secthead"><h3>Pods · ${online.length} en ligne</h3><button type="button" class="btn ghost" id="newPod">＋ Nouveau pod</button></div>${state.workers.length
       ? `<div class="pods">${state.workers.map(podCard).join('')}</div>`
@@ -754,6 +831,7 @@ async function poll() {
     $('#conn').classList.toggle('on', s.worker_online);
     $('#conn').title = s.worker_online ? 'worker Onyxia connecté' : 'worker Onyxia hors ligne';
     render(touched);
+    if (state.pendingJump && document.getElementById(`t-${state.pendingJump}`)) { jumpTo(state.pendingJump); state.pendingJump = null; }
     state.workers = s.workers || [];
     renderDash();
     state.replay = false;
@@ -801,6 +879,14 @@ document.addEventListener('click', async (ev) => {
     } else if (b.dataset.cancel) {
       await api('annuler', { task_id: b.dataset.cancel });
       poll();
+    } else if (b.dataset.nextEdit || b.dataset.nextRun) {
+      if (b.dataset.nextRun) b.disabled = true;
+      await runNextStep(b.dataset.nextEdit || b.dataset.nextRun, Number(b.dataset.i), !!b.dataset.nextRun);
+    } else if (b.dataset.dismiss) {
+      await api('ignorer_suite', { task_id: b.dataset.dismiss });
+      poll();
+    } else if (b.dataset.podMode) {
+      setPodMode(b.dataset.podMode);
     } else if (b.dataset.bilan) {
       state.bilanJours = Number(b.dataset.bilan);
       try { localStorage.setItem('cockpit_bilan', b.dataset.bilan); } catch { /* sans importance */ }
@@ -923,6 +1009,8 @@ addEventListener('appinstalled', () => { installPrompt = null; $('#mInstall').cl
 
 /** Raccourcis de l'icône (manifest) : ?vue=pods ouvre le tableau de bord, ?action=pod le formulaire « Nouveau pod ». */
 function applyLaunchParams() {
+  const hash = location.hash.match(/^#t=(\w+)/);
+  if (hash) { state.pendingJump = hash[1]; history.replaceState(null, '', location.pathname + location.search); }
   const q = new URLSearchParams(location.search);
   if (!q.has('vue') && !q.has('action')) return;
   history.replaceState(null, '', location.pathname);
@@ -962,7 +1050,11 @@ try {
   if ([1, 7, 30].includes(Number(localStorage.getItem('cockpit_bilan')))) state.bilanJours = Number(localStorage.getItem('cockpit_bilan'));
   if (localStorage.getItem('cockpit_view') === 'dash') setView('dash');
 } catch { /* navigation privée */ }
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(console.error);
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('sw.js').catch(console.error);
+  // Notification touchée alors que le cockpit est ouvert : aller à la tâche concernée.
+  navigator.serviceWorker.addEventListener('message', (e) => { if (e.data?.jump) { state.pendingJump = e.data.jump; poll(); } });
+}
 // Lien d'appairage ouvert alors que le cockpit est déjà affiché : seul le #hash change.
 window.addEventListener('hashchange', () => { if (location.hash.includes('pair=')) start(); });
 start();

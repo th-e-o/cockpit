@@ -33,6 +33,7 @@ class Task:
     worktree: dict | None = None  # {"branch", "path", "state": active|merged|discarded} si exécutée en parallèle
     parent: str | None = None  # tâche qui l'a lancée (lancer_en_parallele)
     duration_s: int | None = None  # temps de travail de l'agent (bilan par projet)
+    next_steps: list[dict] | None = None  # prochaines étapes proposées par l'agent [{titre, instruction}]
 
 
 @dataclass

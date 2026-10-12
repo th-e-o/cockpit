@@ -79,10 +79,23 @@
   <dialog id="podDlg">
     <div class="dlghead"><h2>Nouveau pod</h2><button class="icon" data-close>✕</button></div>
     <form id="podForm" class="podform">
-      <input id="repoSearch" type="search" placeholder="Rechercher dans mes dépôts…" autocomplete="off" aria-label="rechercher un dépôt">
-      <div id="repoList" class="repolist" role="listbox" aria-label="mes dépôts"></div>
-      <label>Dépôt git (https) — vide : dossier vide
-        <input id="podRepo" type="url" placeholder="https://github.com/…" autocomplete="off"></label>
+      <div class="seg podmode" role="group" aria-label="source du projet">
+        <button type="button" data-pod-mode="existing" aria-pressed="true">Dépôt existant</button>
+        <button type="button" data-pod-mode="new" aria-pressed="false">＋ Nouveau dépôt</button>
+      </div>
+      <div id="podExisting" class="podform">
+        <input id="repoSearch" type="search" placeholder="Rechercher dans mes dépôts…" autocomplete="off" aria-label="rechercher un dépôt">
+        <div id="repoList" class="repolist" role="listbox" aria-label="mes dépôts"></div>
+        <label>Dépôt git (https) — vide : dossier vide
+          <input id="podRepo" type="url" placeholder="https://github.com/…" autocomplete="off"></label>
+      </div>
+      <div id="podNew" class="podform hidden">
+        <div class="row2">
+          <label>Nom du dépôt<input id="newRepoName" maxlength="100" autocomplete="off" placeholder="mon-projet"></label>
+          <label class="check"><input type="checkbox" id="newRepoPrivate" checked> Privé</label>
+        </div>
+        <p class="hint">Le dépôt est créé vide sur ton compte GitHub, puis cloné dans le nouveau pod.</p>
+      </div>
       <div class="row2">
         <label>Nom du pod<input id="podName" required maxlength="30" autocomplete="off"></label>
         <label>Branche<input id="podBranch" placeholder="par défaut" autocomplete="off"></label>

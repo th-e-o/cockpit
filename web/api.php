@@ -86,9 +86,9 @@ SQL);
     foreach (['worker_id', 'conversation', 'suite_de', 'session', 'extra', 'parent', 'action_worktree', 'action'] as $c) {
         if (!in_array($c, $colonnes, true)) $pdo->exec("ALTER TABLE taches ADD COLUMN $c TEXT");
     }
-    if (!in_array('etat', array_column($pdo->query('PRAGMA table_info(workers)')->fetchAll(), 'name'), true)) {
-        $pdo->exec('ALTER TABLE workers ADD COLUMN etat TEXT');
-    }
+    $colonnesW = array_column($pdo->query('PRAGMA table_info(workers)')->fetchAll(), 'name');
+    if (!in_array('etat', $colonnesW, true)) $pdo->exec('ALTER TABLE workers ADD COLUMN etat TEXT');
+    if (!in_array('apparu_le', $colonnesW, true)) $pdo->exec('ALTER TABLE workers ADD COLUMN apparu_le INTEGER NOT NULL DEFAULT 0');
     return $pdo;
 }
 
@@ -317,6 +317,7 @@ function tache_publique(array $t): array {
         'reply_to' => $t['suite_de'] ?? null, 'worker' => $t['worker_id'] ?? null, 'parent' => $t['parent'] ?? null,
         'changes' => $extra['changes'] ?? null, 'worktree' => $extra['worktree'] ?? null,
         'duration_s' => $extra['duration_s'] ?? null, 'kind' => empty($t['action']) ? null : 'service',
+        'next_steps' => $extra['next_steps'] ?? null, 'next_steps_dismissed' => !empty($extra['next_steps_dismissed']),
     ];
 }
 
@@ -541,22 +542,40 @@ switch ($route) {
     case 'lancer_pod': // nouveau pod Onyxia sur un dépôt git : exécuté directement par l'orchestrateur, sans agent
         exiger_session();
         $nom = (string)($in['nom'] ?? '');
-        $depot = trim((string)($in['depot_git'] ?? ''));
-        $branche = trim((string)($in['branche'] ?? ''));
+        // Nouveau dépôt GitHub : dépôt et branche saisis ignorés (le pod clone le dépôt créé)
+        $depot = empty($in['creer_depot']) ? trim((string)($in['depot_git'] ?? '')) : '';
+        $branche = empty($in['creer_depot']) ? trim((string)($in['branche'] ?? '')) : '';
         if (!preg_match('/^[a-z0-9](?:[a-z0-9-]{0,28}[a-z0-9])?$/', $nom)) erreur('nom invalide : minuscules, chiffres et tirets (30 au plus)');
         if ($depot !== '' && (!preg_match('#^https://[A-Za-z0-9._~/-]+$#', $depot) || str_contains($depot, '..'))) erreur('dépôt invalide : URL https:// sans identifiants');
         if ($branche !== '' && !preg_match('#^[A-Za-z0-9._/-]{1,100}$#', $branche)) erreur('branche invalide');
         if (in_array($nom, array_column(projets(), 'id'), true)) erreur("un projet « $nom » existe déjà");
+        $nouveauDepot = null;
+        if (!empty($in['creer_depot'])) {
+            $nd = (array)$in['creer_depot'];
+            $nomDepot = trim((string)($nd['nom'] ?? $nom));
+            if (!preg_match('/^[A-Za-z0-9._-]{1,100}$/', $nomDepot) || str_ends_with($nomDepot, '.git')) erreur('nom de dépôt invalide');
+            $nouveauDepot = ['nom' => $nomDepot, 'prive' => (bool)($nd['prive'] ?? true)];
+        }
         $orch = orchestrateur_en_ligne() ?? erreur('orchestrateur hors ligne : lance ./run.sh dans le pod admin', 409);
         $action = ['type' => 'lancer_service', 'nom' => $nom, 'depot_git' => $depot, 'branche' => $branche,
                    'cpu' => (string)($in['cpu'] ?? '2'), 'memoire' => (string)($in['memoire'] ?? '8Gi'),
-                   'disque' => (string)($in['disque'] ?? '10Gi'), 'gpu' => !empty($in['gpu'])];
+                   'disque' => (string)($in['disque'] ?? '10Gi'), 'gpu' => !empty($in['gpu'])]
+                 + ($nouveauDepot ? ['creer_depot' => $nouveauDepot] : []);
         $id = bin2hex(random_bytes(5));
-        $source = $depot !== '' ? preg_replace('#^https://(www\.)?github\.com/#', '', $depot) . ($branche !== '' ? " ($branche)" : '') : 'dossier vide';
+        $source = $nouveauDepot ? 'nouveau dépôt GitHub ' . ($nouveauDepot['prive'] ? 'privé ' : 'public ') . "« {$nouveauDepot['nom']} »" : ($depot !== '' ? preg_replace('#^https://(www\.)?github\.com/#', '', $depot) . ($branche !== '' ? " ($branche)" : '') : 'dossier vide');
         q('INSERT INTO taches(id, instruction, cree_le, maj_le, worker_id, conversation, action) VALUES(?, ?, ?, ?, ?, ?, ?)',
           [$id, "🚀 Nouveau pod « $nom » : $source", time(), time(), $orch, $id, json_encode($action, JSON_UNESCAPED_UNICODE)]);
         evenement_tache($id);
         repondre(tache_publique(q('SELECT * FROM taches WHERE id = ?', [$id])->fetch()));
+
+    case 'ignorer_suite': // les prochaines étapes proposées ne sont plus suivies (tableau de bord)
+        exiger_session();
+        $t = q('SELECT * FROM taches WHERE id = ?', [(string)($in['task_id'] ?? '')])->fetch() ?: erreur('tâche introuvable', 404);
+        $extra = json_decode($t['extra'] ?? '', true) ?: [];
+        $extra['next_steps_dismissed'] = true;
+        q('UPDATE taches SET extra = ? WHERE id = ?', [json_encode($extra, JSON_UNESCAPED_UNICODE), $t['id']]);
+        evenement_tache($t['id']);
+        repondre(['ok' => true]);
 
     case 'worktree': // fusionner ou jeter la branche d'une tâche lancée en parallèle
         exiger_session();
@@ -572,11 +591,18 @@ switch ($route) {
         exiger_session();
         $validations = array_map(function ($d) {
             $a = json_decode($d, true);
-            return ['tool' => $a['tool'] ?? '', 'reason' => $a['reason'] ?? '', 'task_id' => $a['task_id'] ?? ''];
+            $i = $a['tool_input'] ?? [];
+            // Aperçu de ce qui sera exécuté (corps de la notification, avec les boutons Approuver / Refuser)
+            $apercu = $i['command'] ?? $i['file_path'] ?? $i['url'] ?? (isset($i['nom']) ? (string)$i['nom'] : '');
+            return ['id' => $a['id'] ?? '', 'tool' => $a['tool'] ?? '', 'reason' => $a['reason'] ?? '', 'task_id' => $a['task_id'] ?? '',
+                    'preview' => mb_substr((string)$apercu, 0, 160)];
         }, q('SELECT donnees FROM validations WHERE decision IS NULL ORDER BY cree_le')->fetchAll(PDO::FETCH_COLUMN));
+        $pods = array_map(fn($w) => ['id' => $w['id'], 'name' => $w['nom'], 'since' => (int)$w['apparu_le']],
+            q('SELECT id, nom, apparu_le FROM workers WHERE apparu_le > ? AND orchestrateur = 0 AND vu_le > ?',
+              [time() - 600, time() - WORKER_EN_LIGNE])->fetchAll());
         $terminees = array_map('tache_publique', q("SELECT * FROM taches WHERE statut IN ('done','error','needs_project')
             AND maj_le > ? ORDER BY maj_le DESC LIMIT 3", [time() - 300])->fetchAll());
-        repondre(['approvals' => $validations, 'finished' => $terminees]);
+        repondre(['approvals' => $validations, 'finished' => $terminees, 'new_pods' => $pods]);
 
     case 'tache':
         exiger_session();
@@ -650,11 +676,13 @@ switch ($route) {
         if (!preg_match('/^[A-Za-z0-9_.-]{1,64}$/', $wid)) erreur('identifiant de worker invalide');
         $instance = (string)($in['instance'] ?? '');
         $orchestrateur = ($in['orchestrateur'] ?? true) ? 1 : 0;
+        $nouveauPod = !empty($in['hello']) && !q('SELECT 1 FROM workers WHERE id = ?', [$wid])->fetchColumn();
         if (!empty($in['hello'])) {
-            q('INSERT INTO workers(id, nom, instance, orchestrateur, vu_le) VALUES(?, ?, ?, ?, ?)
+            q('INSERT INTO workers(id, nom, instance, orchestrateur, vu_le, apparu_le) VALUES(?, ?, ?, ?, ?, ?)
                ON CONFLICT(id) DO UPDATE SET nom = excluded.nom, instance = excluded.instance,
                  orchestrateur = excluded.orchestrateur, vu_le = excluded.vu_le',
-              [$wid, mb_substr((string)($in['name'] ?? $wid), 0, 80), $instance, $orchestrateur, time()]);
+              [$wid, mb_substr((string)($in['name'] ?? $wid), 0, 80), $instance, $orchestrateur, time(), time()]);
+            if ($nouveauPod && !$orchestrateur) notifier(); // « Pod connecté » : le projet est prêt
         }
         if (q('SELECT instance FROM workers WHERE id = ?', [$wid])->fetchColumn() !== $instance) repondre(['superseded' => true]);
         if (isset($in['projects'])) {
@@ -774,7 +802,7 @@ switch ($route) {
                     $t = $evt['task'];
                     $avant = q('SELECT statut FROM taches WHERE id = ?', [$tacheId])->fetchColumn();
                     $extra = json_decode((string)q('SELECT extra FROM taches WHERE id = ?', [$tacheId])->fetchColumn(), true) ?: [];
-                    foreach (['changes', 'worktree', 'duration_s'] as $k) if (isset($t[$k])) $extra[$k] = $t[$k];
+                    foreach (['changes', 'worktree', 'duration_s', 'next_steps'] as $k) if (isset($t[$k])) $extra[$k] = $t[$k];
                     q('UPDATE taches SET statut = ?, projet = COALESCE(?, projet), raison_routage = ?, resultat = ?, cout = ?, maj_le = ?,
                        session = COALESCE(?, session), extra = ? WHERE id = ?',
                       [$t['status'], $t['project'] ?? null, (string)($t['route_reason'] ?? ''), (string)($t['result'] ?? ''),

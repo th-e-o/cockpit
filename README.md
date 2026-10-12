@@ -68,6 +68,17 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
 - **Tableau de bord** (onglet *Pods* sur téléphone, à droite du fil sur un écran large) : Claude au travail,
   validations en attente, tâches et coût du jour ; pour chaque pod, CPU / mémoire (cgroup, comme `kubectl top`) /
   disque de `~/work`, agents actifs, état git de chaque projet et branches parallèles. Toucher une carte ouvre la tâche.
+- **Prochaines étapes** : à la fin d'une tâche, Claude propose 1 à 4 suites concrètes (outil `proposer_suite`).
+  Sous la réponse, toucher une étape la prépare dans la saisie (modifiable) ; ▶ la lance tout de suite dans la
+  conversation. Le tableau de bord les regroupe (*Prochaines étapes*) tant qu'elles ne sont ni lancées ni ignorées.
+- **Notifications** (une par nouveauté, jamais répétée une fois fermée) :
+  validation requise avec la commande et les boutons *Approuver* / *Refuser* ; tâche terminée avec le résumé des
+  modifications, les étapes proposées et un bouton *▶* pour lancer les deux premières sans ouvrir l'app (Android,
+  PC ; l'iPhone n'affiche pas les boutons) ; pod de projet connecté. Toucher la notification ouvre la tâche.
+- **Dépôts GitHub** : Claude peut créer un dépôt (outil `creer_depot`, privé par défaut, soumis à validation),
+  le relier au projet (`origin`) et y pousser la branche courante. *＋ Nouveau pod* → *＋ Nouveau dépôt* crée le
+  dépôt puis lance un pod qui le clone. Il faut que le token git d'Onyxia puisse créer des dépôts : droit
+  *Administration : écriture* (token à grain fin) ou portée `repo` (token classique).
 - **Bilan par projet** (tableau de bord, aujourd'hui / 7 / 30 jours) : tâches réussies ou en erreur, temps de travail
   des agents, fichiers distincts touchés, lignes `+/−`, commits, activité par jour, fichiers les plus modifiés,
   dernières tâches et état git actuel du projet.

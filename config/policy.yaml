@@ -7,7 +7,8 @@ approval_timeout_s: 900   # sans réponse => refus
 
 # Outils toujours autorisés (lecture seule / sans effet de bord)
 # ToolSearch ne fait que charger la définition d'un outil : son usage reste soumis à la politique.
-allow_tools: [Read, Glob, Grep, TodoWrite, Task, Agent, WebSearch, ToolSearch, mcp__services__lister_services]
+# proposer_suite : simple proposition affichée sur le téléphone (aucun effet)
+allow_tools: [Read, Glob, Grep, TodoWrite, Task, Agent, WebSearch, ToolSearch, mcp__services__lister_services, mcp__cockpit__proposer_suite]
 
 # Outils jamais autorisés
 deny_tools: [AskUserQuestion]
@@ -15,7 +16,8 @@ deny_tools: [AskUserQuestion]
 # Outils toujours soumis à validation
 # Lancement et arrêt de services : toujours validés (la carte affiche dépôt, ressources et quota)
 # Agents en parallèle (lancer_en_parallele) : validés, la carte liste les sous-tâches
-ask_tools: [WebFetch, NotebookEdit, mcp__services__lancer_service, mcp__services__arreter_service, mcp__cockpit__lancer_en_parallele]
+# Création d'un dépôt GitHub (creer_depot) : validée, la carte indique le nom et la visibilité
+ask_tools: [WebFetch, NotebookEdit, mcp__services__lancer_service, mcp__services__arreter_service, mcp__cockpit__lancer_en_parallele, mcp__cockpit__creer_depot]
 
 # Écriture de fichiers (Write, Edit, MultiEdit)
 files:

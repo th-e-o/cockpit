@@ -446,3 +446,41 @@ def test_nouveau_pod_et_bilan(relay):
     assert [x["id"] for x in b["recent"]] == [t2, t1]
     assert len(call(p, "bilan", jours=30).json()["projects"][0]["days"]) == 30
     assert call(p, "bilan", jours=99).json()["days"] == 7
+
+
+def test_suite_et_notifications(relay):
+    """Prochaines étapes conservées et ignorables, contenu des notifications, nouveau pod avec nouveau dépôt."""
+    p = paired_phone(relay)
+    wpoll(relay, "orch-ns", True, [{"id": "ns-p", "name": "P"}], hello=True)
+    t = call(p, "tache", {"instruction": "ajoute l'export CSV", "project": "ns-p"}).json()
+    steps = [{"titre": "Lancer les tests", "instruction": "Lance pytest"}, {"titre": "Publier", "instruction": "Pousse la branche"}]
+    worker_call(relay, "w_evenements", {"worker_id": "orch-ns", "events": [
+        {"kind": "approval", "task_id": t["id"], "approval": {"id": "ap-ns", "task_id": t["id"], "tool": "Bash",
+         "tool_input": {"command": "rm -rf build"}, "reason": "opération sensible : rm", "expires": time.time() + 60}},
+        {"kind": "task", "task_id": t["id"], "task": {"status": "done", "project": "ns-p", "result": "ok", "next_steps": steps}}]})
+    task = last_status(p)[t["id"]]
+    assert task["next_steps"] == steps and task["next_steps_dismissed"] is False
+    r = call(p, "resume").json()
+    ap = [a for a in r["approvals"] if a["id"] == "ap-ns"][0]
+    assert ap["preview"] == "rm -rf build" and ap["task_id"] == t["id"]
+    assert [x for x in r["finished"] if x["id"] == t["id"]][0]["next_steps"] == steps
+
+    # La notification lance l'étape : une suite de la conversation, sur le même projet
+    n = call(p, "tache", {"instruction": steps[0]["instruction"], "reply_to": t["id"]}).json()
+    assert n["reply_to"] == t["id"] and n["project"] == "ns-p" and n["conversation"] == t["conversation"]
+    assert call(p, "ignorer_suite", {"task_id": t["id"]}).json()["ok"]
+    assert last_status(p)[t["id"]]["next_steps_dismissed"] is True
+
+    # Nouveau pod de projet : signalé une fois connecté (orchestrateurs exclus)
+    wpoll(relay, "pod-ns-neuf", False, [{"id": "ns-neuf", "name": "neuf"}], hello=True)
+    pods = call(p, "resume").json()["new_pods"]
+    assert "pod-ns-neuf" in [x["id"] for x in pods] and "orch-ns" not in [x["id"] for x in pods]
+
+    # Nouveau pod sur un nouveau dépôt GitHub
+    assert call(p, "lancer_pod", {"nom": "drones", "creer_depot": {"nom": "a b"}}).status_code == 400
+    t2 = call(p, "lancer_pod", {"nom": "drones", "depot_git": "https://ignoré", "creer_depot": {"nom": "Drones.vols", "prive": False}}).json()
+    assert t2["instruction"] == "🚀 Nouveau pod « drones » : nouveau dépôt GitHub public « Drones.vols »"
+    wid = last_status(p)[t2["id"]]["worker"]  # orchestrateur en ligne le plus récent (d'autres tests en ont lancé)
+    livrees = wpoll(relay, wid, True, instance="inst-orch-2" if wid == "orch" else None)["tasks"]
+    act = [x for x in livrees if x["id"] == t2["id"]][0]["action"]
+    assert act["creer_depot"] == {"nom": "Drones.vols", "prive": False} and act["depot_git"] == ""

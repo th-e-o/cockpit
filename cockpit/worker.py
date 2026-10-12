@@ -16,7 +16,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import gitstate
+from . import github, gitstate
 from . import services as svc
 from .agent import Runner
 from .podstate import PodState
@@ -93,6 +93,7 @@ class Worker:
         self.started = time.time()
         self._state: dict | None = None
         self._state_ts = 0.0
+        self._repos_dirty = False  # dépôt créé : liste à republier
 
     def spawn(self, coro) -> None:
         t = asyncio.create_task(coro)
@@ -164,7 +165,16 @@ class Worker:
             p = svc.Launch(nom=action.get("nom", ""), depot_git=action.get("depot_git", ""), branche=action.get("branche", ""),
                            cpu=str(action.get("cpu", "2")), memoire=action.get("memoire", "8Gi"),
                            disque=action.get("disque", "10Gi"), gpu=bool(action.get("gpu")))
-            text, status = await svc.lancer_nouveau(p), "done"
+            await svc.verifier_nouveau(p)  # avant de créer un dépôt qui resterait orphelin
+            prefix = ""
+            if nouveau := action.get("creer_depot"):
+                # Nouveau dépôt GitHub (vide), cloné par le pod : le projet démarre sous git avec son dépôt distant.
+                repo = await github.creer_depot(nouveau.get("nom", ""), bool(nouveau.get("prive", True)),
+                                                nouveau.get("description", ""))
+                p.depot_git, p.branche = repo["url"], ""
+                prefix = f"Dépôt {'privé ' if repo['private'] else ''}{repo['name']} créé : {repo['url']}\n"
+                self._repos_dirty = True
+            text, status = prefix + await svc.lancer_nouveau(p), "done"
         except Exception as e:
             text, status = f"Lancement impossible : {e}", "error"
         self.store.audit("service_launch", task=task.id, action=action, result=text)
@@ -173,11 +183,15 @@ class Worker:
     async def publish_repos(self) -> None:
         """Orchestrateur : liste des dépôts GitHub envoyée au relais au démarrage, puis toutes les 10 minutes."""
         while True:
+            self._repos_dirty = False
             try:
-                await self.relay.depots(await svc.depots_github())
+                await self.relay.depots(await github.depots())
             except Exception as e:
                 log.warning("liste des dépôts git indisponible : %s", e)
-            await asyncio.sleep(600)
+            for _ in range(60):  # 10 min, ou tout de suite après la création d'un dépôt
+                if self._repos_dirty:
+                    break
+                await asyncio.sleep(10)
 
     @staticmethod
     def routing_text(task: Task) -> str:

@@ -168,6 +168,7 @@ def seed_dashboard(relay, p):
     ev("orch-ui", msg(t1, type="tool_use", tool="Edit", text="{}", label="✏️ Modifie app.js"),
        msg(t1, type="changes", changes=changes, patches={"web/static/app.js": "@@ -10,3 +10,4 @@\n const a = 1;\n-const b = 2;\n+const b = 3;\n+const c = 4;"}),
        task(t1, status="done", project="ui-cockpit", cost_usd=0.84, changes=changes, duration_s=640,
+            next_steps=[{"titre": "Fusionner la branche", "instruction": "Fusionne la branche dans main"}],
             worktree={"branch": "cockpit/" + t1, "path": "/w", "state": "active"},
             result="**Fait**\n- tableau de bord avec jauges CPU, mémoire, disque\n- résumé des modifications\n**Choix** — onglets sur téléphone, vue côte à côte sur ordinateur\n**À faire** — fusionner la branche"))
 
@@ -189,7 +190,9 @@ def seed_dashboard(relay, p):
     t4 = call(p, "tache", {"instruction": "Corrige le calcul des altitudes", "project": "ui-drones"}).json()["id"]
     c4 = {"files": [{"path": "src/altitude.py", "status": "M", "added": 6, "removed": 4}], "file_count": 1, "added": 6,
           "removed": 4, "branch": "feat/carte", "upstream": "origin/feat/carte", "ahead": 0, "commits": [{"sha": "c0ffee1", "subject": "Altitude : corrige l'unité"}]}
-    ev("pod-drones", msg(t4, type="changes", changes=c4, patches={}), task(t4, status="done", project="ui-drones", cost_usd=0.21, changes=c4, duration_s=180,
+    ev("pod-drones", msg(t4, type="changes", changes=c4, patches={}), task(t4, status="done", project="ui-drones", cost_usd=0.21, changes=c4, duration_s=180, next_steps=[
+           {"titre": "Ajouter un test de l'altitude", "instruction": "Ajoute un test unitaire pour la conversion pieds → mètres"},
+           {"titre": "Publier sur GitHub", "instruction": "Pousse la branche feat/carte et ouvre une pull request"}],
                                                                            result="**Fait** — unité corrigée (pieds → mètres)."))
     # Le worktree listé par l'orchestrateur correspond à la conversation de t1
     st = {"resources": {"cpu": 0.37, "cpu_cores": 4, "mem_used": 5.6 * gi, "mem_limit": 16 * gi, "disk_used": 8.9 * gi, "disk_total": 9.8 * gi},
@@ -249,6 +252,12 @@ def test_tableau_de_bord(relay):
         # Nouveau pod sur un de mes dépôts
         page.click("#newPod")
         page.wait_for_selector(".repo >> text=th-e-o/drones-vols")
+        page.click("[data-pod-mode='new']")  # nouveau dépôt : nom synchronisé avec celui du pod
+        assert page.is_hidden("#repoList") and page.is_visible("#newRepoName")
+        page.fill("#podName", "meteo")
+        assert page.input_value("#newRepoName") == "meteo"
+        page.screenshot(path=SHOTS / "7e-nouveau-depot.png")
+        page.click("[data-pod-mode='existing']")
         page.fill("#repoSearch", "drone")
         assert page.locator(".repo").count() == 1
         page.click(".repo")
@@ -259,10 +268,28 @@ def test_tableau_de_bord(relay):
         page.wait_for_selector("#podDlg", state="hidden")
         page.wait_for_selector(".live >> text=Nouveau pod « drones-vols »")
         # Retour au fil depuis une tâche du tableau de bord : résumé des modifications, diff à la demande
+        # Prochaines étapes : suivi dans le tableau de bord
+        follow = page.locator(".follow", has_text="Corrige le calcul des altitudes")
+        assert follow.locator(".nmain").count() == 2
+        follow.screenshot(path=SHOTS / "7d-suivi.png")
+        follow.locator(".nmain", has_text="Ajouter un test").click()  # préparée dans la saisie, modifiable
+        page.wait_for_selector("#feed", state="visible")
+        assert page.input_value("#input").startswith("Ajoute un test unitaire")
+        assert "Corrige le calcul des altitudes" in page.inner_text("#threadText")
+        page.fill("#input", "")
+        card4 = page.locator("section", has=page.locator(".user", has_text="Corrige le calcul des altitudes")).first
+        card4.locator(".nexts").scroll_into_view_if_needed()
+        page.screenshot(path=SHOTS / "8b-prochaines-etapes.png")
+        card4.locator(".nrun").nth(1).click()  # ▶ : lancée tout de suite, dans la conversation
+        page.wait_for_selector("section.suite .user >> text=Pousse la branche feat/carte")
+        assert card4.locator(".nexts").count() == 0  # la conversation a avancé : plus proposées
+        page.click("#tabDash")
         page.click(f".recents .recent[data-jump='{t1}']")
         page.wait_for_selector("#feed", state="visible")
         card = page.locator(f"#t-{t1}")
         assert "4 fichiers" in card.inner_text() and "+398" in card.inner_text() and "1 commit" in card.inner_text()
+        page.click(f"#t-{t1} button[data-dismiss]")  # Ignorer
+        page.wait_for_function(f"!document.querySelector('#t-{t1} .nexts')")
         card.locator("details.file >> text=app.js").click()
         card.locator(".diffpre .a >> text=const c = 4;").wait_for()
         assert card.locator("button[data-wt='merge']").count() == 1
@@ -305,3 +332,29 @@ def test_manifeste_application():
     for icon in m["icons"] + [i for sc in m["shortcuts"] for i in sc["icons"]]:
         assert (static / icon["src"]).exists(), icon
     assert all(sc["url"].startswith("../?") for sc in m["shortcuts"])
+
+
+def test_notifications_du_service_worker(relay):
+    """Logique des notifications (sw.js) évaluée dans Chromium : boutons d'action, étapes, pods."""
+    from pathlib import Path
+
+    src = (Path(__file__).resolve().parent.parent / "web" / "sw.js").read_text()
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        page = browser.new_page()
+        page.goto(relay["app"])
+        page.add_script_tag(content=src)
+        out = page.evaluate("""notifications({
+          approvals: [{id: 'a1', tool: 'Bash', reason: 'opération sensible : rm', preview: 'rm -rf build', task_id: 't'}],
+          new_pods: [{id: 'pod-x', name: 'drones', since: 1}],
+          finished: [{id: 't1', status: 'done', result: '**Fait** — ok', changes: {file_count: 2, added: 5, removed: 1, commits: []},
+                      next_steps: [{titre: 'Lancer les tests', instruction: 'pytest'}, {titre: 'Publier', instruction: 'push'}, {titre: 'Trois', instruction: '3'}]},
+                     {id: 't2', status: 'error', result: 'boom', next_steps: [{titre: 'x', instruction: 'y'}]}]})""")
+        browser.close()
+    v, pod, done, err = out
+    assert v["body"] == "opération sensible : rm\nrm -rf build" and [a["action"] for a in v["actions"]] == ["approve", "deny"]
+    assert v["data"] == {"approval": "a1"} and v["urgent"]
+    assert pod["title"] == "🟢 Pod « drones » connecté"
+    assert done["body"].startswith("2 fichiers · +5 −1\nFait — ok") and "💡 Lancer les tests · Publier · Trois" in done["body"]
+    assert [a["title"] for a in done["actions"]] == ["▶ Lancer les tests", "▶ Publier"] and done["data"]["task"] == "t1"
+    assert err["actions"] == [] and err["title"] == "❌ Tâche en erreur"

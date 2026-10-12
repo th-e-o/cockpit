@@ -8,7 +8,7 @@ self.addEventListener('install', (e) => {
 });
 
 self.addEventListener('activate', (e) => {
-  e.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k)))));
+  e.waitUntil(caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE && k !== VUS).map((k) => caches.delete(k)))));
   self.clients.claim();
 });
 
@@ -22,39 +22,112 @@ self.addEventListener('fetch', (e) => {
   );
 });
 
+// ---------- notifications : une par nouveauté (validation, tâche finie, pod connecté), avec boutons d'action
+// Les push arrivent sans contenu : on relit l'état (api.php?r=resume). Les nouveautés déjà notifiées sont
+// mémorisées pour qu'une notification fermée ne revienne pas au push suivant.
+const VUS = 'cockpit-notifications';
+async function dejaVus() {
+  try { return new Set(await (await (await caches.open(VUS)).match('vus'))?.json() || []); } catch { return new Set(); }
+}
+async function memoriser(vus) {
+  try { await (await caches.open(VUS)).put('vus', new Response(JSON.stringify([...vus].slice(-300)))); } catch { /* sans importance */ }
+}
+
+const ICONE = { icon: 'static/icon-192.png', badge: 'static/icon-192.png' };
+const pluriel = (n, m) => `${n} ${m}${n > 1 ? 's' : ''}`;
+
+function resumeModifs(c) {
+  if (!c || !(c.file_count || c.commits?.length)) return '';
+  return [pluriel(c.file_count, 'fichier'), c.git !== false ? `+${c.added} −${c.removed}` : '',
+    c.commits?.length ? pluriel(c.commits.length, 'commit') : ''].filter(Boolean).join(' · ') + '\n';
+}
+
+function notifications(s) {
+  const out = [];
+  for (const a of s.approvals || []) {
+    out.push({ key: `v-${a.id}`, title: '⚠️ Validation requise', tag: `validation-${a.id}`, urgent: true,
+      body: `${a.reason}${a.preview && !a.reason.includes(a.preview) ? `\n${a.preview}` : ''}`,
+      actions: [{ action: 'approve', title: '✅ Approuver' }, { action: 'deny', title: '⛔ Refuser' }],
+      data: { approval: a.id } });
+  }
+  for (const p of s.new_pods || []) {
+    out.push({ key: `p-${p.id}-${p.since}`, title: `🟢 Pod « ${p.name} » connecté`, tag: `pod-${p.id}`,
+      body: 'Le projet est prêt : tu peux lui envoyer une instruction.', data: {} });
+  }
+  for (const t of s.finished || []) {
+    const steps = t.status === 'done' && !t.next_steps_dismissed ? (t.next_steps || []) : [];
+    const suite = steps.length ? `\n💡 ${steps.map((x) => x.titre).join(' · ')}` : '';
+    out.push({ key: `t-${t.id}-${t.status}`, tag: `tache-${t.id}`,
+      title: { done: '✅ Tâche terminée', error: '❌ Tâche en erreur', needs_project: '❓ Quel projet ?' }[t.status] || 'Cockpit',
+      body: (resumeModifs(t.changes) + (t.result || t.instruction || '').replace(/\*\*|`/g, '')).slice(0, 180) + suite,
+      actions: steps.slice(0, 2).map((x, i) => ({ action: `next-${i}`, title: `▶ ${x.titre}`.slice(0, 40) })),
+      data: { task: t.id, steps } });
+  }
+  return out;
+}
+
 self.addEventListener('push', (e) => {
   e.waitUntil((async () => {
-    let title = 'Cockpit', body = 'Du nouveau dans le cockpit.', tag = 'cockpit', urgent = false;
+    let liste = [];
+    let approvals = 0;
     try {
-      const res = await fetch('api.php?r=resume', { credentials: 'same-origin' });
-      const s = await res.json();
-      if (s.approvals?.length) {
-        const a = s.approvals[0];
-        title = s.approvals.length > 1 ? `⚠️ ${s.approvals.length} validations requises` : '⚠️ Validation requise';
-        body = `${a.tool} — ${a.reason}`;
-        tag = 'validation';
-        urgent = true;
-      } else if (s.finished?.length) {
-        const t = s.finished[0];
-        title = { done: '✅ Tâche terminée', error: '❌ Tâche en erreur', needs_project: '❓ Quel projet ?' }[t.status] || 'Cockpit';
-        // « 4 fichiers · +120 −35 · 2 commits », puis le début de la réponse (sans la mise en forme markdown)
-        const c = t.changes;
-        const resume = c && (c.file_count || c.commits?.length) ? [`${c.file_count} fichier${c.file_count > 1 ? 's' : ''}`,
-          c.git !== false ? `+${c.added} −${c.removed}` : '', c.commits?.length ? `${c.commits.length} commit${c.commits.length > 1 ? 's' : ''}` : '']
-          .filter(Boolean).join(' · ') + '\n' : '';
-        body = (resume + (t.result || t.instruction || '').replace(/\*\*|`/g, '')).slice(0, 200);
-        tag = `tache-${t.id}`;
-      }
-      if (navigator.setAppBadge) navigator.setAppBadge(s.approvals?.length || 0).catch(() => {});
+      const s = await (await fetch('api.php?r=resume', { credentials: 'same-origin' })).json();
+      liste = notifications(s);
+      approvals = s.approvals?.length || 0;
     } catch { /* session expirée ou hors ligne : notification générique */ }
-    await self.registration.showNotification(title, { body, tag, renotify: urgent, requireInteraction: urgent, icon: 'static/icon-192.png', badge: 'static/icon-192.png' });
+    if (navigator.setAppBadge) navigator.setAppBadge(approvals).catch(() => {});
+    const vus = await dejaVus();
+    const nouvelles = liste.filter((n) => !vus.has(n.key));
+    for (const n of nouvelles) {
+      vus.add(n.key);
+      await self.registration.showNotification(n.title, { body: n.body, tag: n.tag, actions: n.actions || [], data: n.data,
+        renotify: !!n.urgent, requireInteraction: !!n.urgent, ...ICONE });
+    }
+    await memoriser(vus);
+    // Chaque push doit afficher une notification : rien de neuf -> rappel discret de la plus importante.
+    if (!nouvelles.length) {
+      const n = liste[0] || { title: 'Cockpit', body: 'Du nouveau dans le cockpit.', tag: 'cockpit', data: {} };
+      await self.registration.showNotification(n.title, { body: n.body, tag: n.tag, actions: n.actions || [], data: n.data, silent: true, ...ICONE });
+    }
   })());
 });
 
+async function appel(route, body) {
+  const r = await fetch(`api.php?r=${route}`, { method: 'POST', credentials: 'same-origin',
+    headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  if (!r.ok) throw new Error((await r.json().catch(() => ({}))).detail || r.statusText);
+  return r.json();
+}
+
+async function ouvrir(hash = '') {
+  const list = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
+  const win = list.find((c) => c.url.startsWith(self.registration.scope));
+  if (win) { await win.focus(); if (hash) win.postMessage({ jump: hash }); return; }
+  await self.clients.openWindow(self.registration.scope + (hash ? `#t=${hash}` : ''));
+}
+
 self.addEventListener('notificationclick', (e) => {
-  e.notification.close();
-  e.waitUntil(self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
-    const win = list.find((c) => c.url.startsWith(self.registration.scope));
-    return win ? win.focus() : self.clients.openWindow(self.registration.scope);
-  }));
+  const n = e.notification;
+  const d = n.data || {};
+  n.close();
+  e.waitUntil((async () => {
+    try {
+      if ((e.action === 'approve' || e.action === 'deny') && d.approval) {
+        await appel('decider', { approval_id: d.approval, decision: e.action });
+        return;
+      }
+      if (e.action?.startsWith('next-') && d.task) {
+        const step = d.steps?.[Number(e.action.slice(5))];
+        if (!step) return ouvrir(d.task);
+        const t = await appel('tache', { instruction: step.instruction, reply_to: d.task });
+        await self.registration.showNotification(`▶ ${step.titre}`, { body: 'Étape lancée : Claude reprend la conversation.',
+          tag: `tache-${t.id}`, silent: true, data: { task: t.id }, ...ICONE });
+        return;
+      }
+    } catch (err) {
+      await self.registration.showNotification('Action impossible', { body: `${err.message} — ouvre le cockpit.`, tag: 'erreur', data: d, ...ICONE });
+      return;
+    }
+    await ouvrir(d.task || '');
+  })());
 });

@@ -15,7 +15,6 @@ import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
-import httpx
 import yaml
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
@@ -182,11 +181,15 @@ async def lancer(p: Launch) -> str:
             f"cockpit dès que son worker sera connecté (1 à 3 minutes).")
 
 
-async def lancer_nouveau(p: Launch) -> str:
-    """Lancement demandé depuis le téléphone : refuse de remplacer un service existant (helm upgrade le redémarrerait)."""
+async def verifier_nouveau(p: Launch) -> None:
+    """Un lancement depuis le téléphone ne remplace jamais un service existant (helm upgrade le redémarrerait)."""
     p.validate()
     if p.nom in {s["nom"] for s in await lister()}:
         raise ServiceError(f"le service {p.release} existe déjà")
+
+
+async def lancer_nouveau(p: Launch) -> str:
+    await verifier_nouveau(p)
     return await lancer(p)
 
 
@@ -194,27 +197,6 @@ def nom_depuis_depot(url: str) -> str:
     """Nom de service par défaut : nom du dépôt en minuscules, chiffres et tirets (30 caractères au plus)."""
     base = url.rstrip("/").removesuffix(".git").rsplit("/", 1)[-1].lower()
     return re.sub(r"-+", "-", re.sub(r"[^a-z0-9-]", "-", base)).strip("-")[:30].strip("-") or "projet"
-
-
-async def depots_github(limit: int = 300) -> list[dict]:
-    """Dépôts GitHub de l'utilisateur (token git d'Onyxia), du plus récemment poussé au plus ancien."""
-    token = os.environ.get("GIT_PERSONAL_ACCESS_TOKEN")
-    if not token:
-        return []
-    out: list[dict] = []
-    async with httpx.AsyncClient(timeout=20, headers={"Authorization": f"Bearer {token}",
-                                                      "Accept": "application/vnd.github+json"}) as http:
-        for page in range(1, limit // 100 + 1):
-            r = await http.get("https://api.github.com/user/repos", params={
-                "per_page": 100, "page": page, "sort": "pushed", "affiliation": "owner,collaborator,organization_member"})
-            r.raise_for_status()
-            batch = r.json()
-            out += [{"name": x["full_name"], "url": x["html_url"], "private": x["private"], "branch": x["default_branch"],
-                     "description": (x.get("description") or "")[:140], "pushed": x.get("pushed_at") or "",
-                     "archived": x.get("archived", False)} for x in batch]
-            if len(batch) < 100:
-                break
-    return out
 
 
 async def arreter(nom: str) -> str:
