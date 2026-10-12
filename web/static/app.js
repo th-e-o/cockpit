@@ -283,6 +283,8 @@ function taskHtml(e) {
   body += e.events.filter((x) => x.type === 'steer_late').map((x) => `<div class="hint">✋ Message arrivé après la fin de la tâche :
     « ${esc(x.text)} » <button class="btn ghost" data-resend="${esc(t.id)}" data-text="${esc(x.text)}">Envoyer comme suite</button></div>`).join('');
   body += imagesHtml(e);
+  const limited = [...e.events].reverse().find((x) => x.type === 'rate_limited');
+  if (limited && active) body += `<div class="blocked">⏳ Limite d'usage de Claude atteinte${limited.resets_at ? ` · ${esc(resetLabel(limited.resets_at))}` : ''}</div>`;
   const auto = e.events.filter((x) => x.type === 'trusted');
   if (auto.length) {
     body += `<details class="trusted" data-k="trusted"><summary>🛡 ${auto.length} validation${auto.length > 1 ? 's' : ''} passée${auto.length > 1 ? 's' : ''} en mode confiance</summary>
@@ -973,6 +975,42 @@ $('#podForm').addEventListener('submit', async (ev) => {
   }
 });
 
+// ---------- usage du forfait Claude
+const USAGE_LABELS = { five_hour: 'Session (5 h)', seven_day: 'Semaine', seven_day_opus: 'Semaine · Opus', seven_day_sonnet: 'Semaine · Sonnet' };
+const latestUsage = () => state.workers.map((w) => w.state?.usage).filter((u) => u?.limits?.length).sort((a, b) => b.ts - a.ts)[0] || null;
+
+function resetLabel(ts) {
+  if (!ts) return '';
+  const d = new Date(ts * 1000);
+  const hm = d.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' });
+  return ts - Date.now() / 1000 < 86400 && d.getDate() === new Date().getDate() ? `réinitialisée à ${hm}`
+    : `réinitialisée ${d.toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric' })} à ${hm}`;
+}
+
+function usageHtml(u) {
+  if (!u) return '';
+  const rows = u.limits.map((l) => meter(USAGE_LABELS[l.type] || l.type, l.utilization,
+    l.utilization == null ? (l.status === 'rejected' ? '⛔ limite atteinte' : '—') : `${Math.round(l.utilization * 100)} %`,
+    resetLabel(l.resets_at)) + (l.resets_at ? `<div class="ureset">${esc(resetLabel(l.resets_at))}</div>` : '')).join('');
+  return `<section class="sect"><h3>Usage de Claude</h3><div class="usagecard"><div class="meters">${rows}</div>
+    <div class="hint">Mis à jour ${ago(u.ts)}${u.source === 'agent' ? ' (signalé pendant les tâches)' : ''}</div></div></section>`;
+}
+
+/** Barre fine sous l'en-tête : usage de la session de 5 h (ou de la limite la plus avancée). */
+function renderUsageBar() {
+  const u = latestUsage();
+  const l = u && (u.limits.find((x) => x.type === 'five_hour' && x.utilization != null) || u.limits.find((x) => x.utilization != null));
+  const bar = $('#usageBar');
+  bar.classList.toggle('hidden', !l);
+  if (!l) return;
+  const r = l.utilization;
+  bar.classList.toggle('warn', r >= 0.8 && r < 0.95);
+  bar.classList.toggle('bad', r >= 0.95);
+  bar.querySelector('i').style.width = `${(r * 100).toFixed(1)}%`;
+  bar.querySelector('span').textContent = `${USAGE_LABELS[l.type] || ''} ${Math.round(r * 100)} %${r >= 0.8 ? ` · ${resetLabel(l.resets_at)}` : ''}`;
+  bar.title = `Usage de Claude — ${USAGE_LABELS[l.type]} : ${Math.round(r * 100)} % (${resetLabel(l.resets_at)})`;
+}
+
 const dashVisible = () => getComputedStyle($('#dash')).display !== 'none';
 
 function renderDash() {
@@ -993,6 +1031,7 @@ function renderDash() {
 
   const kpi = (v, l, cls = '', title = '') => `<div class="kpi ${cls}" title="${esc(title)}"><div class="v">${v}</div><div class="l">${l}</div></div>`;
   const html = `<div class="dashwrap">
+    ${usageHtml(latestUsage())}
     <div class="kpis">
       ${kpi(`${working}<small>/${capacity || '—'}</small>`, 'Claude au travail', '', 'agents actifs / capacité des pods en ligne')}
       ${kpi(pending ? `⚠ ${pending}` : '0', 'Validation(s) en attente', pending ? 'warn' : '')}
@@ -1132,6 +1171,7 @@ async function poll() {
     if (state.pendingJump && document.getElementById(`t-${state.pendingJump}`)) { jumpTo(state.pendingJump); state.pendingJump = null; }
     state.workers = s.workers || [];
     state.trust = s.trust || {};
+    renderUsageBar();
     updateTrust();
     renderDash();
     state.replay = false;

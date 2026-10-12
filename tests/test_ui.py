@@ -342,7 +342,13 @@ def test_tableau_de_bord(relay):
         assert not dark_errors, dark_errors
         page.click(f"#t-{t1} button[data-wt='merge']")
         from test_relay import wpoll
-        assert wpoll(relay, "orch-ui", True)["worktree_actions"][0]["action"] == "merge"
+        actions = []
+        for _ in range(30):  # le clic rend la main avant la fin de la requête : on attend sa livraison
+            actions += wpoll(relay, "orch-ui", True)["worktree_actions"]
+            if actions:
+                break
+            page.wait_for_timeout(100)
+        assert actions[0]["action"] == "merge"
         assert not errors, errors
         browser.close()
 
@@ -430,7 +436,10 @@ def seed_vibe(relay, p):
     wpoll(relay, "pod-vibe", False, [{"id": "vibe", "name": "Vibe"}], hello=True, state={
         "resources": {"cpu": 0.2, "cpu_cores": 2, "mem_used": 2 * gi, "mem_limit": 8 * gi, "disk_used": 1 * gi, "disk_total": 10 * gi},
         "projects": {"vibe": {"branch": "main", "dirty": 0}}, "running": 1, "max_agents": 3, "started": time.time() - 600,
-        "preview": {"url": "https://user-x-cockpit-vibe-user.example/", "port": 5000}, "worktrees": []})
+        "preview": {"url": "https://user-x-cockpit-vibe-user.example/", "port": 5000}, "worktrees": [],
+        "usage": {"ts": int(time.time()), "source": "compte", "limits": [
+            {"type": "five_hour", "utilization": 0.87, "resets_at": int(time.time()) + 3600},
+            {"type": "seven_day", "utilization": 0.41, "resets_at": int(time.time()) + 3 * 86400}]}})
     worker_call(relay, "w_memoire", {"project": "vibe", "content": "# Vibe\n- tests : pytest", "hash": "m1", "worker_id": "pod-vibe"})
     ev = lambda *events: worker_call(relay, "w_evenements", {"worker_id": "pod-vibe", "events": list(events)})
     msg = lambda tid, **kw: {"kind": "message", "task_id": tid, "ts": time.time(), **kw}
@@ -482,6 +491,12 @@ def test_vibe_coding_ui(relay):
         page.wait_for_selector(".podcard >> text=Vibe")
         assert page.evaluate("document.querySelector('.meter .bar i').getBoundingClientRect().width") > 0
         assert page.locator("a.preview", has_text="Aperçu").get_attribute("href").startswith("https://user-x-cockpit-vibe-user")
+        # Barre d'usage de Claude : sous l'en-tête (session de 5 h) et détaillée dans le tableau de bord
+        page.wait_for_selector("#usageBar:not(.hidden).warn >> text=Session (5 h) 87 %")
+        assert page.evaluate("document.querySelector('#usageBar i').getBoundingClientRect().width") > 1000
+        card = page.locator(".usagecard")
+        assert "87 %" in card.inner_text() and "41 %" in card.inner_text() and "réinitialisée" in card.inner_text()
+        page.locator(".sect", has=card).screenshot(path=SHOTS / "15-usage.png")
 
         # Recadrer la tâche en cours (conversation reprise automatiquement)
         assert "Recadrer" in page.get_attribute("#input", "placeholder")
@@ -537,7 +552,7 @@ def test_vibe_coding_ui(relay):
         page.wait_for_selector(".chip.qc >> text=📦 Dépendances")
 
         # Mémoire du projet
-        page.locator(".podcard", has_text="Vibe").locator("[data-memory]").click()
+        page.locator(".podcard [data-memory='vibe']").click()
         wait_js(page, "document.querySelector('#memText').value.includes('tests : pytest')")
         page.fill("#memText", "# Vibe\n- tests : pytest\n- style : black")
         page.click("#memSave")

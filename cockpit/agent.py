@@ -10,6 +10,7 @@ import time
 from pathlib import Path
 
 from claude_agent_sdk import (
+    RateLimitEvent,
     create_sdk_mcp_server,
     tool,
     AssistantMessage,
@@ -70,6 +71,9 @@ contourner par un autre moyen, explique plutôt ce qui était prévu.
 SERVICES_APPEND = """
 Tu peux lancer, lister et arrêter des services Onyxia (chacun devient un projet pilotable) avec les outils
 lancer_service, lister_services et arreter_service. N'utilise pas helm directement pour cela.
+Si l'utilisateur parle d'un de ses dépôts ou de son code GitHub qui n'est pas encore un projet du cockpit, trouve-le
+avec chercher_depots (plusieurs requêtes si besoin : synonymes, sigles), puis lance un service dessus avec
+lancer_service (depot_git = son URL) pour qu'il devienne un projet ; dis à l'utilisateur ce que tu as trouvé.
 Pour un nouveau projet sans dépôt git, lance le service sans dépôt (un dossier vide sera créé) ; choisis
 toi-même un nom court à partir de la demande et garde les ressources par défaut sauf besoin explicite.
 """
@@ -149,6 +153,8 @@ def tool_label(tool: str, i: dict) -> str | None:
             return f"🛑 Arrête le service {i.get('nom', '')}"
         case "proposer_suite":
             return None  # affiché comme « Prochaines étapes » sous la réponse
+        case "chercher_depots":
+            return f"🔎 Cherche « {_clip(i.get('requete', ''), 40)} » dans tes dépôts GitHub"
         case "capturer_ecran":
             return "📸 Capture l'écran de l'application"
         case "ouvrir_pr":
@@ -282,7 +288,22 @@ def cockpit_server(cwd: str, on_next, spawn=None, pub=None, upload=None):
             pub(type="pr", **pr)
         return _text(f"Pull request #{pr['number']} ouverte : {pr['url']} ({pr['head']} → {pr['base']}).")
 
-    tools = [proposer_suite, creer_depot, capturer_ecran, ouvrir_pr]
+    @tool("chercher_depots",
+          "Cherche dans les dépôts GitHub de l'utilisateur (nom, description, README et code) ceux qui correspondent "
+          "à une requête courte (mots-clés, éventuellement plusieurs essais : synonymes, sigles). Renvoie le nom, "
+          "l'URL, la branche par défaut et la raison de chaque résultat.",
+          {"type": "object", "properties": {"requete": {"type": "string"}}, "required": ["requete"]})
+    async def chercher_depots(args: dict) -> dict:
+        try:
+            found = await github.chercher(args.get("requete", ""))
+        except github.GitHubError as e:
+            return _text(str(e), error=True)
+        if not found:
+            return _text("Aucun dépôt ne correspond : essaie d'autres mots-clés (synonymes, sigles, anglais).")
+        return _text(json.dumps([{k: x.get(k) for k in ("name", "url", "branch", "private", "description", "pushed", "why")}
+                                 for x in found], ensure_ascii=False))
+
+    tools = [proposer_suite, creer_depot, capturer_ecran, ouvrir_pr, chercher_depots]
     if spawn:
         @tool("lancer_en_parallele",
               "Lance jusqu'à 5 autres agents Claude en parallèle, chacun avec une instruction autonome et complète (il ne "
@@ -327,6 +348,7 @@ class Runner:
         self.preview: dict | None = None  # URL publique du port utilisateur du pod {url, port}
         self.steers: dict[str, list[str]] = {}  # messages de l'utilisateur pendant une tâche
         self.trust: dict[str, float] = {}  # mode confiance : conversation -> fin (activé depuis le téléphone)
+        self.on_rate_limit = None  # RateLimitInfo -> None (barre d'usage), fourni par le worker
         self._background: set[asyncio.Task] = set()
 
     @staticmethod
@@ -665,6 +687,12 @@ class Runner:
             for b in msg.content:
                 if isinstance(b, ToolResultBlock) and b.is_error:
                     pub(type="tool_error", text=_short(b.content, 300))
+        elif isinstance(msg, RateLimitEvent):
+            info = msg.rate_limit_info
+            if self.on_rate_limit:
+                self.on_rate_limit(info)
+            if info.status == "rejected":  # limite du forfait atteinte : la tâche attend ou échoue
+                pub(type="rate_limited", resets_at=info.resets_at, kind=info.rate_limit_type)
         elif isinstance(msg, ResultMessage):
             self.store.save_session(task.project, msg.session_id)
             if task.conversation and msg.session_id:

@@ -120,3 +120,45 @@ async def etat_ci(owner: str, repo: str, sha: str) -> dict:
     failed = [c for c in checks if c["conclusion"] not in (None, "success", "neutral", "skipped")]
     return {"state": state, "sha": sha[:7], "checks": checks[:20],
             "url": (failed or checks or [{}])[0].get("url") or f"https://github.com/{owner}/{repo}/commit/{sha}"}
+
+
+async def chercher(requete: str, limite: int = 10) -> list[dict]:
+    """Dépôts de l'utilisateur liés à une requête : nom et description, README, puis code (recherche GitHub).
+
+    Chaque résultat indique pourquoi il remonte (« nom », « README », « code : chemin/fichier.py »).
+    """
+    requete = " ".join(requete.split())[:200]
+    if not requete:
+        raise GitHubError("requête vide")
+    mots = [m.lower() for m in re.findall(r"\w{3,}", requete)]
+    found: dict[str, dict] = {}
+
+    def add(x: dict, why: str) -> None:
+        if x["name"] not in found:
+            found[x["name"]] = {**x, "why": why}
+
+    # 1. Liste des dépôts (y compris organisations et collaborations) filtrée sur le nom et la description
+    mine = await depots()
+    for x in mine:
+        texte = f"{x['name']} {x['description']}".lower()
+        if mots and any(m in texte for m in mots):
+            add(x, "nom ou description")
+    by_name = {x["name"]: x for x in mine}
+    async with _client() as http:
+        r = await http.get("/user")
+        login = r.json().get("login") if r.status_code == 200 else None
+        if login:
+            # 2. README et description (recherche de dépôts), 3. code (recherche de code)
+            r = await http.get("/search/repositories", params={"q": f"{requete} user:{login} fork:true in:name,description,readme",
+                                                               "per_page": limite})
+            for item in r.json().get("items", []) if r.status_code == 200 else []:
+                add(by_name.get(item["full_name"]) or {"name": item["full_name"], "url": item["html_url"],
+                    "private": item["private"], "branch": item.get("default_branch") or "main",
+                    "description": (item.get("description") or "")[:140], "pushed": item.get("pushed_at") or ""}, "README")
+            r = await http.get("/search/code", params={"q": f"{requete} user:{login}", "per_page": limite})
+            for item in r.json().get("items", []) if r.status_code == 200 else []:
+                repo = item.get("repository", {})
+                add(by_name.get(repo.get("full_name")) or {"name": repo.get("full_name"), "url": repo.get("html_url"),
+                    "private": repo.get("private"), "branch": "", "description": (repo.get("description") or "")[:140],
+                    "pushed": ""}, f"code : {item.get('path')}")
+    return sorted(found.values(), key=lambda x: x.get("pushed") or "", reverse=True)[:limite]

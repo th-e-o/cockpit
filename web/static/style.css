@@ -381,3 +381,15 @@ dialog form .btn.ghost { width: auto; background: transparent; color: var(--mute
 select.mini.trust.on { border-color: var(--ok); color: var(--ok); font-weight: 600; }
 .trustleft { flex: none; font-size: 11.5px; color: var(--ok); }
 details.trusted summary { color: var(--ok); font-size: 12px; cursor: pointer; }
+
+/* ---------- Usage du forfait Claude */
+.usagebar { position: relative; display: block; width: 100%; height: 18px; padding: 0; border: 0; border-bottom: 1px solid var(--line);
+  background: var(--panel); cursor: pointer; overflow: hidden; }
+.usagebar i { position: absolute; inset: 0 auto 0 0; width: 0; background: color-mix(in srgb, var(--accent) 22%, var(--panel)); transition: width .4s ease; }
+.usagebar.warn i { background: color-mix(in srgb, var(--warn) 35%, var(--panel)); }
+.usagebar.bad i { background: color-mix(in srgb, var(--bad) 35%, var(--panel)); }
+.usagebar span { position: relative; font-size: 11px; color: var(--muted); }
+.usagecard { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; display: flex; flex-direction: column; gap: 8px; }
+.usagecard .meter { grid-template-columns: 120px minmax(40px, 1fr) auto; }
+.ureset { font-size: 11.5px; color: var(--muted); margin: -4px 0 2px 130px; }
+@media (max-width: 480px) { .usagecard .meter { grid-template-columns: 96px minmax(40px, 1fr) auto; } .ureset { margin-left: 106px; } }

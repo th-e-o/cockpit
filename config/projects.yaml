@@ -16,4 +16,7 @@ projects:
       (vscode, mlflow, bases de données), releases helm, pods, stockage S3 MinIO.
       C'est aussi ici qu'on crée un NOUVEAU projet : lancer, lister ou arrêter un service
       (pod VSCode dédié, avec ou sans dépôt git), quel que soit le sujet du futur projet.
-    keywords: [onyxia, kubectl, helm, pod, service, services, namespace, mlflow, s3, minio, cluster, projet, nouveau, créer, lancer, vscode]
+      Et ici qu'on retrouve un dépôt ou un code GitHub de l'utilisateur qui n'est pas encore un projet
+      (recherche dans ses dépôts, puis ouverture d'un pod dessus), quel que soit son sujet.
+    keywords: [onyxia, kubectl, helm, pod, service, services, namespace, mlflow, s3, minio, cluster, projet, nouveau, créer, lancer, vscode,
+               github, git, dépôt, depot, repo, reprendre, reprends]

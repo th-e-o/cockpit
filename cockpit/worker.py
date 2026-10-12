@@ -16,7 +16,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import apercu, github, gitstate
+from . import apercu, github, gitstate, usage
 from . import services as svc
 from .agent import Runner
 from .podstate import PodState
@@ -102,6 +102,8 @@ class Worker:
         self._repos_dirty = False  # dépôt créé : liste à republier
         self.runner.upload_image = self.relay.image
         self._memory: dict[str, str] = {}  # projet -> empreinte du CLAUDE.md publié
+        self.usage = usage.Usage()
+        self.runner.on_rate_limit = self.rate_limit
 
     def spawn(self, coro) -> None:
         t = asyncio.create_task(coro)
@@ -134,6 +136,7 @@ class Worker:
         tasks = self.store.tasks.values()
         await self.publish_memory()
         self._state = {
+            "usage": self.usage.public(),
             "preview": self.runner.preview,
             "resources": self.pod.resources(), "projects": projects, "worktrees": worktrees,
             "running": len(self.runner.running), "max_agents": self.runner.max_agents,
@@ -141,6 +144,25 @@ class Worker:
         }
         self._state_ts = time.monotonic()
         return self._state
+
+    def rate_limit(self, info) -> None:
+        """Événement d'usage émis pendant une tâche : la barre d'usage est mise à jour au prochain poll."""
+        if lim := usage.from_event(info):
+            self.usage.update({lim["type"]: lim}, "agent")
+            self._state = None
+
+    async def poll_usage(self) -> None:
+        """Usage du forfait toutes les 5 minutes ; abandonné (événements seuls) si l'interface le refuse."""
+        while True:
+            try:
+                self.usage.update(await usage.fetch(), "compte")
+                self._state = None
+            except usage.UsageError as e:
+                log.info("usage du forfait indisponible (%s) : barre d'usage alimentée par les tâches seulement", e)
+                return
+            except Exception as e:
+                log.info("usage du forfait : %s", e)
+            await asyncio.sleep(300)
 
     async def publish_memory(self) -> None:
         """CLAUDE.md de chaque projet (mémoire) publié au relais quand il change."""
@@ -321,6 +343,7 @@ class Worker:
 
     async def run(self) -> None:
         self.spawn(self.relay.flush_forever())
+        self.spawn(self.poll_usage())
         if ORCHESTRATOR:
             self.spawn(self.publish_repos())
         try:

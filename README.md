@@ -106,6 +106,13 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
     (section `trust` de `config/policy.yaml`). Chaque auto-approbation est journalisée et signalée sur la carte.
   - *Commandes rapides* (puces au-dessus de la saisie, ✎ pour les modifier, communes ou par projet) et *mémoire du
     projet* (🧠 : le `CLAUDE.md`, lu par Claude au début de chaque tâche, modifiable depuis le téléphone).
+- **Usage de Claude** : barre fine sous l'en-tête (session de 5 h, orange au-delà de 80 %) et détail dans le tableau
+  de bord (session, semaine, Opus/Sonnet, heure de réinitialisation). Source : l'interface d'usage du compte
+  (celle de `/usage`, non documentée), interrogée toutes les 5 min avec le jeton du worker ; si elle est refusée,
+  les événements d'usage émis pendant les tâches. Une limite atteinte est signalée sur la carte de la tâche.
+- **Tes dépôts GitHub** : une demande qui parle d'un dépôt ou d'un code qui n'est pas encore un projet (« reprends
+  mon code sur … ») va à l'orchestrateur, qui le cherche (outil `chercher_depots` : nom, description, README,
+  code) puis ouvre un pod dessus (validation).
 - **Bilan par projet** (tableau de bord, aujourd'hui / 7 / 30 jours) : tâches réussies ou en erreur, temps de travail
   des agents, fichiers distincts touchés, lignes `+/−`, commits, activité par jour, fichiers les plus modifiés,
   dernières tâches et état git actuel du projet.

@@ -10,7 +10,7 @@ approval_timeout_s: 900   # sans réponse => refus
 # proposer_suite : simple proposition affichée sur le téléphone (aucun effet)
 # capturer_ecran : pages du pod seulement (localhost) ; ouvrir_pr : jamais depuis main/master, réversible
 allow_tools: [Read, Glob, Grep, TodoWrite, Task, Agent, WebSearch, ToolSearch, mcp__services__lister_services, mcp__cockpit__proposer_suite,
-              mcp__cockpit__capturer_ecran, mcp__cockpit__ouvrir_pr]
+              mcp__cockpit__capturer_ecran, mcp__cockpit__ouvrir_pr, mcp__cockpit__chercher_depots]
 
 # Outils jamais autorisés
 deny_tools: [AskUserQuestion]

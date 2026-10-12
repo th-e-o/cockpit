@@ -55,6 +55,9 @@ Projets disponibles :
 
 Réponds UNIQUEMENT par un objet JSON sur une ligne :
 {{"project": "<id ou null>", "confidence": <0..1>, "reason": "<courte justification>"}}
+Une instruction qui concerne un dépôt ou du code GitHub de l'utilisateur absent de cette liste (« reprends mon code
+sur … », « mon dépôt qui … ») va au projet qui gère les services et les nouveaux projets, s'il existe : il sait
+chercher dans les dépôts de l'utilisateur et ouvrir un pod dessus.
 Mets project=null si l'instruction est ambiguë ou ne correspond à aucun projet."""
 
 
