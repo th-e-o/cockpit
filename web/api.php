@@ -357,6 +357,7 @@ function tache_publique(array $t): array {
         'next_steps' => $extra['next_steps'] ?? null, 'next_steps_dismissed' => !empty($extra['next_steps_dismissed']),
         'model' => $t['modele'] ?? null, 'group' => $t['groupe'] ?? null, 'tests' => $extra['tests'] ?? null,
         'waiting_project' => !empty($t['attente_projet']),
+        'model_used' => $extra['model_used'] ?? null, 'models' => $extra['models'] ?? [], 'model_auto' => $extra['model_auto'] ?? null,
     ];
 }
 
@@ -984,7 +985,7 @@ switch ($route) {
         foreach ($liste as $f) {
             $instruction = trim((string)($f['instruction'] ?? ''));
             if ($instruction === '' || mb_strlen($instruction) > 10000) erreur('instruction vide ou trop longue');
-            $connu = in_array($f['project'] ?? null, $connus, true);
+            $connu = in_array($f['project'] ?? null, $connus, true) || ($f['project'] ?? null) === 'orchestrateur';
             if (!$connu && !($differe && preg_match('/^[a-z0-9](?:[a-z0-9-]{0,28}[a-z0-9])?$/', (string)($f['project'] ?? ''))))
                 erreur('projet inconnu : ' . ($f['project'] ?? '?'));
         }
@@ -992,9 +993,12 @@ switch ($route) {
         db()->beginTransaction();
         foreach ($liste as $f) {
             $id = bin2hex(random_bytes(5));
-            $wk = worker_du_projet($f['project']);
+            // « orchestrateur » : tâche sans projet, routée par l'orchestrateur (nouveau projet, nouveau pod…)
+            $versOrch = $f['project'] === 'orchestrateur';
+            $projet = $versOrch ? null : $f['project'];
+            $wk = $versOrch ? null : worker_du_projet($projet);
             q('INSERT INTO taches(id, instruction, projet, cree_le, maj_le, worker_id, conversation, parent, attente_projet) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)',
-              [$id, trim((string)$f['instruction']), $f['project'], time(), time(), $wk, $id, $parent['id'], $wk ? null : 1]);
+              [$id, trim((string)$f['instruction']), $projet, time(), time(), $wk, $id, $parent['id'], ($wk || $versOrch) ? null : 1]);
             evenement_tache($id);
             $ids[] = $id;
         }
@@ -1016,7 +1020,7 @@ switch ($route) {
                     $t = $evt['task'];
                     $avant = q('SELECT statut FROM taches WHERE id = ?', [$tacheId])->fetchColumn();
                     $extra = json_decode((string)q('SELECT extra FROM taches WHERE id = ?', [$tacheId])->fetchColumn(), true) ?: [];
-                    foreach (['changes', 'worktree', 'duration_s', 'next_steps', 'tests'] as $k) if (isset($t[$k])) $extra[$k] = $t[$k];
+                    foreach (['changes', 'worktree', 'duration_s', 'next_steps', 'tests', 'model_used', 'models', 'model_auto'] as $k) if (isset($t[$k])) $extra[$k] = $t[$k];
                     q('UPDATE taches SET statut = ?, projet = COALESCE(?, projet), raison_routage = ?, resultat = ?, cout = ?, maj_le = ?,
                        session = COALESCE(?, session), extra = ? WHERE id = ?',
                       [$t['status'], $t['project'] ?? null, (string)($t['route_reason'] ?? ''), (string)($t['result'] ?? ''),

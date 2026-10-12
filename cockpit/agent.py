@@ -31,7 +31,7 @@ import base64
 from . import apercu, github, gitstate, projet
 from . import services as svc
 from .policy import ALLOW, DENY, Policy
-from .router import Project
+from .router import Project, choose_model
 from .store import Approval, Store, Task, new_id
 
 SYSTEM_APPEND = """
@@ -74,6 +74,8 @@ lancer_service, lister_services et arreter_service. N'utilise pas helm directeme
 Si l'utilisateur parle d'un de ses dépôts ou de son code GitHub qui n'est pas encore un projet du cockpit, trouve-le
 avec chercher_depots (plusieurs requêtes si besoin : synonymes, sigles), puis lance un service dessus avec
 lancer_service (depot_git = son URL) pour qu'il devienne un projet ; dis à l'utilisateur ce que tu as trouvé.
+Pour un NOUVEAU projet : crée son dépôt GitHub avec creer_depot(nom, relier=false), lance un service dessus
+(lancer_service, depot_git = URL du dépôt créé), puis confie-lui la demande avec confier_au_projet.
 Tu ne peux pas lire le code d'un autre pod depuis ici : après avoir lancé un service pour travailler sur un dépôt,
 transmets la demande de l'utilisateur au nouveau projet avec confier_au_projet (projet = nom du service) ; elle
 partira toute seule dès que son pod sera prêt. Ne propose pas de cloner le dépôt ici.
@@ -87,6 +89,13 @@ Si la demande se découpe en sous-tâches indépendantes et longues (modules dis
 séparément), tu peux les confier à d'autres agents Claude avec l'outil lancer_en_parallele : chacune tourne
 dans son propre worktree git (branche dédiée), partie du dernier commit — commite d'abord ce dont elles ont besoin.
 Ne l'utilise pas pour des tâches courtes ou très liées : fais-les toi-même.
+"""
+
+PROJECT_APPEND = """
+Tu travailles dans le pod du projet « {project} », piloté par le cockpit. Tu ne peux ni créer ni démarrer de pod :
+c'est l'orchestrateur qui le fait. Pour un nouveau projet, un nouveau pod, ou une demande qui concerne un autre
+dépôt, ne crée pas de dossier ici : transmets la demande complète avec confier_au_projet(projet="orchestrateur")
+et dis-le à l'utilisateur.
 """
 
 PREVIEW_APPEND = """
@@ -335,6 +344,7 @@ def cockpit_server(cwd: str, on_next, spawn=None, pub=None, upload=None, delegat
         @tool("confier_au_projet",
               "Confie une consigne à un autre projet du cockpit (son agent travaille dans son propre pod, sur son code). "
               "Le projet peut être un service que tu viens de lancer : la consigne partira dès que son pod sera connecté. "
+              "projet=\"orchestrateur\" : la consigne va à l'orchestrateur, qui crée les pods et les nouveaux projets. "
               "instruction : complète et autonome (l'autre agent ne voit pas cette conversation), en reprenant la demande "
               "de l'utilisateur.",
               {"type": "object", "properties": {"projet": {"type": "string"}, "instruction": {"type": "string"}},
@@ -473,6 +483,8 @@ class Runner:
                                             upload=upload, delegate=delegate)
         if self.preview:
             append += PREVIEW_APPEND.format(**self.preview)
+        if not self.services and delegate:
+            append += PROJECT_APPEND.format(project=project.id)
         if task.worktree:
             append += WORKTREE_APPEND.format(cwd=cwd, branch=task.worktree["branch"])
         return ClaudeAgentOptions(
@@ -529,8 +541,20 @@ class Runner:
                 self.workspaces[key] = ""
         return self.workspaces[key] or None
 
+    async def choose_model(self, task: Task, project: Project) -> None:
+        """« Modèle auto » : le sélecteur (Haiku) choisit le niveau de modèle selon la demande (Opus pour le code)."""
+        if task.model:
+            return
+        context = "\n".join(f"- {c['instruction'][:300]}" + (f" → {c['result'][:200]}" if c.get("result") else "")
+                            for c in task.context[-4:])
+        choice, reason = await choose_model(task.instruction, context, f"{project.name} — {project.description}"[:300])
+        task.model = choice
+        self.store.task_update(task, model_auto={"choice": choice, "reason": reason})
+        self.store.audit("model_choice", task=task.id, project=project.id, model=choice, reason=reason)
+
     async def run(self, task: Task, project: Project) -> None:
         self.store.task_update(task, status="queued", project=project.id)
+        await self.choose_model(task, project)
         conv = task.conversation or task.id
         async with self._lock(self.conv_locks, f"{conv}:{project.id}"):  # la tâche précédente de la conversation est terminée
             if task.status == "cancelled":
@@ -703,6 +727,14 @@ class Runner:
         """Relaie un message de l'agent ; renvoie les champs finaux de la tâche à la fin (ResultMessage)."""
         pub = lambda **kw: self.store.publish("message", {"task_id": task.id, **kw})
         if isinstance(msg, AssistantMessage):
+            # Modèle réellement utilisé : celui de l'agent principal, et ceux de ses sous-agents
+            if msg.model and msg.model not in task.models:
+                changes = {"models": task.models + [msg.model]}
+                if not msg.parent_tool_use_id and task.model_used != msg.model:
+                    changes["model_used"] = msg.model
+                self.store.task_update(task, **changes)
+            elif msg.model and not msg.parent_tool_use_id and task.model_used != msg.model:
+                self.store.task_update(task, model_used=msg.model)
             for b in msg.content:
                 if isinstance(b, TextBlock) and b.text.strip():
                     pub(type="text", text=b.text)

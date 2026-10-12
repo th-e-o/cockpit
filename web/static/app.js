@@ -6,6 +6,26 @@ const state = { projects: [], selected: null, tasks: new Map(), order: [], lastI
   workers: [], diffs: new Map(), view: 'chat', bilan: null, bilanAt: 0, bilanJours: 7, repos: null,
   commands: {}, review: new Map(), model: '', variants: 1, trust: {} };
 const MODELES = { rapide: '⚡ Rapide', standard: '● Standard', approfondi: '◆ Approfondi' };
+/** « claude-opus-5-5 » -> « Opus 5.5 » ; « claude-sonnet-4-5-20250929 » -> « Sonnet 4.5 ». */
+function modelName(id) {
+  const m = String(id || '').match(/claude-(?:(\d+(?:-\d+)?)-)?(opus|sonnet|haiku|fable)(?:-(\d{1,2})(?!\d)(?:-(\d{1,2})(?!\d))?)?/i);
+  if (!m) return String(id || '');
+  const family = m[2][0].toUpperCase() + m[2].slice(1).toLowerCase();
+  const version = m[3] ? `${m[3]}${m[4] ? `.${m[4]}` : ''}` : (m[1] || '').replace('-', '.');
+  return `${family} ${version}`.trim();
+}
+const MODEL_ICON = { Opus: '◆', Sonnet: '●', Haiku: '⚡', Fable: '✦' };
+function modelPill(t) {
+  const auto = t.model_auto ? ` · choisi automatiquement (${MODELES[t.model_auto.choice] || t.model_auto.choice}) : ${t.model_auto.reason}` : '';
+  if (t.model_used) {
+    const name = modelName(t.model_used);
+    const others = (t.models || []).filter((x) => x !== t.model_used).map(modelName).filter((x, i, a) => a.indexOf(x) === i && x !== name);
+    return `<span class="pill model" title="modèle qui a écrit les réponses : ${esc(t.model_used)}${others.length ? ` · sous-agents : ${esc(others.join(', '))}` : ''}${esc(auto)}">`
+      + `${MODEL_ICON[name.split(' ')[0]] || '◇'} ${esc(name)}${t.model_auto ? ' <small>auto</small>' : ''}${others.length ? ` <small>+ ${esc(others.join(', '))}</small>` : ''}</span>`;
+  }
+  if (t.model_auto) return `<span class="pill model" title="${esc(auto.slice(3))}">${esc(MODELES[t.model_auto.choice] || t.model_auto.choice)} <small>auto</small></span>`;
+  return t.model ? `<span class="pill" title="modèle demandé">${esc(MODELES[t.model] || t.model)}</span>` : '';
+}
 const REPRISE_AUTO = 2 * 3600; // à l'ouverture, la dernière conversation continue si elle a moins de 2 h
 
 const STATUS = {
@@ -308,7 +328,7 @@ function taskHtml(e) {
       ${t.route_reason && t.project ? `<span title="${esc(t.route_reason)}">auto</span>` : ''}
       ${t.worktree ? `<span class="pill wt" title="Claude en parallèle, dans son propre worktree git">🌿 ${esc(t.worktree.branch)}</span>` : ''}
       ${t.parent ? `<span class="pill" title="lancée par un autre Claude (lancer_en_parallele)">🔀 sous-tâche</span>` : ''}
-      ${t.model ? `<span class="pill" title="modèle">${esc(MODELES[t.model] || t.model)}</span>` : ''}
+      ${modelPill(t)}
       ${t.group ? `<span class="pill var" title="variantes de la même demande, à comparer">🧬 Variante ${variantIndex(t)}</span>` : ''}
       ${ACTIVE.has(t.status) ? `<button class="btn ghost" data-cancel="${esc(t.id)}">Arrêter</button>`
         : t.id !== state.replyTo && t.kind !== 'service' ? `<button class="btn ghost" data-reply="${esc(t.id)}">Répondre</button>` : ''}
@@ -466,7 +486,9 @@ function updateComposer() {
   $('#composer').classList.toggle('steering', steering);
   if (cur) {
     const txt = shownInstruction(cur.instruction);
-    $('#threadText').textContent = `${steering ? '✋ Recadrer' : '↪ Suite de'} « ${txt.length > 50 ? `${txt.slice(0, 50)}…` : txt} »`;
+    const proj = state.projects.find((p) => p.id === cur.project);
+    $('#threadText').textContent = `${steering ? '✋ Recadrer' : '↪ Suite de'} « ${txt.length > 40 ? `${txt.slice(0, 40)}…` : txt} »`
+      + (proj ? ` · ${proj.name}` : '');
   }
   $('#variantSel').classList.toggle('hidden', !!state.replyTo);
   updateTrust();
@@ -732,7 +754,7 @@ function liveCard(e) {
   const plan = todos?.length ? `<div class="plan"><div class="bar"><i data-w="${(done / todos.length * 100).toFixed(0)}"></i></div><span>Plan ${done}/${todos.length}</span></div>` : '';
   return `<button class="live${t.status === 'waiting_approval' ? ' alert' : ''}" data-jump="${esc(t.id)}">
     <div class="lhead"><span class="pill st-${esc(t.status)}">${STATUS[t.status] || esc(t.status)}</span>
-      <b>${esc(proj?.name || t.project || (t.kind === 'service' ? 'Onyxia' : 'Auto'))}</b>${t.worktree ? `<span class="wt">🌿 parallèle</span>` : ''}
+      <b>${esc(proj?.name || t.project || (t.kind === 'service' ? 'Onyxia' : 'Auto'))}</b>${t.model_used ? `<span class="muted">${esc(modelName(t.model_used))}</span>` : ''}${t.worktree ? `<span class="wt">🌿 parallèle</span>` : ''}
       <span class="since" data-since="${Number(t.created)}"></span></div>
     <div class="linst">${esc(t.instruction || '')}</div>
     <div class="lstep">${t.status === 'running' ? '<span class="spin"></span>' : ''}<span>${esc(currentStep(e))}</span></div>${plan}</button>`;

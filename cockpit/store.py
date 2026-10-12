@@ -34,10 +34,13 @@ class Task:
     parent: str | None = None  # tâche qui l'a lancée (lancer_en_parallele)
     duration_s: int | None = None  # temps de travail de l'agent (bilan par projet)
     next_steps: list[dict] | None = None  # prochaines étapes proposées par l'agent [{titre, instruction}]
-    model: str | None = None  # rapide | standard | approfondi (None : modèle par défaut de Claude Code)
+    model: str | None = None  # rapide | standard | approfondi (None : choisi automatiquement avant l'exécution)
+    model_auto: dict | None = None  # choix automatique du modèle {choice, reason}
     isolate: bool = False  # variante : toujours dans un worktree dédié
     group: str | None = None  # variantes d'une même demande (id de la première)
     tests: dict | None = None  # résultat des tests lancés après la tâche {ok, command, duration_s}
+    model_used: str | None = None  # modèle qui a réellement écrit les réponses (ex. claude-opus-5-5)
+    models: list[str] = field(default_factory=list)  # tous les modèles utilisés, sous-agents compris
 
 
 @dataclass

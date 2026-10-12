@@ -98,3 +98,52 @@ async def route(instruction: str, projects: dict[str, Project]) -> Route:
     if r.confidence < CONFIDENCE_THRESHOLD:
         return Route(None, r.confidence, r.reason)
     return r
+
+
+# ---------------------------------------------------------------- choix du modèle (sélecteur « Modèle auto »)
+
+MODEL_PROMPT = """Tu choisis le modèle Claude qui traitera une demande de développement envoyée depuis un téléphone.
+L'utilisateur écrit son code avec Opus : c'est la règle, les autres modèles sont des exceptions.
+
+- "approfondi" (Opus) : TOUT ce qui écrit, modifie, corrige ou refactorise du code, même une petite retouche ;
+  conception, architecture, nouveau projet ou nouvelle fonctionnalité ; débogage ; analyse de données ou de code
+  non triviale ; tâche en plusieurs étapes ; revue de code avec corrections. EN CAS DE DOUTE : "approfondi".
+- "standard" (Sonnet) : tâche courante SANS écriture de code applicatif : lancer les tests et rapporter le résultat,
+  mettre à jour une documentation ou un README, petite configuration, commit, push ou pull request d'un travail déjà
+  fait, expliquer un morceau de code précis.
+- "rapide" (Haiku) : simple question ou lecture : état d'un projet, lister des fichiers, des services ou des pods,
+  résumer, retrouver une information, lancer ou arrêter un service, répondre « oui » à une question de confirmation
+  sans autre travail.
+
+Une réponse courte (« oui », « vas-y », « continue ») reprend la nature du travail en cours dans la conversation.
+Réponds UNIQUEMENT par un objet JSON sur une ligne :
+{"model": "rapide" | "standard" | "approfondi", "reason": "<justification courte, en français>"}"""
+
+MODEL_CHOICES = ("rapide", "standard", "approfondi")
+
+
+async def _ask_haiku(system: str, prompt: str) -> str:
+    options = ClaudeAgentOptions(model="haiku", system_prompt=system, tools=[], max_turns=1, setting_sources=[])
+    text = ""
+    async for msg in query(prompt=prompt, options=options):
+        if isinstance(msg, AssistantMessage):
+            text += "".join(b.text for b in msg.content if isinstance(b, TextBlock))
+    return text
+
+
+async def choose_model(instruction: str, context: str = "", project: str = "") -> tuple[str, str]:
+    """Niveau de modèle pour une demande (rapide, standard, approfondi) et sa raison ; Opus en cas d'échec."""
+    prompt = f"Projet : {project or 'inconnu'}\n"
+    if context:
+        prompt += f"Échanges précédents de la conversation :\n{context}\n\n"
+    prompt += f"Nouvelle demande : {instruction}"
+    try:
+        text = await _ask_haiku(MODEL_PROMPT, prompt[:6000])
+        m = re.search(r"\{.*\}", text, re.S)
+        data = json.loads(m.group(0)) if m else {}
+        choice = data.get("model")
+        if choice in MODEL_CHOICES:
+            return choice, str(data.get("reason", ""))[:200]
+        return "approfondi", "réponse du sélecteur illisible : Opus par défaut"
+    except Exception as e:  # le choix du modèle ne doit jamais bloquer une tâche
+        return "approfondi", f"sélecteur indisponible ({type(e).__name__}) : Opus par défaut"

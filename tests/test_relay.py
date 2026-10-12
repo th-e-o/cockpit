@@ -614,3 +614,17 @@ def test_consigne_pour_un_pod_qui_demarre(relay):
     premier = wpoll(relay, "pod-df-etp", False, [{"id": "df-etp", "name": "df-etp"}], hello=True)  # le pod est prêt
     assert [x["id"] for x in premier["tasks"]] == [tid]  # livrée dès sa première connexion
     assert last_status(p)[tid]["waiting_project"] is False
+
+
+def test_consigne_vers_l_orchestrateur(relay):
+    """Un pod de projet confie une demande hors projet (nouveau pod…) à l'orchestrateur : tâche sans projet, routée."""
+    p = paired_phone(relay)
+    wpoll(relay, "orch-vo", True, [{"id": "vo-onyxia", "name": "Onyxia"}], hello=True)
+    wpoll(relay, "pod-vo", False, [{"id": "vo-etp", "name": "etp"}], hello=True)
+    parent = call(p, "tache", {"instruction": "nouveau projet anki", "project": "vo-etp"}).json()
+    tid = worker_call(relay, "w_taches", {"parent": parent["id"], "worker_id": "pod-vo", "defer": True,
+                                          "tasks": [{"instruction": "Crée un pod pour le bot anki", "project": "orchestrateur"}]}).json()["ids"][0]
+    t = last_status(p)[tid]
+    assert t["project"] is None and t["waiting_project"] is False and t["parent"] == parent["id"]
+    livree = [x for x in wpoll(relay, "orch-vo", True)["tasks"] if x["id"] == tid]
+    assert livree and livree[0]["project"] is None  # l'orchestrateur la route

@@ -45,6 +45,7 @@ sudo -n "$COCKPIT/.venv/bin/python" -m playwright install-deps chromium >/dev/nu
 
 # Un worker de projet n'orchestre rien ; son identité est celle du pod.
 export COCKPIT_ROLE=projet
+export COCKPIT_AUTO_UPDATE=1   # le cockpit de ce pod se met à jour seul (git pull), entre deux tâches
 export COCKPIT_WORKER_ID="${HOSTNAME:-$PROJECT_ID}"
 export COCKPIT_WORKER_NAME="$PROJECT_ID"
 exec ./run.sh

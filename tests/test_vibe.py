@@ -266,3 +266,53 @@ def test_memoire_publiee_et_modifiee(tmp_path, monkeypatch):
     asyncio.run(w.publish_memory())
     assert published[-1][1].startswith("# Conventions")
     w.apply_memory_edit({"project": "inconnu", "content": "x"})  # ignoré
+
+
+def test_modele_reellement_utilise(tmp_path):
+    """Le modèle de l'agent principal et ceux de ses sous-agents sont relevés sur la tâche, dès leurs messages."""
+    from claude_agent_sdk import AssistantMessage, TextBlock
+
+    store = Store(tmp_path / "data")
+    r = Runner(store, POLICY)
+    t = Task(id="t", instruction="x")
+    store.tasks["t"] = t
+    r._relay(t, AssistantMessage(content=[TextBlock(text="je regarde")], model="claude-opus-5-5"))
+    r._relay(t, AssistantMessage(content=[TextBlock(text="exploration")], model="claude-haiku-5-5", parent_tool_use_id="tu1"))
+    r._relay(t, AssistantMessage(content=[TextBlock(text="suite")], model="claude-opus-5-5"))
+    assert t.model_used == "claude-opus-5-5" and t.models == ["claude-opus-5-5", "claude-haiku-5-5"]
+    updates = [e for e in t.events if e.get("kind") == "task"]
+    assert not updates  # les mises à jour de tâche ne sont pas des messages du fil
+
+
+def test_choix_automatique_du_modele(tmp_path, monkeypatch):
+    """« Modèle auto » : le sélecteur choisit à chaque message ; un choix manuel n'est jamais remplacé ; Opus en repli."""
+    from cockpit import router
+
+    answers = {"lis le README": '{"model": "rapide", "reason": "simple lecture"}',
+               "réécris le module de paiement": '{"model": "approfondi", "reason": "écriture de code"}',
+               "illisible": "je ne sais pas"}
+    seen = []
+
+    async def ask(system, prompt):
+        seen.append(prompt)
+        if "panne" in prompt:
+            raise RuntimeError("haiku indisponible")
+        demande = prompt.split("Nouvelle demande :")[-1]
+        return next(v for k, v in answers.items() if k in demande)
+
+    monkeypatch.setattr(router, "_ask_haiku", ask)
+    assert asyncio.run(router.choose_model("lis le README")) == ("rapide", "simple lecture")
+    assert asyncio.run(router.choose_model("illisible"))[0] == "approfondi"
+    assert asyncio.run(router.choose_model("panne"))[0] == "approfondi"
+    assert "Opus" in router.MODEL_PROMPT and "EN CAS DE DOUTE" in router.MODEL_PROMPT
+
+    store = Store(tmp_path / "data")
+    r = Runner(store, POLICY)
+    proj = Project(id="p", name="P", cwd=str(tmp_path), description="appli de paiement")
+    t = Task(id="t", instruction="réécris le module de paiement", context=[{"instruction": "lis le README", "result": "ok"}])
+    asyncio.run(r.choose_model(t, proj))
+    assert t.model == "approfondi" and t.model_auto == {"choice": "approfondi", "reason": "écriture de code"}
+    assert "Échanges précédents" in seen[-1] and "appli de paiement" in seen[-1]
+    manual = Task(id="m", instruction="lis le README", model="standard")
+    asyncio.run(r.choose_model(manual, proj))
+    assert manual.model == "standard" and manual.model_auto is None and len(seen) == 4

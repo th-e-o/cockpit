@@ -35,6 +35,10 @@ WORKER_NAME = os.environ.get("COCKPIT_WORKER_NAME") or WORKER_ID
 ORCHESTRATOR = os.environ.get("COCKPIT_ROLE", "orchestrateur") != "projet"
 KEY_FILE = DATA / "worker_key"
 MEMORY_FILE, MEMORY_MAX = "CLAUDE.md", 50_000
+# Pods de projet (scripts/onyxia-init.sh) : le cockpit se met à jour seul, entre deux tâches
+AUTO_UPDATE = os.environ.get("COCKPIT_AUTO_UPDATE") == "1"
+UPDATE_EVERY = int(os.environ.get("COCKPIT_UPDATE_EVERY", "600"))
+ACTIVE = {"pending", "routing", "queued", "running", "waiting_approval"}
 KEY_HASH_FILE = CONFIG / "worker_key.sha256"  # versionné : seule l'empreinte est publique
 
 log = logging.getLogger("cockpit.worker")
@@ -184,6 +188,41 @@ class Worker:
                 log.info("usage du forfait lu par : %s", how)
             self._state = None
             await asyncio.sleep(300 if account else 600)
+
+    def busy(self) -> bool:
+        return bool(self.runner.running) or any(t.status in ACTIVE for t in self.store.tasks.values())
+
+    async def update_available(self) -> int:
+        """Nombre de commits du cockpit en avance sur GitHub (0 si à jour ou indéterminé)."""
+        if (await gitstate.git(ROOT, "fetch", "-q", "origin", timeout=60))[0]:
+            return 0
+        rc, behind = await gitstate.git(ROOT, "rev-list", "--count", "HEAD..@{u}")
+        return int(behind) if rc == 0 and behind.isdigit() else 0
+
+    @staticmethod
+    async def install_requirements() -> None:
+        proc = await asyncio.create_subprocess_exec(
+            "uv", "pip", "install", "-q", "--python", sys.executable, "-r", str(ROOT / "requirements.txt"))
+        await proc.wait()
+
+    async def auto_update(self) -> None:
+        """Met le cockpit à jour (git pull) puis redémarre le worker, seulement quand aucune tâche n'est en cours."""
+        while True:
+            await asyncio.sleep(UPDATE_EVERY)
+            try:
+                behind = await self.update_available()
+                if not behind or self.busy():
+                    continue
+                rc, out = await gitstate.git(ROOT, "pull", "-q", "--ff-only", timeout=120)
+                if rc:
+                    log.warning("mise à jour du cockpit impossible : %s", out[-300:])
+                    continue
+                await self.install_requirements()
+                log.info("cockpit mis à jour (%d commit(s)) : redémarrage du worker", behind)
+                await self.relay.flush()
+                os.execv(sys.executable, [sys.executable, "-m", "cockpit.worker", "run"])
+            except Exception as e:
+                log.warning("mise à jour du cockpit : %s", e)
 
     async def publish_memory(self) -> None:
         """CLAUDE.md de chaque projet (mémoire) publié au relais quand il change."""
@@ -365,6 +404,8 @@ class Worker:
     async def run(self) -> None:
         self.spawn(self.relay.flush_forever())
         self.spawn(self.poll_usage())
+        if AUTO_UPDATE:
+            self.spawn(self.auto_update())
         if ORCHESTRATOR:
             self.spawn(self.publish_repos())
         try:

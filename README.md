@@ -85,7 +85,12 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
   dépôt puis lance un pod qui le clone. Il faut que le token git d'Onyxia puisse créer des dépôts : droit
   *Administration : écriture* (token à grain fin) ou portée `repo` (token classique).
 - **Vibe coding** :
-  - *Modèle* par conversation (⚡ Rapide = Haiku, ● Standard = Sonnet, ◆ Approfondi = Opus), hérité par ses suites.
+  - *Modèle* : 🤖 *Modèle auto* (par défaut) fait choisir le modèle à chaque message par un sélecteur (Haiku) :
+    Opus pour tout ce qui écrit ou modifie du code et en cas de doute, Sonnet pour les tâches courantes sans code
+    (tests, doc, commit), Haiku pour les questions et lectures ; Opus si le sélecteur échoue. Un choix manuel
+    (⚡ Rapide, ● Standard, ◆ Approfondi) vaut pour toute la conversation.
+    Chaque carte affiche le modèle qui a réellement écrit (« ◆ Opus 5.5 », plus ceux des sous-agents), dès le
+    premier message de Claude.
   - *Recadrer* : pendant que Claude travaille, un message dans la conversation l'interrompt et il reprend avec
     (une validation en attente est alors refusée).
   - *Captures* : Claude photographie l'application servie dans le pod (`capturer_ecran`, localhost seulement) ; il
@@ -106,6 +111,11 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
     (section `trust` de `config/policy.yaml`). Chaque auto-approbation est journalisée et signalée sur la carte.
   - *Commandes rapides* (puces au-dessus de la saisie, ✎ pour les modifier, communes ou par projet) et *mémoire du
     projet* (🧠 : le `CLAUDE.md`, lu par Claude au début de chaque tâche, modifiable depuis le téléphone).
+- **Pods de projet** : leur agent transmet à l'orchestrateur ce qui sort de son projet (nouveau projet, nouveau
+  pod : `confier_au_projet(projet="orchestrateur")`). Le cockpit de ces pods se met à jour seul (git pull puis
+  redémarrage du worker, toutes les 10 min, seulement entre deux tâches ; `COCKPIT_AUTO_UPDATE`).
+- **Nouveau projet** (dans une *Nouvelle conversation*, sur *Auto*) : l'orchestrateur crée le dépôt GitHub, lance
+  le pod dessus et lui confie la demande.
 - **Ouvrir un pod** : bouton *🖥 Ouvrir VSCode* sur la carte du pod (adresse trouvée par son worker dans l'ingress
   Onyxia) et *🔑 Mot de passe*, qui le copie sans l'afficher. Le mot de passe transite par le relais avec l'état du
   pod (`COCKPIT_VSCODE_PASSWORD=0` pour ne pas le publier). Les pods lancés par le cockpit ont désormais un

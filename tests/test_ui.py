@@ -473,7 +473,9 @@ def seed_vibe(relay, p):
 
     r = call(p, "tache", {"instruction": "Refais le menu de navigation", "project": "vibe"}).json()["id"]
     wpoll(relay, "pod-vibe", False)  # livrée au worker, qui la démarre
-    ev({"kind": "task", "task_id": r, "task": {"status": "running", "project": "vibe"}},
+    ev({"kind": "task", "task_id": r, "task": {"status": "running", "project": "vibe", "model_used": "claude-opus-5-5",
+                                               "model_auto": {"choice": "approfondi", "reason": "écriture de code"},
+                                               "models": ["claude-opus-5-5", "claude-haiku-5-5"]}},
        msg(r, type="tool_use", tool="Edit", text="{}", label="✏️ Modifie menu.py"))
     return a, v, r
 
@@ -506,6 +508,14 @@ def test_vibe_coding_ui(relay):
         card = page.locator(".usagecard")
         assert "87 %" in card.inner_text() and "41 %" in card.inner_text() and "réinitialisée" in card.inner_text()
         page.locator(".sect", has=card).screenshot(path=SHOTS / "15-usage.png")
+
+        # Modèle qui écrit : sur la carte (avec les sous-agents) et dans le tableau de bord
+        assert page.locator(f"#t-{r} .pill.model").inner_text() == "◆ Opus 5.5 auto + Haiku 5.5"
+        assert "choisi automatiquement (◆ Approfondi) : écriture de code" in page.get_attribute(f"#t-{r} .pill.model", "title")
+        assert "Opus 5.5" in page.locator(".live", has_text="Refais le menu").inner_text()
+        names = page.evaluate("""['claude-opus-5-5', 'claude-sonnet-4-5-20250929', 'claude-3-5-sonnet-20241022', 'claude-haiku-4-5', 'claude-fable-5-1', 'gpt']
+          .map(modelName)""")
+        assert names == ["Opus 5.5", "Sonnet 4.5", "Sonnet 3.5", "Haiku 4.5", "Fable 5.1", "gpt"]
 
         # Recadrer la tâche en cours (conversation reprise automatiquement)
         assert "Recadrer" in page.get_attribute("#input", "placeholder")
