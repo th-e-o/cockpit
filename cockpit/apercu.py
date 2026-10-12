@@ -66,17 +66,41 @@ async def _kubectl(*args: str) -> dict | None:
         return None
 
 
-async def preview_url() -> dict | None:
-    """URL publique du port utilisateur de ce pod (ingress « -user » de sa release Onyxia), ou None."""
+async def pod_urls() -> dict:
+    """Adresses publiques de ce pod, d'après les ingress de sa release Onyxia :
+    {"vscode": URL de VSCode (port 8080) ou None, "preview": {"url", "port"} du port utilisateur ou None}."""
+    out: dict = {"vscode": None, "preview": None}
     pod = await _kubectl("get", "pod", os.environ.get("HOSTNAME", ""))
     release = ((pod or {}).get("metadata", {}).get("labels") or {}).get("app.kubernetes.io/instance")
     if not release:
-        return None
+        return out
     ingresses = await _kubectl("get", "ingress", "-l", f"app.kubernetes.io/instance={release}") or {"items": []}
     for ing in ingresses.get("items", []):
         for rule in ing.get("spec", {}).get("rules", []):
             for path in rule.get("http", {}).get("paths", []):
                 port = path.get("backend", {}).get("service", {}).get("port", {}).get("number")
-                if port and port != 8080 and "-user" in rule.get("host", ""):
-                    return {"url": f"https://{rule['host']}{path.get('path', '/')}", "port": port}
-    return None
+                url = f"https://{rule.get('host', '')}{path.get('path', '/')}"
+                if port == 8080 and "-user" not in rule.get("host", ""):
+                    out["vscode"] = out["vscode"] or url
+                elif port and "-user" in rule.get("host", ""):
+                    out["preview"] = out["preview"] or {"url": url, "port": port}
+    return out
+
+
+async def preview_url() -> dict | None:
+    """URL publique du port utilisateur de ce pod (ingress « -user » de sa release Onyxia), ou None."""
+    return (await pod_urls())["preview"]
+
+
+def vscode_password() -> str | None:
+    """Mot de passe de VSCode (variable PASSWORD donnée à code-server par le chart Onyxia), pour le bouton
+    « Copier le mot de passe » du tableau de bord. COCKPIT_VSCODE_PASSWORD=0 : jamais publié."""
+    if os.environ.get("COCKPIT_VSCODE_PASSWORD") == "0":
+        return None
+    if os.environ.get("PASSWORD"):
+        return os.environ["PASSWORD"]
+    try:  # les terminaux de code-server n'héritent pas de PASSWORD : on le lit dans le processus principal du pod
+        env = dict(x.split("=", 1) for x in open("/proc/1/environ").read().split("\0") if "=" in x)
+        return env.get("PASSWORD") or None
+    except OSError:
+        return None

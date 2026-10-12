@@ -774,6 +774,8 @@ function podCard(w) {
     <div class="podhead"><span class="dot${w.online ? ' on' : ''}"></span><b>${esc(w.name)}</b>
       <span class="tag">${w.orchestrator ? 'orchestrateur' : 'projet'}</span>
       <span class="muted podseen">${w.online ? (st.started ? `actif depuis <span data-uptime="${st.started}"></span>` : 'en ligne') : `hors ligne · vu <span data-ago="${w.seen}"></span>`}</span></div>
+    ${st.vscode?.url && w.online ? `<div class="podlinks"><a class="btn" href="${esc(st.vscode.url)}" target="_blank" rel="noopener">🖥 Ouvrir VSCode</a>
+      ${st.vscode.password ? `<button class="btn ghost" data-copy-pw="${esc(w.id)}" title="copie le mot de passe de VSCode">🔑 Mot de passe</button>` : ''}</div>` : ''}
     ${slots}${st.preview?.url && w.online ? `<a class="preview" href="${esc(st.preview.url)}" target="_blank" rel="noopener">👁 Aperçu de l'application · port ${esc(st.preview.port)}</a>` : ''}
     ${meters ? `<div class="meters">${meters}</div>` : ''}
     ${projects ? `<div class="projs">${projects}</div>` : ''}
@@ -1267,6 +1269,14 @@ document.addEventListener('click', async (ev) => {
       if (!confirm('Garder cette variante (fusionnée dans le projet) et jeter les autres ?')) return;
       await api('garder_variante', { task_id: b.dataset.keep });
       poll();
+    } else if (b.dataset.copyPw) {
+      // Mot de passe jamais écrit dans la page : lu dans l'état du pod au moment de la copie
+      const pw = state.workers.find((x) => x.id === b.dataset.copyPw)?.state?.vscode?.password;
+      if (pw) {
+        await navigator.clipboard.writeText(pw);
+        b.textContent = '✓ Copié';
+        setTimeout(() => { b.textContent = '🔑 Mot de passe'; }, 2000);
+      }
     } else if (b.dataset.nextEdit || b.dataset.nextRun) {
       if (b.dataset.nextRun) b.disabled = true;
       await runNextStep(b.dataset.nextEdit || b.dataset.nextRun, Number(b.dataset.i), !!b.dataset.nextRun);

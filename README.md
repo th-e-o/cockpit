@@ -106,6 +106,10 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
     (section `trust` de `config/policy.yaml`). Chaque auto-approbation est journalisée et signalée sur la carte.
   - *Commandes rapides* (puces au-dessus de la saisie, ✎ pour les modifier, communes ou par projet) et *mémoire du
     projet* (🧠 : le `CLAUDE.md`, lu par Claude au début de chaque tâche, modifiable depuis le téléphone).
+- **Ouvrir un pod** : bouton *🖥 Ouvrir VSCode* sur la carte du pod (adresse trouvée par son worker dans l'ingress
+  Onyxia) et *🔑 Mot de passe*, qui le copie sans l'afficher. Le mot de passe transite par le relais avec l'état du
+  pod (`COCKPIT_VSCODE_PASSWORD=0` pour ne pas le publier). Les pods lancés par le cockpit ont désormais un
+  ingress VSCode avec un mot de passe aléatoire.
 - **Usage de Claude** : barre fine sous l'en-tête (session de 5 h, orange au-delà de 80 %) et détail dans le tableau
   de bord (session, semaine, heure de réinitialisation). Le jeton de `claude setup-token` n'a pas accès à
   l'interface d'usage du compte : le worker lit donc toutes les 10 min les en-têtes d'usage de l'API

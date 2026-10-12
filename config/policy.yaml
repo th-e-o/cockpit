@@ -60,6 +60,22 @@ bash:
   allow:
     - '^(ls|pwd|cat|head|tail|wc|grep|rg|find|tree|file|stat|du|df|echo|which|date|whoami|sort|uniq|cut|diff|jq|yq)\b'
     - '^git\s+(status|log|diff|show|branch|fetch|pull|add|commit|checkout|switch|stash|remote\s+-v)\b'
+    - '^git\s+(rev-parse|ls-files|ls-tree|blame|describe|shortlog|reflog|show-ref|grep|restore|merge|cherry-pick|mv|tag\s+-l|worktree\s+list|config\s+--get|remote(\s+show)?\s*$)'
+    # Lecture et utilitaires de texte (sed seulement sans -i, c'est-à-dire sans modifier de fichier)
+    - '^sed\b(?!.*\s-[a-zA-Z]*i)'
+    - '^(awk|gawk|tr|nl|column|fold|fmt|paste|join|comm|tac|rev|less|more|basename|dirname|realpath|readlink|printf|true|false|test|seq|sleep|xxd|od|hexdump|md5sum|sha1sum|sha256sum|base64|iconv|ps|free|uptime|nproc|id|hostname|uname|locale|type)\b'
+    - '^tar\s+-?(?![a-zA-Z]*x)[a-zA-Z]*t[a-zA-Z]*\s'   # lister une archive (jamais -x : extraction)
+    - '^(unzip\s+-l|zcat|gzip\s+-[dlc]|gunzip\s+-c|zgrep)\b'
+    # Outils de développement qui restent dans le pod (comme python, déjà autorisé)
+    - '^(R|Rscript|julia|quarto|ipython|make|cmake|gcc|g\+\+|javac|java|mvn|gradle|tsc|eslint|prettier|vitest|jest|flake8|pylint|isort|coverage|tox|nox)\b'
+    - '^jupyter\s+(nbconvert|execute|kernelspec\s+list)\b'
+    - '^(go\s+(build|test|run|vet|fmt)|cargo\s+(build|test|run|check|fmt|clippy)|(pnpm|yarn|bun)\s+(test|run|lint|build))\b'
+    - '^pre-commit\s+run\b'
+    - '^(pip|uv\s+pip)\s+(list|show|freeze|check)\b'
+    - '^uv\s+(sync|lock|tree|venv)\b'   # dépendances déclarées par le projet lui-même
+    # GitHub en lecture seule (gh api sans méthode d'écriture ni champ envoyé)
+    - '^gh\s+(repo\s+(view|list|clone)|pr\s+(view|list|diff|checks|status)|issue\s+(view|list)|run\s+(view|list|watch)|search)\b'
+    - '^gh\s+api\b(?!.*(-X|--method)\s*(POST|PUT|PATCH|DELETE))(?!.*\s(-f|-F|--field|--raw-field|--input)\s)'
     # Push d'une branche de travail : « git push [-u] origin <branche> », sans main/master/HEAD, sans
     # refspec (« a:main »), sans option (--force, --all, --tags, --delete…) => validation sinon.
     - '^git\s+push(\s+(-u|--set-upstream))?\s+origin\s+(?!(main|master|HEAD)\s*$)[\w./-]+\s*$'

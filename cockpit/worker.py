@@ -103,6 +103,7 @@ class Worker:
         self.runner.upload_image = self.relay.image
         self._memory: dict[str, str] = {}  # projet -> empreinte du CLAUDE.md publié
         self.usage = usage.Usage()
+        self.vscode: dict | None = None  # {"url", "password"} : bouton « Ouvrir VSCode » du tableau de bord
         self.runner.on_rate_limit = self.rate_limit
 
     def spawn(self, coro) -> None:
@@ -137,6 +138,7 @@ class Worker:
         await self.publish_memory()
         self._state = {
             "usage": self.usage.public(),
+            "vscode": self.vscode,
             "preview": self.runner.preview,
             "resources": self.pod.resources(), "projects": projects, "worktrees": worktrees,
             "running": len(self.runner.running), "max_agents": self.runner.max_agents,
@@ -366,9 +368,12 @@ class Worker:
         if ORCHESTRATOR:
             self.spawn(self.publish_repos())
         try:
-            self.runner.preview = await apercu.preview_url()
+            urls = await apercu.pod_urls()
+            self.runner.preview = urls["preview"]
+            if urls["vscode"]:
+                self.vscode = {"url": urls["vscode"], **({"password": pw} if (pw := apercu.vscode_password()) else {})}
         except Exception as e:
-            log.info("aperçu indisponible : %s", e)
+            log.info("adresses du pod indisponibles : %s", e)
         hello, delay = True, 2
         log.info("connecté au relais %s — projets : %s", RELAY_URL, ", ".join(self.projects))
         while True:

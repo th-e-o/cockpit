@@ -136,3 +136,14 @@ def test_carte_sans_gpu(monkeypatch):
     assert "2 CPU, 8Gi, 10Gi, sans GPU" in cpu and "GPU 0/1" not in cpu and "nvidia" not in cpu
     gpu = asyncio.run(svc.describe(svc.LAUNCH_TOOL, {"nom": "etp", "gpu": True}))
     assert "+ 1 GPU" in gpu and "GPU 0/1" in gpu
+
+
+def test_vscode_joignable_sur_les_nouveaux_pods():
+    """Ingress VSCode (bouton « Ouvrir VSCode ») avec mot de passe aléatoire ; port d'aperçu seulement sur demande."""
+    ing = {"ingressClassName": "onyxia", "hostname": "user-x-cockpit-etp.lab", "userHostname": "user-x-cockpit-etp-user.lab"}
+    v = svc.helm_values(svc.Launch(nom="etp"), {}, None, ing)
+    assert v["ingress"]["enabled"] and v["ingress"]["hostname"] == "user-x-cockpit-etp.lab"
+    assert len(v["security"]["password"]) >= 20 and "networking" not in v
+    assert svc.helm_values(svc.Launch(nom="etp"), {}, None, ing)["security"]["password"] != v["security"]["password"]
+    assert svc.helm_values(svc.Launch(nom="etp", apercu=True), {}, None, ing)["networking"]["user"]["enabled"]
+    assert "ingress" not in svc.helm_values(svc.Launch(nom="etp"), {}, None, None)

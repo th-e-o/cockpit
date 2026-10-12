@@ -437,6 +437,7 @@ def seed_vibe(relay, p):
         "resources": {"cpu": 0.2, "cpu_cores": 2, "mem_used": 2 * gi, "mem_limit": 8 * gi, "disk_used": 1 * gi, "disk_total": 10 * gi},
         "projects": {"vibe": {"branch": "main", "dirty": 0}}, "running": 1, "max_agents": 3, "started": time.time() - 600,
         "preview": {"url": "https://user-x-cockpit-vibe-user.example/", "port": 5000}, "worktrees": [],
+        "vscode": {"url": "https://user-x-cockpit-vibe.example/", "password": "mot-de-passe-vscode"},
         "usage": {"ts": int(time.time()), "source": "compte", "limits": [
             {"type": "five_hour", "utilization": 0.87, "resets_at": int(time.time()) + 3600},
             {"type": "seven_day", "utilization": 0.41, "resets_at": int(time.time()) + 3 * 86400}]}})
@@ -484,9 +485,17 @@ def test_vibe_coding_ui(relay):
     a, v, r = seed_vibe(relay, p)
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
-        page, errors = browser_page(p, browser, relay, viewport={"width": 1440, "height": 1000})
+        page, errors = browser_page(p, browser, relay, viewport={"width": 1440, "height": 1000},
+                                    permissions=["clipboard-read", "clipboard-write"])
         page.on("dialog", lambda d: d.accept())
         page.wait_for_selector(f"#t-{r}")
+        # Accès au pod : VSCode et mot de passe (copié, jamais affiché dans la page)
+        vs = page.locator(".podcard", has=page.locator("[data-copy-pw='pod-vibe']"))
+        assert vs.locator("a", has_text="Ouvrir VSCode").get_attribute("href") == "https://user-x-cockpit-vibe.example/"
+        assert "mot-de-passe-vscode" not in page.content()
+        vs.locator("[data-copy-pw]").click()
+        page.wait_for_selector("[data-copy-pw] >> text=✓ Copié")
+        assert page.evaluate("navigator.clipboard.readText()") == "mot-de-passe-vscode"
         # Barres du tableau de bord dimensionnées malgré la CSP (pas de style en ligne)
         page.wait_for_selector(".podcard >> text=Vibe")
         assert page.evaluate("document.querySelector('.meter .bar i').getBoundingClientRect().width") > 0

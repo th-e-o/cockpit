@@ -87,11 +87,12 @@ def helm_values(p: Launch, vault: dict[str, str], git: dict[str, str] | None = N
         "resources": {"requests": {"cpu": p.cpu, "memory": p.memoire}, "limits": limits},
         "persistence": {"enabled": True, "size": p.disque},
     }
-    if p.apercu and ingress:
-        # VSCode devient lui aussi joignable par l'ingress : mot de passe aléatoire, jamais celui par défaut.
+    if ingress:
+        # VSCode joignable par l'ingress (bouton « Ouvrir VSCode ») : mot de passe aléatoire, jamais celui par défaut.
         values["ingress"] = {"enabled": True, **ingress}
-        values["networking"] = {"user": {"enabled": True, "port": APERCU_PORT}}
         values["security"] = {"password": secrets.token_urlsafe(18)}
+        if p.apercu:
+            values["networking"] = {"user": {"enabled": True, "port": APERCU_PORT}}
     if vault.get("token"):
         # Onyxia injecte ces valeurs lui-même ; en lançant helm directement, on reprend celles de l'orchestrateur.
         values["vault"] = {"enabled": True, "secret": VAULT_SECRET, **vault}
@@ -197,14 +198,12 @@ async def ingress_hotes(nom: str) -> dict | None:
 async def lancer(p: Launch) -> str:
     p.validate()
     ns = namespace()
-    ingress = None
-    if p.apercu:
-        try:
-            ingress = await ingress_hotes(p.nom)
-        except (ServiceError, KeyError, json.JSONDecodeError):
-            ingress = None
-        if not ingress:
-            raise ServiceError("aperçu impossible : ingress Onyxia de ce pod introuvable (lance le service sans aperçu)")
+    try:  # VSCode (et l'aperçu) joignables sur le modèle de l'ingress Onyxia de ce pod
+        ingress = await ingress_hotes(p.nom)
+    except (ServiceError, KeyError, json.JSONDecodeError):
+        ingress = None
+    if p.apercu and not ingress:
+        raise ServiceError("aperçu impossible : ingress Onyxia de ce pod introuvable (lance le service sans aperçu)")
     fd, path = tempfile.mkstemp(suffix=".yaml")  # 0600 : contient le jeton Vault
     try:
         with os.fdopen(fd, "w") as f:  # contient aussi le token git
@@ -212,7 +211,8 @@ async def lancer(p: Launch) -> str:
         await _run(*helm_args(p, ns, path))
     finally:
         os.unlink(path)
-    apercu = f"\nAperçu public (port {APERCU_PORT}) : https://{ingress['userHostname']}/" if ingress else ""
+    apercu = f"\nVSCode : https://{ingress['hostname']}/ (bouton « Ouvrir VSCode » du tableau de bord)" if ingress else ""
+    apercu += f"\nAperçu public (port {APERCU_PORT}) : https://{ingress['userHostname']}/" if ingress and p.apercu else ""
     return (f"Service {p.release} lancé dans {ns}. Le pod démarre : le projet « {p.nom} » apparaîtra dans le "
             f"cockpit dès que son worker sera connecté (1 à 3 minutes).{apercu}")
 

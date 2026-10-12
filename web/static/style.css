@@ -393,3 +393,8 @@ details.trusted summary { color: var(--ok); font-size: 12px; cursor: pointer; }
 .usagecard .meter { grid-template-columns: 120px minmax(40px, 1fr) auto; }
 .ureset { font-size: 11.5px; color: var(--muted); margin: -4px 0 2px 130px; }
 @media (max-width: 480px) { .usagecard .meter { grid-template-columns: 96px minmax(40px, 1fr) auto; } .ureset { margin-left: 106px; } }
+
+/* Accès au pod : VSCode */
+.podlinks { display: flex; gap: 6px; flex-wrap: wrap; }
+.podlinks a.btn { text-decoration: none; color: var(--text); font-size: 13px; padding: 6px 12px; min-height: 0; }
+.podlinks .btn.ghost { font-size: 12.5px; }

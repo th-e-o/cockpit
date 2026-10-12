@@ -92,3 +92,16 @@ def test_tools():
     assert ev("mcp__github__create_pr") == ASK
     assert ev("AskUserQuestion") == DENY
     assert ev("UnknownTool") == ASK
+
+
+@pytest.mark.parametrize("cmd,action", [
+    ("sed -n '1,40p' app.py", "allow"), ("sed -i 's/a/b/' app.py", "ask"), ("sed -ni 's/a/b/p' x", "ask"),
+    ("awk '{print $1}' data.csv | sort | uniq -c", "allow"), ("Rscript analyse.R", "allow"), ("make test", "allow"),
+    ("gh api repos/a/b/contents", "allow"), ("gh api -X DELETE repos/a/b", "ask"), ("gh api repos/a/b/issues -f title=x", "ask"),
+    ("git merge feat", "allow"), ("git remote add origin x", "ask"), ("git rm a.py", "ask"),
+    ("uv sync", "allow"), ("uv add x", "ask"), ("pip list", "allow"), ("pip install x", "ask"),
+    ("tar -tzf a.tgz", "allow"), ("tar -xzf a.tgz", "ask"), ("cd src && sed -n 1p a.py", "allow"), ("cp a b", "ask"),
+])
+def test_commandes_de_developpement(cmd, action):
+    """Lecture et outils de développement courants : sans validation ; écriture, réseau et suppression : validés."""
+    assert POLICY.evaluate("Bash", {"command": cmd}, "/home/onyxia/work/p").action == action
