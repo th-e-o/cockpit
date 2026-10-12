@@ -23,6 +23,19 @@ const TACHES_VISIBLES = 30;
 const CONTEXTE_ECHANGES = 6;              // échanges précédents transmis au worker (routage, reprise sans session)
 const WORKERS_VISIBLES = 7 * 86400;     // tableau de bord : pods vus dans les 7 derniers jours
 const TACHES_FILLES_MAX = 5;            // lancer_en_parallele : sous-tâches par appel
+const MODELES = ['rapide', 'standard', 'approfondi'];
+const VARIANTES_MAX = 3;
+const IMAGE_MAX = 1_600_000;            // capture d'écran (JPEG), octets
+const MEMOIRE_MAX = 50_000;             // CLAUDE.md d'un projet
+const COMMANDES_MAX = 20;               // commandes rapides par liste
+const ACTIFS = ['pending', 'routing', 'queued', 'running', 'waiting_approval'];
+const CONFIANCE_DUREES = [0, 15, 30, 60, 120];  // minutes (0 : désactivé)
+
+/** Conversations en mode confiance : {conversation: fin (horodatage)}. */
+function confiances(): array {
+    q('DELETE FROM confiances WHERE jusqua <= ?', [time()]);
+    return array_map('intval', q('SELECT conversation, jusqua FROM confiances')->fetchAll(PDO::FETCH_KEY_PAIR));
+}
 
 $CONFIG = require __DIR__ . '/config.php';
 
@@ -79,11 +92,16 @@ CREATE TABLE IF NOT EXISTS reglages (cle TEXT PRIMARY KEY, valeur TEXT NOT NULL)
 CREATE TABLE IF NOT EXISTS workers (
     id TEXT PRIMARY KEY, nom TEXT NOT NULL, instance TEXT NOT NULL, projets TEXT NOT NULL DEFAULT '[]',
     orchestrateur INTEGER NOT NULL DEFAULT 1, vu_le INTEGER NOT NULL DEFAULT 0);
+-- Mode confiance : validations de routine auto-approuvées pour une conversation jusqu'à « jusqua »
+CREATE TABLE IF NOT EXISTS confiances (conversation TEXT PRIMARY KEY, jusqua INTEGER NOT NULL);
 SQL);
     $colonnes = array_column($pdo->query('PRAGMA table_info(taches)')->fetchAll(), 'name');
     // extra : champs fournis par le worker (modifications, worktree) ; action_worktree : demande du téléphone.
     // action : tâche exécutée directement par le worker, sans agent (lancement d'un pod depuis le téléphone).
-    foreach (['worker_id', 'conversation', 'suite_de', 'session', 'extra', 'parent', 'action_worktree', 'action'] as $c) {
+    // modele : rapide|standard|approfondi ; isoler : variante (worktree dédié) ; groupe : variantes d'une même demande ;
+    // recadrages : messages envoyés pendant la tâche, à livrer au worker.
+    foreach (['worker_id', 'conversation', 'suite_de', 'session', 'extra', 'parent', 'action_worktree', 'action',
+              'modele', 'isoler', 'groupe', 'recadrages'] as $c) {
         if (!in_array($c, $colonnes, true)) $pdo->exec("ALTER TABLE taches ADD COLUMN $c TEXT");
     }
     // Clé d'appairage à saisir (ordinateur sans appareil photo) : même ligne que le jeton du lien QR.
@@ -336,6 +354,7 @@ function tache_publique(array $t): array {
         'changes' => $extra['changes'] ?? null, 'worktree' => $extra['worktree'] ?? null,
         'duration_s' => $extra['duration_s'] ?? null, 'kind' => empty($t['action']) ? null : 'service',
         'next_steps' => $extra['next_steps'] ?? null, 'next_steps_dismissed' => !empty($extra['next_steps_dismissed']),
+        'model' => $t['modele'] ?? null, 'group' => $t['groupe'] ?? null, 'tests' => $extra['tests'] ?? null,
     ];
 }
 
@@ -546,6 +565,7 @@ switch ($route) {
             'worker_online' => worker_en_ligne(),
             'pending' => (int)q('SELECT COUNT(*) FROM validations WHERE decision IS NULL')->fetchColumn(),
             'workers' => workers_publics(),
+            'trust' => (object)confiances(),
         ]);
 
     case 'diff': // diffs par fichier des modifications d'une tâche
@@ -593,6 +613,93 @@ switch ($route) {
         evenement_tache($id);
         repondre(tache_publique(q('SELECT * FROM taches WHERE id = ?', [$id])->fetch()));
 
+    case 'confiance': // mode confiance d'une conversation, pour une durée limitée (0 : désactivé)
+        exiger_session();
+        $minutes = (int)($in['minutes'] ?? -1);
+        if (!in_array($minutes, CONFIANCE_DUREES, true)) erreur('durée invalide : ' . implode(', ', CONFIANCE_DUREES) . ' minutes');
+        $conv = (string)($in['conversation'] ?? '');
+        if (!q('SELECT 1 FROM taches WHERE conversation = ? OR id = ?', [$conv, $conv])->fetchColumn()) erreur('conversation introuvable', 404);
+        if ($minutes === 0) q('DELETE FROM confiances WHERE conversation = ?', [$conv]);
+        else q('INSERT INTO confiances(conversation, jusqua) VALUES(?, ?) ON CONFLICT(conversation) DO UPDATE SET jusqua = excluded.jusqua',
+               [$conv, time() + 60 * $minutes]);
+        q('INSERT INTO audit(donnees, ts) VALUES(?, ?)', [json_encode(['ts' => date('Y-m-d\\TH:i:s'), 'event' => 'trust',
+            'conversation' => $conv, 'minutes' => $minutes], JSON_UNESCAPED_UNICODE), time()]);
+        repondre(['ok' => true, 'trust' => (object)confiances()]);
+
+    case 'recadrer': // message envoyé à Claude pendant qu'il travaille : il est interrompu et reprend avec
+        exiger_session();
+        $texte = trim((string)($in['message'] ?? ''));
+        if ($texte === '' || mb_strlen($texte) > 4000) erreur('message vide ou trop long');
+        $t = q('SELECT * FROM taches WHERE id = ?', [(string)($in['task_id'] ?? '')])->fetch() ?: erreur('tâche introuvable', 404);
+        if (!in_array($t['statut'], ACTIFS, true)) erreur('la tâche est terminée : envoie plutôt une suite', 409);
+        $file = json_decode($t['recadrages'] ?? '', true) ?: [];
+        $file[] = $texte;
+        q('UPDATE taches SET recadrages = ? WHERE id = ?', [json_encode($file, JSON_UNESCAPED_UNICODE), $t['id']]);
+        inserer_evenement($t['id'], ['kind' => 'message', 'task_id' => $t['id'], 'type' => 'steer', 'text' => $texte, 'ts' => time()]);
+        repondre(['ok' => true]);
+
+    case 'image': // capture d'écran envoyée par un agent
+        exiger_session();
+        $id = (string)($_GET['id'] ?? '');
+        $f = __DIR__ . "/data/images/$id.jpg";
+        if (!preg_match('/^[0-9a-f]{12}$/', $id) || !is_file($f)) erreur('image introuvable', 404);
+        header('Content-Type: image/jpeg');
+        header('Cache-Control: private, max-age=31536000, immutable');
+        header('Content-Length: ' . filesize($f));
+        readfile($f);
+        exit;
+
+    case 'memoire': // CLAUDE.md d'un projet, publié par son worker
+        exiger_session();
+        $m = json_decode(reglage('memoire:' . (string)($_GET['project'] ?? '')) ?? 'null', true);
+        repondre($m ?: ['content' => '', 'hash' => '', 'maj' => 0, 'absent' => true]);
+
+    case 'memoire_maj':
+        exiger_session();
+        $projet = (string)($in['project'] ?? '');
+        $contenu = (string)($in['content'] ?? '');
+        if (strlen($contenu) > MEMOIRE_MAX) erreur('mémoire trop longue');
+        $m = json_decode(reglage("memoire:$projet") ?? 'null', true) ?: erreur('projet inconnu ou mémoire pas encore publiée', 404);
+        if (($in['hash'] ?? '') !== $m['hash']) erreur('la mémoire a changé entre-temps : recharge-la', 409);
+        reglage("memoire_edit:$projet", json_encode(['content' => $contenu, 'ts' => time()], JSON_UNESCAPED_UNICODE));
+        repondre(['ok' => true]);
+
+    case 'commandes': // commandes rapides : liste commune (« * ») et listes par projet
+        exiger_session();
+        repondre(json_decode(reglage('commandes') ?? 'null', true) ?: (object)[]);
+
+    case 'commandes_maj':
+        exiger_session();
+        $cle = (string)($in['project'] ?? '*');
+        $liste = $in['commandes'] ?? null;
+        if (!is_array($liste) || count($liste) > COMMANDES_MAX) erreur('liste invalide');
+        $propre = [];
+        foreach ($liste as $c) {
+            $titre = trim((string)($c['titre'] ?? ''));
+            $instr = trim((string)($c['instruction'] ?? ''));
+            if ($titre === '' || $instr === '' || mb_strlen($titre) > 60 || mb_strlen($instr) > 4000) erreur('commande invalide');
+            $propre[] = ['titre' => $titre, 'instruction' => $instr];
+        }
+        $toutes = json_decode(reglage('commandes') ?? 'null', true) ?: [];
+        $toutes[$cle] = $propre;
+        reglage('commandes', json_encode($toutes, JSON_UNESCAPED_UNICODE));
+        repondre(['ok' => true]);
+
+    case 'garder_variante': // variantes : la choisie est fusionnée, les autres jetées
+        exiger_session();
+        $t = q('SELECT * FROM taches WHERE id = ?', [(string)($in['task_id'] ?? '')])->fetch() ?: erreur('tâche introuvable', 404);
+        if (!$t['groupe']) erreur("cette tâche n'est pas une variante");
+        $groupe = q('SELECT * FROM taches WHERE groupe = ?', [$t['groupe']])->fetchAll();
+        foreach ($groupe as $g) if (in_array($g['statut'], ACTIFS, true)) erreur('une variante travaille encore', 409);
+        foreach ($groupe as $g) {
+            // Dernière tâche de chaque conversation (une variante a pu recevoir des suites) qui porte le worktree
+            $der = q("SELECT * FROM taches WHERE conversation = ? AND extra LIKE '%\"worktree\"%' ORDER BY cree_le DESC, rowid DESC LIMIT 1",
+                     [$g['conversation'] ?? $g['id']])->fetch();
+            $etat = $der ? (json_decode($der['extra'], true)['worktree']['state'] ?? '') : '';
+            if ($der && $etat === 'active') q('UPDATE taches SET action_worktree = ? WHERE id = ?', [$g['id'] === $t['id'] ? 'merge' : 'discard', $der['id']]);
+        }
+        repondre(['ok' => true]);
+
     case 'ignorer_suite': // les prochaines étapes proposées ne sont plus suivies (tableau de bord)
         exiger_session();
         $t = q('SELECT * FROM taches WHERE id = ?', [(string)($in['task_id'] ?? '')])->fetch() ?: erreur('tâche introuvable', 404);
@@ -627,7 +734,19 @@ switch ($route) {
               [time() - 600, time() - WORKER_EN_LIGNE])->fetchAll());
         $terminees = array_map('tache_publique', q("SELECT * FROM taches WHERE statut IN ('done','error','needs_project')
             AND maj_le > ? ORDER BY maj_le DESC LIMIT 3", [time() - 300])->fetchAll());
-        repondre(['approvals' => $validations, 'finished' => $terminees, 'new_pods' => $pods]);
+        $ci = [];
+        foreach (q("SELECT tache_id, donnees FROM evenements WHERE ts > ? AND donnees LIKE '%\"type\":\"ci\"%' ORDER BY id", [time() - 900])->fetchAll() as $e) {
+            $d = json_decode($e['donnees'], true);
+            $ci[$e['tache_id']] = $d;  // dernier état de la CI par tâche
+        }
+        $echecs = [];
+        foreach ($ci as $tid => $d) {
+            if (($d['state'] ?? '') !== 'failure') continue;
+            $t = q('SELECT instruction FROM taches WHERE id = ?', [$tid])->fetch();
+            $echecs[] = ['task_id' => $tid, 'sha' => $d['sha'] ?? '', 'url' => $d['url'] ?? '', 'instruction' => mb_substr($t['instruction'] ?? '', 0, 120),
+                         'checks' => array_values(array_map(fn($c) => $c['name'], array_filter($d['checks'] ?? [], fn($c) => !in_array($c['conclusion'] ?? null, [null, 'success', 'neutral', 'skipped'], true))))];
+        }
+        repondre(['approvals' => $validations, 'finished' => $terminees, 'new_pods' => $pods, 'ci_failures' => $echecs]);
 
     case 'tache':
         exiger_session();
@@ -635,21 +754,39 @@ switch ($route) {
         if ($instruction === '' || mb_strlen($instruction) > 10000) erreur('instruction vide ou trop longue');
         $projet = $in['project'] ?? null;
         if ($projet !== null && !in_array($projet, array_column(projets(), 'id'), true)) erreur('projet inconnu');
+        $modele = $in['model'] ?? null;
+        if ($modele !== null && !in_array($modele, MODELES, true)) erreur('modèle inconnu');
+        $variantes = max(1, (int)($in['variants'] ?? 1));
+        if ($variantes > VARIANTES_MAX) erreur('au plus ' . VARIANTES_MAX . ' variantes');
         $id = bin2hex(random_bytes(5));
         $conversation = $id;
         $suite = null;
         if (!empty($in['reply_to'])) {
-            // Suite d'une conversation : même projet par défaut, la session Claude sera reprise.
-            $parent = q('SELECT id, projet, conversation FROM taches WHERE id = ?', [(string)$in['reply_to']])->fetch() ?: erreur('conversation introuvable');
+            // Suite d'une conversation : même projet et même modèle par défaut, la session Claude sera reprise.
+            $parent = q('SELECT id, projet, conversation, modele FROM taches WHERE id = ?', [(string)$in['reply_to']])->fetch() ?: erreur('conversation introuvable');
             $suite = $parent['id'];
             $conversation = $parent['conversation'] ?? $parent['id'];
             $projet ??= $parent['projet'];
+            $modele ??= $parent['modele'];
+            if ($variantes > 1) erreur('les variantes démarrent une nouvelle conversation');
         }
-        q('INSERT INTO taches(id, instruction, projet, nouvelle_session, cree_le, maj_le, worker_id, conversation, suite_de)
-           VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)',
-          [$id, $instruction, $projet, empty($in['new_session']) ? 0 : 1, time(), time(), worker_du_projet($projet), $conversation, $suite]);
-        evenement_tache($id);
-        repondre(tache_publique(q('SELECT * FROM taches WHERE id = ?', [$id])->fetch()));
+        if ($variantes > 1 && $projet === null) erreur('choisis un projet pour lancer des variantes');
+        // Variantes : une conversation chacune, toutes dans un worktree dédié, à comparer puis garder ou jeter.
+        $ids = [$id];
+        for ($k = 2; $k <= $variantes; $k++) $ids[] = bin2hex(random_bytes(5));
+        db()->beginTransaction();
+        foreach ($ids as $k => $tid) {
+            $texte = $variantes > 1 ? $instruction . "\n\n(Variante " . ($k + 1) . "/$variantes : d'autres agents Claude traitent la même "
+                . "demande en parallèle, chacun dans sa branche. Prends une approche qui te soit propre, va au bout et commite ; "
+                . "si le résultat est visuel, joins une capture avec capturer_ecran.)" : $instruction;
+            q('INSERT INTO taches(id, instruction, projet, nouvelle_session, cree_le, maj_le, worker_id, conversation, suite_de, modele, isoler, groupe)
+               VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+              [$tid, $texte, $projet, empty($in['new_session']) ? 0 : 1, time(), time(), worker_du_projet($projet),
+               $k ? $tid : $conversation, $k ? null : $suite, $modele, $variantes > 1 ? 1 : null, $variantes > 1 ? $id : null]);
+            evenement_tache($tid);
+        }
+        db()->commit();
+        repondre(tache_publique(q('SELECT * FROM taches WHERE id = ?', [$id])->fetch()) + ['variants' => $ids]);
 
     case 'annuler':
         exiger_session();
@@ -755,8 +892,20 @@ switch ($route) {
             q('UPDATE taches SET choix_projet = NULL WHERE choix_projet IS NOT NULL AND worker_id = ?', [$wid]);
             $worktrees = q('SELECT id, projet, conversation, action_worktree FROM taches WHERE action_worktree IS NOT NULL AND worker_id = ?', [$wid])->fetchAll();
             q('UPDATE taches SET action_worktree = NULL WHERE action_worktree IS NOT NULL AND worker_id = ?', [$wid]);
+            $recadrages = [];
+            foreach (q('SELECT id, recadrages FROM taches WHERE recadrages IS NOT NULL AND worker_id = ? AND livree = 1', [$wid])->fetchAll() as $r) {
+                foreach (json_decode($r['recadrages'], true) ?: [] as $texte) $recadrages[] = ['task_id' => $r['id'], 'text' => $texte];
+            }
+            q('UPDATE taches SET recadrages = NULL WHERE recadrages IS NOT NULL AND worker_id = ? AND livree = 1', [$wid]);
+            $memoires = [];
+            foreach (json_decode((string)q('SELECT projets FROM workers WHERE id = ?', [$wid])->fetchColumn(), true) ?: [] as $p) {
+                if ($e = reglage('memoire_edit:' . $p['id'])) {
+                    $memoires[] = ['project' => $p['id']] + json_decode($e, true);
+                    q('DELETE FROM reglages WHERE cle = ?', ['memoire_edit:' . $p['id']]);
+                }
+            }
             db()->commit();
-            if ($taches || $decisions || $annulations || $choix || $worktrees) break;
+            if ($taches || $decisions || $annulations || $choix || $worktrees || $recadrages || $memoires) break;
             usleep(500000);
         } while (microtime(true) < $fin && !connection_aborted());
         repondre([
@@ -764,7 +913,9 @@ switch ($route) {
                 'project' => $t['projet'], 'new_session' => (bool)$t['nouvelle_session'],
                 'conversation' => $t['conversation'] ?? $t['id'], 'context' => $t['conversation'] ? contexte($t) : [],
                 'resume_session' => $t['conversation'] ? session_conversation($t) : null, 'parent' => $t['parent'] ?? null,
-                'action' => empty($t['action']) ? null : json_decode($t['action'], true)], $taches),
+                'action' => empty($t['action']) ? null : json_decode($t['action'], true),
+                'model' => $t['modele'] ?? null, 'isolate' => !empty($t['isoler']), 'group' => $t['groupe'] ?? null], $taches),
+            'steers' => $recadrages, 'memory_edits' => $memoires, 'trust' => (object)confiances(),
             'decisions' => $decisions, 'cancels' => $annulations,
             'choices' => array_map(fn($c) => ['task_id' => $c['id'], 'project' => $c['choix_projet']], $choix),
             'worktree_actions' => array_map(fn($w) => ['task_id' => $w['id'], 'project' => $w['projet'],
@@ -783,6 +934,29 @@ switch ($route) {
         if (!$st->rowCount()) erreur('tâche introuvable ou terminée', 404);
         evenement_tache($id);
         repondre(['ok' => true, 'worker' => $cible]);
+
+    case 'w_image':
+        exiger_worker();
+        $tacheId = (string)($in['task_id'] ?? '');
+        $t = q('SELECT worker_id FROM taches WHERE id = ?', [$tacheId])->fetch() ?: erreur('tâche introuvable', 404);
+        if ($t['worker_id'] !== (string)($in['worker_id'] ?? '')) erreur('tâche d\'un autre worker', 403);
+        $jpeg = base64_decode((string)($in['data'] ?? ''), true);
+        if ($jpeg === false || strlen($jpeg) > IMAGE_MAX || !str_starts_with($jpeg, "\xFF\xD8\xFF")) erreur('image JPEG invalide ou trop lourde');
+        $dir = __DIR__ . '/data/images';
+        if (!is_dir($dir)) mkdir($dir, 0700, true);
+        $id = bin2hex(random_bytes(6));
+        file_put_contents("$dir/$id.jpg", $jpeg);
+        inserer_evenement($tacheId, ['kind' => 'message', 'task_id' => $tacheId, 'type' => 'image', 'image' => $id,
+                                     'caption' => mb_substr((string)($in['caption'] ?? ''), 0, 200), 'ts' => time()]);
+        repondre(['id' => $id]);
+
+    case 'w_memoire':
+        exiger_worker();
+        $contenu = (string)($in['content'] ?? '');
+        if (strlen($contenu) > MEMOIRE_MAX) erreur('mémoire trop longue');
+        reglage('memoire:' . (string)($in['project'] ?? ''), json_encode(['content' => $contenu, 'hash' => (string)($in['hash'] ?? ''),
+                'maj' => time(), 'worker' => (string)($in['worker_id'] ?? '')], JSON_UNESCAPED_UNICODE));
+        repondre(['ok' => true]);
 
     case 'w_depots':
         exiger_worker();
@@ -829,7 +1003,7 @@ switch ($route) {
                     $t = $evt['task'];
                     $avant = q('SELECT statut FROM taches WHERE id = ?', [$tacheId])->fetchColumn();
                     $extra = json_decode((string)q('SELECT extra FROM taches WHERE id = ?', [$tacheId])->fetchColumn(), true) ?: [];
-                    foreach (['changes', 'worktree', 'duration_s', 'next_steps'] as $k) if (isset($t[$k])) $extra[$k] = $t[$k];
+                    foreach (['changes', 'worktree', 'duration_s', 'next_steps', 'tests'] as $k) if (isset($t[$k])) $extra[$k] = $t[$k];
                     q('UPDATE taches SET statut = ?, projet = COALESCE(?, projet), raison_routage = ?, resultat = ?, cout = ?, maj_le = ?,
                        session = COALESCE(?, session), extra = ? WHERE id = ?',
                       [$t['status'], $t['project'] ?? null, (string)($t['route_reason'] ?? ''), (string)($t['result'] ?? ''),
@@ -853,6 +1027,7 @@ switch ($route) {
                     inserer_evenement($tacheId, $evt);
                     break;
                 case 'message':
+                    $notifier = $notifier || (($evt['type'] ?? '') === 'ci' && ($evt['state'] ?? '') === 'failure');
                     if (($evt['type'] ?? '') === 'worktree' && isset($evt['state'])) {
                         // Branche fusionnée ou jetée : l'état est conservé sur la tâche (tableau de bord, rechargement).
                         $extra = json_decode((string)q('SELECT extra FROM taches WHERE id = ?', [$tacheId])->fetchColumn(), true) ?: [];

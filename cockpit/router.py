@@ -20,6 +20,7 @@ class Project:
     cwd: str
     description: str = ""
     keywords: list[str] = field(default_factory=list)
+    test: str = ""  # commande de test lancée après chaque tâche (sinon : .cockpit.yml du dépôt)
 
 
 @dataclass

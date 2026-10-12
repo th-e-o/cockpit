@@ -33,6 +33,9 @@ case "${1:-start}" in
   start)
     [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}${ANTHROPIC_API_KEY:-}" ] || echo "⚠️  Aucun identifiant Claude : lance 'claude setup-token' (voir README)." >&2
     if pgrep -f "cockpit.worker run" >/dev/null; then echo "Worker déjà actif (./run.sh logs)."; exit 0; fi
+    # Navigateur des captures d'écran (outil capturer_ecran), installé une fois en arrière-plan
+    ls "${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"/chromium-* >/dev/null 2>&1 \
+      || nohup $PY -m playwright install chromium >> data/worker.log 2>&1 &
     nohup $PY -m cockpit.worker run >> data/worker.log 2>&1 &
     sleep 2
     tail -n 3 data/worker.log

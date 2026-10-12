@@ -317,3 +317,67 @@ dialog form .podmode button { width: auto; padding: 5px 10px; }
 .pairrow input { flex: 1; min-width: 0; padding: 10px 12px; font: 600 18px/1.2 ui-monospace, monospace; letter-spacing: .08em;
   text-transform: uppercase; background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 10px; }
 .pairrow input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+/* ---------- Saisie : modèle, variantes, commandes rapides, recadrage */
+.optrow { display: flex; align-items: center; gap: 6px; padding-bottom: 8px; min-width: 0; }
+select.mini { flex: none; max-width: 150px; font: inherit; font-size: 12.5px; padding: 4px 6px; border-radius: 99px; border: 1px solid var(--line);
+  background: var(--panel2); color: var(--text); }
+.quick { flex: 1; min-width: 0; padding-bottom: 0; }
+.chip.qc { font-size: 12.5px; padding: 4px 10px; }
+.chip.qc.edit { color: var(--muted); }
+#composer.steering #input { border-color: var(--warn); }
+#composer.steering #send { background: var(--warn); color: #000; }
+.steer { align-self: flex-end; max-width: 90%; background: color-mix(in srgb, var(--warn) 16%, var(--panel)); border: 1px solid var(--warn);
+  border-radius: 12px 12px 4px 12px; padding: 5px 10px; font-size: 13px; white-space: pre-wrap; }
+
+/* ---------- Captures, tests, CI, pull request */
+.shots { display: flex; gap: 8px; overflow-x: auto; padding: 4px 0; }
+.shots figure { margin: 0; flex: none; width: 150px; }
+.shot { border: 1px solid var(--line); border-radius: 10px; padding: 0; overflow: hidden; background: var(--panel2); display: block; width: 100%; }
+.shot img { display: block; width: 100%; max-height: 260px; object-fit: cover; object-position: top; }
+.shots figcaption { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+.imgdlg { width: min(96vw, 900px); }
+.imgdlg img { display: block; max-width: 100%; max-height: 75dvh; margin: 8px auto 0; border-radius: 8px; }
+details.tests { margin-top: 8px; border: 1px solid var(--line); border-radius: 10px; padding: 6px 10px; font-size: 13px; }
+details.tests.ok { border-color: color-mix(in srgb, var(--ok) 45%, var(--line)); }
+details.tests.ko { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 6%, var(--panel)); }
+details.tests summary { cursor: pointer; }
+details.tests code { margin-left: 4px; }
+details.tests pre { max-height: 300px; overflow: auto; white-space: pre-wrap; }
+.ci, .prlink { font-size: 13px; margin-top: 6px; }
+.ci.failure { color: var(--bad); } .ci.success { color: var(--ok); } .ci.pending { color: var(--muted); }
+.ci a, .prlink a, a.preview { color: var(--accent); }
+a.preview { font-size: 13px; text-decoration: none; }
+
+/* ---------- Revue : commentaires sur les lignes d'un diff */
+.diffpre span[data-ln] { cursor: pointer; }
+.diffpre span[data-ln]:hover { outline: 1px solid var(--accent); outline-offset: -1px; }
+.rvform { display: flex; flex-direction: column; gap: 4px; margin: 6px 0; font-size: 12.5px; color: var(--text); }
+.rvform textarea { font: inherit; font-size: 14px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel2); color: var(--text); }
+.review { border-top: 1px solid var(--line); padding: 6px 10px; font-size: 12.5px; display: flex; flex-direction: column; gap: 3px;
+  background: color-mix(in srgb, var(--accent) 5%, var(--panel)); }
+.rvhead { font-weight: 600; }
+.rvitem { display: flex; gap: 6px; align-items: baseline; }
+.rvitem .btn { margin-left: auto; padding: 0 6px; }
+.rvhint { padding: 4px 10px 6px; margin: 0; font-size: 11.5px; }
+
+/* ---------- Variantes et mémoire */
+.vgroup { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; display: flex; flex-direction: column; gap: 8px; }
+.vinst { font-size: 14px; font-weight: 600; }
+.vcols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 200px), 1fr)); gap: 8px; }
+.vcol { border: 1px solid var(--line); border-radius: 10px; padding: 8px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.vcol .shot img { max-height: 180px; }
+.pill.var { color: var(--accent); }
+.btn.mem { padding: 0 6px; font-size: 12px; margin-left: 4px; }
+.pname { display: flex; align-items: center; }
+.memtext { width: 100%; font: 13px/1.45 ui-monospace, monospace; padding: 8px; border: 1px solid var(--line); border-radius: 8px;
+  background: var(--panel2); color: var(--text); resize: vertical; }
+.cmdrows { display: flex; flex-direction: column; gap: 8px; max-height: 50dvh; overflow-y: auto; }
+.cmdrow { display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--line); border-radius: 10px; padding: 8px; }
+.cmdrow textarea { font: inherit; font-size: 14px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel2); color: var(--text); }
+dialog form .btn.ghost { width: auto; background: transparent; color: var(--muted); font-weight: 400; border: 1px solid var(--line); align-self: flex-start; }
+
+/* ---------- Mode confiance */
+select.mini.trust.on { border-color: var(--ok); color: var(--ok); font-weight: 600; }
+.trustleft { flex: none; font-size: 11.5px; color: var(--ok); }
+details.trusted summary { color: var(--ok); font-size: 12px; cursor: pointer; }

@@ -37,7 +37,23 @@
     <div id="projects" class="chips" role="radiogroup" aria-label="projet"></div>
     <div id="thread" class="thread hidden">
       <span id="threadText"></span>
+      <select id="trustSel" class="mini trust" aria-label="mode confiance"
+              title="Mode confiance : les validations de routine de cette conversation passent sans toi (jamais : cluster, services, push sur main, sudo…)">
+        <option value="0">🛡 Confiance</option><option value="15">🛡 15 min</option><option value="30">🛡 30 min</option>
+        <option value="60">🛡 1 h</option><option value="120">🛡 2 h</option>
+      </select>
+      <span id="trustLeft" class="trustleft hidden"></span>
       <button type="button" id="newConv" class="btn ghost" title="un autre Claude démarre, en parallèle si le projet est occupé">Nouvelle conversation</button>
+    </div>
+    <div class="optrow">
+      <select id="modelSel" class="mini" aria-label="modèle" title="modèle de Claude pour cette tâche">
+        <option value="">Modèle auto</option><option value="rapide">⚡ Rapide</option>
+        <option value="standard">● Standard</option><option value="approfondi">◆ Approfondi</option>
+      </select>
+      <select id="variantSel" class="mini" aria-label="variantes" title="plusieurs Claude essaient chacun leur approche, à comparer">
+        <option value="1">×1</option><option value="2">🧬 ×2 variantes</option><option value="3">🧬 ×3 variantes</option>
+      </select>
+      <div id="quick" class="chips quick" aria-label="commandes rapides"></div>
     </div>
     <form id="composer">
       <textarea id="input" rows="1" placeholder="Ton instruction…" title="Ctrl+K ou / pour écrire depuis n'importe où" enterkeyhint="send"></textarea>
@@ -114,9 +130,37 @@
         <label>Disque<select id="podDisk"><option selected>10Gi</option><option>20Gi</option><option>50Gi</option><option>100Gi</option></select></label>
       </div>
       <label class="check"><input type="checkbox" id="podGpu"> 1 GPU</label>
+      <label class="check"><input type="checkbox" id="podPreview"> 👁 Aperçu web public (port 5000, URL accessible sans connexion)</label>
       <p class="hint" id="podHint"></p>
       <button type="submit" id="podSubmit">🚀 Lancer le pod</button>
     </form>
+  </dialog>
+
+  <dialog id="cmdDlg">
+    <div class="dlghead"><h2>Commandes rapides</h2><button class="icon" data-close>✕</button></div>
+    <form id="cmdForm" class="podform">
+      <label>Pour<select id="cmdScope"></select></label>
+      <div id="cmdRows" class="cmdrows"></div>
+      <button type="button" class="btn ghost" id="addCmd">＋ Ajouter une commande</button>
+      <p class="hint" id="cmdHint"></p>
+      <button type="submit">Enregistrer</button>
+    </form>
+  </dialog>
+
+  <dialog id="memDlg">
+    <div class="dlghead"><h2 id="memTitle">Mémoire</h2><button class="icon" data-close>✕</button></div>
+    <form id="memForm" class="podform">
+      <p class="hint">Fichier CLAUDE.md du projet : Claude le lit au début de chaque tâche (conventions, commandes, choix).</p>
+      <textarea id="memText" class="memtext" rows="16" spellcheck="false"></textarea>
+      <p class="hint" id="memHint"></p>
+      <button type="submit" id="memSave">Enregistrer</button>
+    </form>
+  </dialog>
+
+  <dialog id="imgDlg" class="imgdlg">
+    <div class="dlghead"><h2>Capture</h2><button class="icon" data-close>✕</button></div>
+    <img id="imgFull" alt="">
+    <p class="hint" id="imgCaption"></p>
   </dialog>
 
   <dialog id="listDlg">

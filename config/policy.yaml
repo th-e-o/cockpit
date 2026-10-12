@@ -8,7 +8,9 @@ approval_timeout_s: 900   # sans réponse => refus
 # Outils toujours autorisés (lecture seule / sans effet de bord)
 # ToolSearch ne fait que charger la définition d'un outil : son usage reste soumis à la politique.
 # proposer_suite : simple proposition affichée sur le téléphone (aucun effet)
-allow_tools: [Read, Glob, Grep, TodoWrite, Task, Agent, WebSearch, ToolSearch, mcp__services__lister_services, mcp__cockpit__proposer_suite]
+# capturer_ecran : pages du pod seulement (localhost) ; ouvrir_pr : jamais depuis main/master, réversible
+allow_tools: [Read, Glob, Grep, TodoWrite, Task, Agent, WebSearch, ToolSearch, mcp__services__lister_services, mcp__cockpit__proposer_suite,
+              mcp__cockpit__capturer_ecran, mcp__cockpit__ouvrir_pr]
 
 # Outils jamais autorisés
 deny_tools: [AskUserQuestion]
@@ -64,3 +66,33 @@ bash:
     - '^helm\s+(list|ls|status|get|history|show|search|template|lint)\b'
     - '^(mc\s+(ls|cat|stat)|aws\s+s3\s+ls)\b'
     - '^(mkdir|touch|cd)\b'
+
+# Mode confiance : activé depuis le téléphone pour une conversation, pendant une durée limitée.
+# Les validations de routine passent alors automatiquement (et restent dans le journal d'audit).
+# Jamais concernés : les refus (deny), les écritures hors du projet, les outils absents de « tools »
+# (services, dépôts GitHub, agents en parallèle) et les commandes qui correspondent à « never ».
+trust:
+  tools: [NotebookEdit, WebFetch]
+  paths_never: ['/\.git/', '\.github/workflows/']   # historique git, CI (exécutée avec les secrets du dépôt)
+  unknown_commands: true   # commandes non répertoriées (make, docker build, scripts du projet…)
+  opaque: true             # substitutions et redirections, contrôlées par « never » sur la commande entière
+  bash:
+    - '\b(pip|uv\s+pip|npm|conda|mamba)\s+(install|uninstall|remove)'
+    - '\buv\s+(add|remove)'
+    - '\brm\s'
+    - '\bfind\b.*\s-(delete|exec|execdir|ok)\b'
+    - '\bxargs\b'
+    - '\bchmod\b'
+    - '\b(kill|pkill)\b'
+    - '\bgit\s+(rebase|branch\s+-D)'
+  never:
+    - '\bhelm\s+(install|upgrade|uninstall|delete|rollback)'
+    - '\bkubectl\s+(apply|create|delete|patch|scale|edit|replace|exec|rollout|drain|cordon)'
+    - '\bgit\s+push\b.*\b(main|master)\b'
+    - '\bgit\s+push\b.*(--force|-f\b|--delete|--mirror)'
+    - '\bgit\s+(reset\s+--hard|clean)'
+    - '\bsudo\b'
+    - '\b(mc|aws\s+s3|s3cmd|rclone)\b'
+    - '\b(curl|wget)\b.*(-X\s*(POST|PUT|DELETE|PATCH)|--data|-d\s)'
+    - '\bvault\b'
+    - '\bchown\b'

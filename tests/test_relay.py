@@ -502,3 +502,98 @@ def test_cle_d_appairage(relay):
     assert call(phone(relay), "appairer", {"code": r["code"]}).status_code == 401  # usage unique
     # Le lien QR de la même génération est invalidé lui aussi
     assert call(phone(relay), "appairer", {"token": r["url"].split("#pair=")[1]}).status_code == 401
+
+
+def test_vibe_coding(relay):
+    """Modèle, variantes, recadrage, captures, mémoire, commandes rapides, garder une variante, CI en échec."""
+    import base64
+
+    p = paired_phone(relay)
+    wpoll(relay, "pod-vc", False, [{"id": "vc", "name": "VC"}], hello=True)
+
+    # Modèle : choisi puis hérité par la suite de la conversation
+    assert call(p, "tache", {"instruction": "x", "project": "vc", "model": "énorme"}).status_code == 400
+    t = call(p, "tache", {"instruction": "page d'accueil", "project": "vc", "model": "rapide"}).json()
+    suite = call(p, "tache", {"instruction": "et le pied de page", "reply_to": t["id"]}).json()
+    assert t["model"] == suite["model"] == "rapide"
+    livrees = {x["id"]: x for x in wpoll(relay, "pod-vc", False)["tasks"]}
+    assert livrees[t["id"]]["model"] == "rapide" and livrees[t["id"]]["isolate"] is False
+
+    # Recadrage : seulement pendant la tâche, affiché dans le fil, livré une fois au worker
+    assert call(p, "recadrer", {"task_id": t["id"], "message": "plutôt en bleu"}).json()["ok"]
+    evts = call(p, "etat").json()["events"]
+    assert any(e.get("type") == "steer" and e["text"] == "plutôt en bleu" for e in evts)
+    assert wpoll(relay, "pod-vc", False)["steers"] == [{"task_id": t["id"], "text": "plutôt en bleu"}]
+    assert wpoll(relay, "pod-vc", False)["steers"] == []
+    worker_call(relay, "w_evenements", {"worker_id": "pod-vc", "events": [
+        {"kind": "task", "task_id": t["id"], "task": {"status": "done", "project": "vc", "tests": {"ok": False, "command": "pytest", "duration_s": 3}}}]})
+    assert call(p, "recadrer", {"task_id": t["id"], "message": "trop tard"}).status_code == 409
+    assert last_status(p)[t["id"]]["tests"]["ok"] is False
+
+    # Captures : envoyées par le worker propriétaire, JPEG uniquement, servies au téléphone connecté
+    jpeg = b"\xff\xd8\xff\xe0" + b"0" * 100
+    img = {"task_id": t["id"], "data": base64.b64encode(jpeg).decode(), "caption": "Accueil", "worker_id": "pod-vc"}
+    assert worker_call(relay, "w_image", {**img, "worker_id": "autre"}).status_code == 403
+    assert worker_call(relay, "w_image", {**img, "data": base64.b64encode(b"<svg/>").decode()}).status_code == 400
+    iid = worker_call(relay, "w_image", img).json()["id"]
+    r = call(p, "image", id=iid)
+    assert r.status_code == 200 and r.headers["content-type"] == "image/jpeg" and r.content == jpeg
+    assert call(phone(relay), "image", id=iid).status_code == 401
+    assert call(p, "image", id="../cockpit").status_code == 404
+    assert any(e.get("type") == "image" and e["image"] == iid for e in call(p, "etat").json()["events"])
+
+    # Mémoire (CLAUDE.md) : publiée par le worker, modifiée sur le téléphone, livrée au worker
+    assert call(p, "memoire", project="vc").json()["absent"] is True
+    worker_call(relay, "w_memoire", {"project": "vc", "content": "# Règles", "hash": "h1", "worker_id": "pod-vc"})
+    m = call(p, "memoire", project="vc").json()
+    assert m["content"] == "# Règles" and m["hash"] == "h1"
+    assert call(p, "memoire_maj", {"project": "vc", "content": "x", "hash": "ancien"}).status_code == 409
+    assert call(p, "memoire_maj", {"project": "vc", "content": "# Règles\n- pytest", "hash": "h1"}).json()["ok"]
+    assert wpoll(relay, "pod-vc", False)["memory_edits"][0]["content"] == "# Règles\n- pytest"
+    assert wpoll(relay, "pod-vc", False)["memory_edits"] == []
+
+    # Commandes rapides
+    assert call(p, "commandes_maj", {"project": "vc", "commandes": [{"titre": "", "instruction": "x"}]}).status_code == 400
+    assert call(p, "commandes_maj", {"project": "vc", "commandes": [{"titre": "🧪 Tests", "instruction": "Lance pytest"}]}).json()["ok"]
+    assert call(p, "commandes").json()["vc"] == [{"titre": "🧪 Tests", "instruction": "Lance pytest"}]
+
+    # Variantes : une conversation chacune, isolées, regroupées ; on en garde une, les autres sont jetées
+    assert call(p, "tache", {"instruction": "x", "project": "vc", "variants": 4}).status_code == 400
+    assert call(p, "tache", {"instruction": "x", "reply_to": t["id"], "variants": 2}).status_code == 400
+    v = call(p, "tache", {"instruction": "logo", "project": "vc", "variants": 2, "model": "approfondi"}).json()
+    ids = v["variants"]
+    assert len(ids) == 2 and ids[0] == v["id"]
+    livrees = {x["id"]: x for x in wpoll(relay, "pod-vc", False)["tasks"]}
+    assert all(livrees[i]["isolate"] and livrees[i]["group"] == ids[0] and livrees[i]["model"] == "approfondi" for i in ids)
+    assert "Variante 2/2" in livrees[ids[1]]["instruction"] and livrees[ids[1]]["conversation"] == ids[1]
+    assert call(p, "garder_variante", {"task_id": ids[1]}).status_code == 409  # encore en cours
+    worker_call(relay, "w_evenements", {"worker_id": "pod-vc", "events": [
+        {"kind": "task", "task_id": i, "task": {"status": "done", "project": "vc",
+         "worktree": {"branch": f"cockpit/{i}", "path": "/w", "state": "active"}}} for i in ids]})
+    assert call(p, "garder_variante", {"task_id": ids[1]}).json()["ok"]
+    actions = {a["task_id"]: a["action"] for a in wpoll(relay, "pod-vc", False)["worktree_actions"]}
+    assert actions == {ids[1]: "merge", ids[0]: "discard"}
+
+    # CI en échec : notification avec les vérifications en échec
+    worker_call(relay, "w_evenements", {"worker_id": "pod-vc", "events": [{"kind": "message", "task_id": t["id"], "type": "ci",
+        "state": "failure", "sha": "abc1234", "url": "https://gh/run", "checks": [
+            {"name": "tests", "conclusion": "failure"}, {"name": "lint", "conclusion": "success"}]}]})
+    fail = [c for c in call(p, "resume").json()["ci_failures"] if c["task_id"] == t["id"]][0]
+    assert fail["checks"] == ["tests"] and fail["sha"] == "abc1234"
+
+
+def test_mode_confiance(relay):
+    """Confiance par conversation et pour une durée limitée : validée, transmise au worker et au téléphone, journalisée."""
+    p = paired_phone(relay)
+    wpoll(relay, "pod-cf", False, [{"id": "cf", "name": "CF"}], hello=True)
+    t = call(p, "tache", {"instruction": "x", "project": "cf"}).json()
+    assert call(p, "confiance", {"conversation": t["conversation"], "minutes": 999}).status_code == 400
+    assert call(p, "confiance", {"conversation": "inconnue", "minutes": 30}).status_code == 404
+    r = call(p, "confiance", {"conversation": t["conversation"], "minutes": 30}).json()
+    fin = r["trust"][t["conversation"]]
+    assert 29 * 60 < fin - time.time() <= 30 * 60
+    assert wpoll(relay, "pod-cf", False)["trust"][t["conversation"]] == fin
+    assert call(p, "etat").json()["trust"][t["conversation"]] == fin
+    assert any(a.get("event") == "trust" and a.get("minutes") == 30 for a in call(p, "audit", limit=20).json())
+    call(p, "confiance", {"conversation": t["conversation"], "minutes": 0})
+    assert t["conversation"] not in wpoll(relay, "pod-cf", False)["trust"]

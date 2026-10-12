@@ -16,7 +16,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import github, gitstate
+from . import apercu, github, gitstate
 from . import services as svc
 from .agent import Runner
 from .podstate import PodState
@@ -34,6 +34,7 @@ WORKER_NAME = os.environ.get("COCKPIT_WORKER_NAME") or WORKER_ID
 # « orchestrateur » : route les instructions sans projet et gère les services ; « projet » : pod d'un seul projet.
 ORCHESTRATOR = os.environ.get("COCKPIT_ROLE", "orchestrateur") != "projet"
 KEY_FILE = DATA / "worker_key"
+MEMORY_FILE, MEMORY_MAX = "CLAUDE.md", 50_000
 KEY_HASH_FILE = CONFIG / "worker_key.sha256"  # versionné : seule l'empreinte est publique
 
 log = logging.getLogger("cockpit.worker")
@@ -99,6 +100,8 @@ class Worker:
         self._state: dict | None = None
         self._state_ts = 0.0
         self._repos_dirty = False  # dépôt créé : liste à republier
+        self.runner.upload_image = self.relay.image
+        self._memory: dict[str, str] = {}  # projet -> empreinte du CLAUDE.md publié
 
     def spawn(self, coro) -> None:
         t = asyncio.create_task(coro)
@@ -129,13 +132,50 @@ class Worker:
                     conv = d.name.removeprefix(pid + "-")
                     worktrees.append({"project": pid, "conversation": conv, "branch": gitstate.branch_name(conv)})
         tasks = self.store.tasks.values()
+        await self.publish_memory()
         self._state = {
+            "preview": self.runner.preview,
             "resources": self.pod.resources(), "projects": projects, "worktrees": worktrees,
             "running": len(self.runner.running), "max_agents": self.runner.max_agents,
             "queued": sum(1 for t in tasks if t.status == "queued"), "started": self.started,
         }
         self._state_ts = time.monotonic()
         return self._state
+
+    async def publish_memory(self) -> None:
+        """CLAUDE.md de chaque projet (mémoire) publié au relais quand il change."""
+        for p in self.projects.values():
+            path = Path(p.cwd, MEMORY_FILE)
+            try:
+                content = path.read_text()[:MEMORY_MAX] if path.exists() else ""
+            except OSError:
+                continue
+            digest = hashlib.sha256(content.encode()).hexdigest()[:16]
+            if self._memory.get(p.id) != digest:
+                try:
+                    await self.relay.memoire(p.id, content, digest)
+                    self._memory[p.id] = digest
+                except Exception as e:
+                    log.info("mémoire de %s non publiée : %s", p.id, e)
+
+    def apply_memory_edit(self, edit: dict) -> None:
+        """Mémoire modifiée sur le téléphone : CLAUDE.md réécrit dans le dossier du projet (lu par les agents)."""
+        p = self.projects.get(edit.get("project", ""))
+        if not p:
+            return
+        content = str(edit.get("content", ""))[:MEMORY_MAX]
+        Path(p.cwd, MEMORY_FILE).write_text(content if content.endswith("\n") or not content else content + "\n")
+        self.store.audit("memory_edit", project=p.id, size=len(content))
+        self._memory.pop(p.id, None)
+        self._state = None  # republiée au prochain poll
+
+    async def steer(self, s: dict) -> None:
+        task = self.store.tasks.get(s.get("task_id", ""))
+        if task and task.status in ("pending", "routing", "queued", "running", "waiting_approval"):
+            await self.runner.steer(task, str(s.get("text", ""))[:4000])
+            self.store.audit("steer", task=task.id, project=task.project)
+        elif task:
+            self.store.publish("message", {"task_id": task.id, "type": "steer_late", "text": s.get("text", "")})
 
     async def spawn_children(self, parent: Task, items: list[dict]) -> list[str]:
         """Tâches filles (outil lancer_en_parallele) : chacune devient une conversation, sur le projet demandé."""
@@ -169,7 +209,7 @@ class Worker:
                 raise svc.ServiceError(f"action inconnue : {action.get('type')}")
             p = svc.Launch(nom=action.get("nom", ""), depot_git=action.get("depot_git", ""), branche=action.get("branche", ""),
                            cpu=str(action.get("cpu", "2")), memoire=action.get("memoire", "8Gi"),
-                           disque=action.get("disque", "10Gi"), gpu=bool(action.get("gpu")))
+                           disque=action.get("disque", "10Gi"), gpu=bool(action.get("gpu")), apercu=bool(action.get("apercu")))
             await svc.verifier_nouveau(p)  # avant de créer un dépôt qui resterait orphelin
             prefix = ""
             if nouveau := action.get("creer_depot"):
@@ -244,7 +284,8 @@ class Worker:
         for t in msg.get("tasks", []):
             task = Task(id=t["id"], instruction=t["instruction"], project=t.get("project"),
                         conversation=t.get("conversation"), context=t.get("context") or [],
-                        resume_session=t.get("resume_session"), parent=t.get("parent"))
+                        resume_session=t.get("resume_session"), parent=t.get("parent"), model=t.get("model"),
+                        isolate=bool(t.get("isolate")), group=t.get("group"))
             self.store.tasks[task.id] = task
             if t.get("action"):
                 self.spawn(self.run_action(task, t["action"]))
@@ -257,6 +298,15 @@ class Worker:
         for task_id in msg.get("cancels", []):
             if task := self.store.tasks.get(task_id):
                 self.spawn(self.runner.cancel(task))
+        if "trust" in msg:
+            self.runner.trust = {str(k): float(v) for k, v in (msg["trust"] or {}).items()}
+        for s in msg.get("steers", []):
+            self.spawn(self.steer(s))
+        for e in msg.get("memory_edits", []):
+            try:
+                self.apply_memory_edit(e)
+            except OSError as err:
+                log.warning("mémoire non écrite : %s", err)
         for a in msg.get("worktree_actions", []):
             self.spawn(self.worktree_action(a))
         for c in msg.get("choices", []):
@@ -273,6 +323,10 @@ class Worker:
         self.spawn(self.relay.flush_forever())
         if ORCHESTRATOR:
             self.spawn(self.publish_repos())
+        try:
+            self.runner.preview = await apercu.preview_url()
+        except Exception as e:
+            log.info("aperçu indisponible : %s", e)
         hello, delay = True, 2
         log.info("connecté au relais %s — projets : %s", RELAY_URL, ", ".join(self.projects))
         while True:

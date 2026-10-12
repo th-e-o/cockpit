@@ -64,3 +64,59 @@ async def creer_depot(nom: str, prive: bool = True, description: str = "") -> di
         raise GitHubError(f"GitHub : HTTP {r.status_code} {r.text[:200]}")
     x = r.json()
     return {"name": x["full_name"], "url": x["html_url"], "private": x["private"], "branch": x.get("default_branch") or "main"}
+
+
+_REMOTE = re.compile(r"github\.com[/:]([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+?)(?:\.git)?/?$")
+
+
+def owner_repo(remote_url: str) -> tuple[str, str] | None:
+    """(propriétaire, dépôt) d'une URL GitHub (https ou ssh), sans identifiants ; None sinon."""
+    m = _REMOTE.search(re.sub(r"//[^@/]*@", "//", remote_url.strip()))
+    return (m.group(1), m.group(2)) if m else None
+
+
+async def creer_pr(owner: str, repo: str, head: str, titre: str, description: str = "", base: str = "",
+                   brouillon: bool = False) -> dict:
+    """Ouvre une pull request (base : branche par défaut du dépôt) ; renvoie {"number", "url", "title"}."""
+    async with _client() as http:
+        if not base:
+            r = await http.get(f"/repos/{owner}/{repo}")
+            if r.status_code >= 400:
+                raise GitHubError(f"dépôt {owner}/{repo} inaccessible (HTTP {r.status_code})")
+            base = r.json().get("default_branch") or "main"
+        if head == base:
+            raise GitHubError(f"la branche {head} est la branche de base : crée d'abord une branche de travail")
+        r = await http.post(f"/repos/{owner}/{repo}/pulls", json={
+            "title": titre[:250], "body": description[:60000], "head": head, "base": base, "draft": bool(brouillon)})
+    if r.status_code == 422:
+        detail = "; ".join(e.get("message", "") for e in r.json().get("errors", [])) or r.text[:200]
+        raise GitHubError(f"pull request refusée : {detail}")
+    if r.status_code >= 400:
+        raise GitHubError(f"GitHub : HTTP {r.status_code} {r.text[:200]}")
+    x = r.json()
+    return {"number": x["number"], "url": x["html_url"], "title": x["title"], "base": base, "head": head}
+
+
+async def etat_ci(owner: str, repo: str, sha: str) -> dict:
+    """État de la CI d'un commit : {"state": none|pending|success|failure, "checks": [...], "url"}."""
+    async with _client() as http:
+        r = await http.get(f"/repos/{owner}/{repo}/commits/{sha}/check-runs", params={"per_page": 50})
+        runs = r.json().get("check_runs", []) if r.status_code == 200 else []
+        r2 = await http.get(f"/repos/{owner}/{repo}/commits/{sha}/status")
+        statuses = r2.json().get("statuses", []) if r2.status_code == 200 else []
+    checks = [{"name": c["name"], "status": c["status"], "conclusion": c.get("conclusion"), "url": c.get("html_url")}
+              for c in runs]
+    checks += [{"name": s["context"], "status": "completed" if s["state"] != "pending" else "in_progress",
+                "conclusion": {"success": "success", "pending": None}.get(s["state"], "failure"), "url": s.get("target_url")}
+               for s in statuses]
+    if not checks:
+        state = "none"
+    elif any(c["status"] != "completed" for c in checks):
+        state = "pending"
+    elif all(c["conclusion"] in ("success", "neutral", "skipped") for c in checks):
+        state = "success"
+    else:
+        state = "failure"
+    failed = [c for c in checks if c["conclusion"] not in (None, "success", "neutral", "skipped")]
+    return {"state": state, "sha": sha[:7], "checks": checks[:20],
+            "url": (failed or checks or [{}])[0].get("url") or f"https://github.com/{owner}/{repo}/commit/{sha}"}

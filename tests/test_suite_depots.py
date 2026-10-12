@@ -31,7 +31,8 @@ def handlers(cwd, captured, spawn=None):
 def test_proposer_suite(tmp_path):
     captured = []
     h = handlers(str(tmp_path), captured)
-    assert set(h) == {"proposer_suite", "creer_depot"}  # lancer_en_parallele seulement avec un worker
+    # lancer_en_parallele seulement avec un worker
+    assert set(h) == {"proposer_suite", "creer_depot", "capturer_ecran", "ouvrir_pr"}
     r = asyncio.run(h["proposer_suite"]({"etapes": [
         {"titre": "  Lancer   les tests ", "instruction": "Lance pytest et corrige"}, {"titre": "", "instruction": "x"},
         {"titre": "Publier", "instruction": "Pousse la branche"}] + [{"titre": "t", "instruction": "i"}] * 5}))

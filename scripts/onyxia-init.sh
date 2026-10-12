@@ -38,6 +38,11 @@ projects:
     description: ${REPO:+Dépôt $REPO}${REPO:-Nouveau projet $PROJECT_ID}
 YAML
 
+[ -x .venv/bin/python ] || { uv venv -q .venv && uv pip install -q --python .venv/bin/python -r requirements.txt; }
+# Dépendances système du navigateur des captures d'écran (non bloquant : sans sudo, les captures seront indisponibles)
+sudo -n "$COCKPIT/.venv/bin/python" -m playwright install-deps chromium >/dev/null 2>&1 \
+  || sudo -n apt-get install -y -qq libnss3 libatk1.0-0 libatk-bridge2.0-0 libgbm1 libxkbcommon0 libasound2 >/dev/null 2>&1 || true
+
 # Un worker de projet n'orchestre rien ; son identité est celle du pod.
 export COCKPIT_ROLE=projet
 export COCKPIT_WORKER_ID="${HOSTNAME:-$PROJECT_ID}"

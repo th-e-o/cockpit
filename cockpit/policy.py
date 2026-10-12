@@ -47,6 +47,13 @@ class Policy:
         self.bash_deny = [re.compile(p, re.I) for p in bash.get("deny", [])]
         self.bash_ask = [re.compile(p, re.I) for p in bash.get("ask", [])]
         self.bash_allow = [re.compile(p, re.I) for p in bash.get("allow", [])]
+        trust = cfg.get("trust", {})
+        self.trust_tools = set(trust.get("tools", []))
+        self.trust_bash = [re.compile(p, re.I) for p in trust.get("bash", [])]
+        self.trust_never = [re.compile(p, re.I) for p in trust.get("never", [])]
+        self.trust_paths_never = [re.compile(p, re.I) for p in trust.get("paths_never", [])]
+        self.trust_unknown = bool(trust.get("unknown_commands", False))
+        self.trust_opaque = bool(trust.get("opaque", False))
 
     @classmethod
     def load(cls, path: str | Path) -> "Policy":
@@ -102,6 +109,40 @@ class Policy:
             if _RANK[d.action] > _RANK[worst.action]:
                 worst = d
         return worst
+
+    def trusted(self, tool: str, tool_input: dict, cwd: str) -> bool:
+        """Mode confiance : une demande de validation (ask) peut-elle passer sans l'utilisateur ?
+
+        Jamais pour : un refus (deny) ; une écriture hors du projet ou dans trust.paths_never
+        (.git, workflows de CI) ; un outil hors de trust.tools (services, dépôts, agents en
+        parallèle…) ; une commande qui touche à trust.never (cluster, push sur main…).
+        """
+        d = self.evaluate(tool, tool_input, cwd)
+        if d.action != ASK:
+            return d.action == ALLOW
+        if tool in FILE_TOOLS:
+            path = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
+            root = str(Path(cwd).resolve())
+            resolved = str(Path(path).expanduser().resolve()) if path else ""
+            if any(rx.search(resolved) for rx in self.trust_paths_never):
+                return False
+            return resolved == root or resolved.startswith(root + "/")
+        if tool != "Bash":
+            return tool in self.trust_tools
+        cmd = tool_input.get("command", "").strip()
+        if any(rx.search(cmd) for rx in self.trust_never):
+            return False
+        if (_OPAQUE.search(cmd) or _REDIRECT.search(cmd)) and not self.trust_opaque:
+            return False
+        for seg in (s.strip() for s in _SPLIT.split(cmd)):
+            if not seg or self._segment(seg).action == ALLOW:
+                continue
+            if any(rx.search(seg) for rx in self.bash_ask):
+                if not any(rx.search(seg) for rx in self.trust_bash):
+                    return False
+            elif not self.trust_unknown:
+                return False
+        return True
 
     def _segment(self, seg: str) -> Decision:
         for rx in self.bash_deny:

@@ -11,6 +11,7 @@ import asyncio
 import json
 import os
 import re
+import secrets
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,6 +20,7 @@ import yaml
 from claude_agent_sdk import create_sdk_mcp_server, tool
 
 PREFIX = "cockpit-"
+APERCU_PORT = 5000
 CHART = "vscode-python"
 CHART_VERSION = "2.6.6"
 CHART_REPO = "https://inseefrlab.github.io/helm-charts-interactive-services"
@@ -48,6 +50,7 @@ class Launch:
     memoire: str = "8Gi"
     disque: str = "10Gi"
     gpu: bool = False
+    apercu: bool = False  # port 5000 publié (ingress Onyxia) : aperçu de l'application en développement
 
     @property
     def release(self) -> str:
@@ -70,7 +73,7 @@ class Launch:
         return self
 
 
-def helm_values(p: Launch, vault: dict[str, str], git: dict[str, str] | None = None) -> dict:
+def helm_values(p: Launch, vault: dict[str, str], git: dict[str, str] | None = None, ingress: dict | None = None) -> dict:
     """Valeurs du chart `vscode-python` pour un pod de projet : rôle `view`, clone du dépôt, init du worker."""
     limits = {"cpu": p.cpu, "memory": p.memoire}
     if p.gpu:
@@ -84,6 +87,11 @@ def helm_values(p: Launch, vault: dict[str, str], git: dict[str, str] | None = N
         "resources": {"requests": {"cpu": p.cpu, "memory": p.memoire}, "limits": limits},
         "persistence": {"enabled": True, "size": p.disque},
     }
+    if p.apercu and ingress:
+        # VSCode devient lui aussi joignable par l'ingress : mot de passe aléatoire, jamais celui par défaut.
+        values["ingress"] = {"enabled": True, **ingress}
+        values["networking"] = {"user": {"enabled": True, "port": APERCU_PORT}}
+        values["security"] = {"password": secrets.token_urlsafe(18)}
     if vault.get("token"):
         # Onyxia injecte ces valeurs lui-même ; en lançant helm directement, on reprend celles de l'orchestrateur.
         values["vault"] = {"enabled": True, "secret": VAULT_SECRET, **vault}
@@ -167,18 +175,43 @@ async def lister() -> list[dict]:
              "pods": pods.get(r["name"], []), "maj": r.get("updated", "")[:19]} for r in mine]
 
 
+async def ingress_hotes(nom: str) -> dict | None:
+    """Noms d'hôte d'un nouveau service, sur le modèle de l'ingress Onyxia de ce pod (domaine, classe)."""
+    pod = json.loads(await _run("kubectl", "get", "pod", os.environ.get("HOSTNAME", ""), "-o", "json", timeout=30))
+    release = pod["metadata"].get("labels", {}).get("app.kubernetes.io/instance")
+    items = json.loads(await _run("kubectl", "get", "ingress", "-l", f"app.kubernetes.io/instance={release}",
+                                  "-o", "json", timeout=30)).get("items", [])
+    for ing in items:
+        host = (ing["spec"].get("rules") or [{}])[0].get("host", "")
+        if "." in host and "-user" not in host.split(".")[0]:
+            first, domain = host.split(".", 1)
+            prefix = "-".join(first.split("-")[:2])  # user-<utilisateur>
+            return {"ingressClassName": ing["spec"].get("ingressClassName") or "", "hostname": f"{prefix}-{PREFIX}{nom}.{domain}",
+                    "userHostname": f"{prefix}-{PREFIX}{nom}-user.{domain}"}
+    return None
+
+
 async def lancer(p: Launch) -> str:
     p.validate()
     ns = namespace()
+    ingress = None
+    if p.apercu:
+        try:
+            ingress = await ingress_hotes(p.nom)
+        except (ServiceError, KeyError, json.JSONDecodeError):
+            ingress = None
+        if not ingress:
+            raise ServiceError("aperçu impossible : ingress Onyxia de ce pod introuvable (lance le service sans aperçu)")
     fd, path = tempfile.mkstemp(suffix=".yaml")  # 0600 : contient le jeton Vault
     try:
         with os.fdopen(fd, "w") as f:  # contient aussi le token git
-            yaml.safe_dump(helm_values(p, vault_values(), git_values()), f)
+            yaml.safe_dump(helm_values(p, vault_values(), git_values(), ingress), f)
         await _run(*helm_args(p, ns, path))
     finally:
         os.unlink(path)
+    apercu = f"\nAperçu public (port {APERCU_PORT}) : https://{ingress['userHostname']}/" if ingress else ""
     return (f"Service {p.release} lancé dans {ns}. Le pod démarre : le projet « {p.nom} » apparaîtra dans le "
-            f"cockpit dès que son worker sera connecté (1 à 3 minutes).")
+            f"cockpit dès que son worker sera connecté (1 à 3 minutes).{apercu}")
 
 
 async def verifier_nouveau(p: Launch) -> None:
@@ -223,13 +256,14 @@ async def describe(tool_name: str, tool_input: dict) -> str | None:
         return f"Lancer un service ({e})"
     gpu = " + 1 GPU" if p.gpu else ""
     source = f"depuis {p.depot_git}{' @' + p.branche if p.branche else ''}" if p.depot_git else "sans dépôt (dossier vide)"
-    return f"Lancer le service {p.release} {source} : {p.cpu} CPU, {p.memoire}, {p.disque}{gpu}. Quota : {q}"
+    pub = f", aperçu PUBLIC sur le port {APERCU_PORT}" if p.apercu else ""
+    return f"Lancer le service {p.release} {source} : {p.cpu} CPU, {p.memoire}, {p.disque}{gpu}{pub}. Quota : {q}"
 
 
 def _launch_from(args: dict) -> Launch:
     return Launch(nom=args.get("nom", ""), depot_git=args.get("depot_git", ""), branche=args.get("branche", ""),
                   cpu=str(args.get("cpu", "2")), memoire=args.get("memoire", "8Gi"), disque=args.get("disque", "10Gi"),
-                  gpu=bool(args.get("gpu", False)))
+                  gpu=bool(args.get("gpu", False)), apercu=bool(args.get("apercu", False)))
 
 
 def _reply(text: str, error: bool = False) -> dict:
@@ -239,8 +273,9 @@ def _reply(text: str, error: bool = False) -> dict:
 @tool("lancer_service",
       "Lance un service Onyxia (VSCode + worker cockpit) qui devient un projet pilotable. depot_git (https) est "
       "facultatif : sans dépôt, le projet démarre dans un dossier vide initialisé avec git. Seul nom est obligatoire "
-      "(minuscules, chiffres, tirets). Nécessite une validation sur le téléphone. Ressources par défaut : 2 CPU, 8Gi, 10Gi.",
-      {"nom": str, "depot_git": str, "branche": str, "cpu": str, "memoire": str, "disque": str, "gpu": bool})
+      "(minuscules, chiffres, tirets). Nécessite une validation sur le téléphone. Ressources par défaut : 2 CPU, 8Gi, 10Gi. "
+      "apercu=true publie le port 5000 (URL publique) pour un aperçu web.",
+      {"nom": str, "depot_git": str, "branche": str, "cpu": str, "memoire": str, "disque": str, "gpu": bool, "apercu": bool})
 async def lancer_service(args: dict) -> dict:
     try:
         return _reply(await lancer(_launch_from(args)))

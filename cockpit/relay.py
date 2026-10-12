@@ -54,6 +54,15 @@ class Relay:
         """Crée des tâches filles (une conversation chacune) ; le relais les livre au worker de leur projet."""
         return (await self.call("w_taches", {"parent": parent, "tasks": tasks, "worker_id": self.worker_id}))["ids"]
 
+    async def image(self, task_id: str, jpeg_b64: str, caption: str = "") -> str:
+        """Envoie une capture d'écran rattachée à une tâche ; renvoie son identifiant."""
+        return (await self.call("w_image", {"task_id": task_id, "data": jpeg_b64, "caption": caption,
+                                             "worker_id": self.worker_id}))["id"]
+
+    async def memoire(self, project: str, content: str, digest: str) -> None:
+        """Publie la mémoire du projet (CLAUDE.md) pour l'afficher et la modifier depuis le téléphone."""
+        await self.call("w_memoire", {"project": project, "content": content, "hash": digest, "worker_id": self.worker_id})
+
     async def depots(self, depots: list[dict]) -> None:
         """Publie la liste des dépôts git de l'utilisateur (formulaire « Nouveau pod » du téléphone)."""
         await self.call("w_depots", {"depots": depots})

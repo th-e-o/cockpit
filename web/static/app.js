@@ -3,7 +3,9 @@
 const $ = (s) => document.querySelector(s);
 // replyTo : tâche dont le prochain message est la suite (undefined tant que l'historique n'est pas chargé)
 const state = { projects: [], selected: null, tasks: new Map(), order: [], lastId: 0, workerOnline: false, replay: false, replyTo: undefined,
-  workers: [], diffs: new Map(), view: 'chat', bilan: null, bilanAt: 0, bilanJours: 7, repos: null };
+  workers: [], diffs: new Map(), view: 'chat', bilan: null, bilanAt: 0, bilanJours: 7, repos: null,
+  commands: {}, review: new Map(), model: '', variants: 1, trust: {} };
+const MODELES = { rapide: '⚡ Rapide', standard: '● Standard', approfondi: '◆ Approfondi' };
 const REPRISE_AUTO = 2 * 3600; // à l'ouverture, la dernière conversation continue si elle a moins de 2 h
 
 const STATUS = {
@@ -16,6 +18,11 @@ const isStandalone = matchMedia('(display-mode: standalone)').matches || navigat
 const isIOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
 
 // ---------- utilitaires
+/** Largeurs et hauteurs des barres : via le CSSOM, autorisé par la CSP (style-src 'self'), contrairement à style="…". */
+function sizes(root) {
+  root.querySelectorAll('[data-w]').forEach((el) => { el.style.width = `${el.dataset.w}%`; });
+  root.querySelectorAll('[data-h]').forEach((el) => { el.style.height = `${el.dataset.h}%`; });
+}
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 function md(src) {
@@ -272,6 +279,15 @@ function taskHtml(e) {
   const lastText = active && texts.length ? texts[texts.length - 1].text : '';
 
   let body = progressHtml(e, active);
+  body += e.events.filter((x) => x.type === 'steer').map((x) => `<div class="steer">✋ ${esc(x.text)}</div>`).join('');
+  body += e.events.filter((x) => x.type === 'steer_late').map((x) => `<div class="hint">✋ Message arrivé après la fin de la tâche :
+    « ${esc(x.text)} » <button class="btn ghost" data-resend="${esc(t.id)}" data-text="${esc(x.text)}">Envoyer comme suite</button></div>`).join('');
+  body += imagesHtml(e);
+  const auto = e.events.filter((x) => x.type === 'trusted');
+  if (auto.length) {
+    body += `<details class="trusted" data-k="trusted"><summary>🛡 ${auto.length} validation${auto.length > 1 ? 's' : ''} passée${auto.length > 1 ? 's' : ''} en mode confiance</summary>
+      ${auto.map((x) => `<div class="step">${esc(x.tool)} : ${esc(x.text)}</div>`).join('')}</details>`;
+  }
   body += blocked.map((x) => `<div class="blocked">⛔ ${esc(x.tool)} : ${esc(x.text)}</div>`).join('');
   body += [...e.approvals.values()].map(approvalHtml).join('');
   if (lastText) body += `<div class="text">${md(lastText)}</div>`;
@@ -281,7 +297,7 @@ function taskHtml(e) {
       <div class="actions">${state.projects.map((p) => `<button class="btn" data-choose="${esc(p.id)}">${esc(p.name)}</button>`).join('')}</div>`;
   }
   if (t.result && !ACTIVE.has(t.status)) body += `<div class="result">${md(t.result)}</div>`;
-  if (!active) body += changesHtml(e) + worktreeHtml(e) + nextStepsHtml(e);
+  if (!active) body += changesHtml(e) + testsHtml(e) + ciPrHtml(e) + worktreeHtml(e) + nextStepsHtml(e);
 
   return `<div class="meta">
       <span class="pill st-${esc(t.status)}">${STATUS[t.status] || esc(t.status)}</span>
@@ -289,6 +305,8 @@ function taskHtml(e) {
       ${t.route_reason && t.project ? `<span title="${esc(t.route_reason)}">auto</span>` : ''}
       ${t.worktree ? `<span class="pill wt" title="Claude en parallèle, dans son propre worktree git">🌿 ${esc(t.worktree.branch)}</span>` : ''}
       ${t.parent ? `<span class="pill" title="lancée par un autre Claude (lancer_en_parallele)">🔀 sous-tâche</span>` : ''}
+      ${t.model ? `<span class="pill" title="modèle">${esc(MODELES[t.model] || t.model)}</span>` : ''}
+      ${t.group ? `<span class="pill var" title="variantes de la même demande, à comparer">🧬 Variante ${variantIndex(t)}</span>` : ''}
       ${ACTIVE.has(t.status) ? `<button class="btn ghost" data-cancel="${esc(t.id)}">Arrêter</button>`
         : t.id !== state.replyTo && t.kind !== 'service' ? `<button class="btn ghost" data-reply="${esc(t.id)}">Répondre</button>` : ''}
     </div><div class="log">${body}</div>`;
@@ -308,16 +326,18 @@ function render(ids) {
       wrap.innerHTML = '<div class="user"></div><div class="task"></div>';
       feed.appendChild(wrap);
     }
-    wrap.querySelector('.user').textContent = e.task.instruction || '';
+    wrap.querySelector('.user').textContent = shownInstruction(e.task.instruction);
     const box = wrap.querySelector('.task');
     const open = new Set([...box.querySelectorAll('details[data-k][open]')].map((d) => d.dataset.k));
     box.innerHTML = taskHtml(e);
     box.querySelectorAll('details[data-k]').forEach((d) => { if (open.has(d.dataset.k)) d.open = true; });
+    sizes(box);
     wrap.classList.toggle('suite', !!e.task.reply_to);
     wrap.classList.toggle('current', !!state.replyTo && conversationOf(id) === conversationOf(state.replyTo));
   }
   if (nearBottom || state.replay) feed.scrollTop = feed.scrollHeight;
   updatePending();
+  updateComposer();
 }
 
 // ---------- modifications (résumé git calculé par le worker) et branches parallèles
@@ -360,15 +380,13 @@ function changesHtml(e) {
   const more = c.file_count > (c.files || []).length ? `<div class="hint">… et ${c.file_count - c.files.length} autre(s)</div>` : '';
   const commits = (c.commits || []).map((x) => `<div class="commit"><code>${esc(x.sha)}</code> ${esc(x.subject)}</div>`).join('');
   return `<div class="changes"><div class="chhead">📝 ${changesLine(c)}</div>${branchLine(c)}
-    <div class="files">${files}${more}</div>${commits ? `<div class="commits">${commits}</div>` : ''}</div>`;
+    <div class="files">${files}${more}</div>${commits ? `<div class="commits">${commits}</div>` : ''}${patches ? reviewBar(e.task) : ''}</div>`;
 }
 
 function diffHtml(patch) {
   if (!patch) return '<div class="hint">Diff indisponible (fichier trop gros ou limite atteinte).</div>';
-  return `<pre class="diffpre">${patch.split('\n').map((l) => {
-    const cls = l.startsWith('@@') ? 'h' : l.startsWith('+') ? 'a' : l.startsWith('-') ? 'd' : '';
-    return `<span${cls ? ` class="${cls}"` : ''}>${esc(l) || ' '}</span>`;
-  }).join('')}</pre>`;
+  return `<pre class="diffpre">${numberedDiff(patch).map((x) =>
+    `<span${x.cls ? ` class="${x.cls}"` : ''}${x.ln ? ` data-ln="${x.ln}"` : ''}>${esc(x.l) || ' '}</span>`).join('')}</pre>`;
 }
 
 async function loadDiff(details) {
@@ -399,6 +417,226 @@ function worktreeHtml(e) {
   }
   return html + msgs + '</div>';
 }
+
+// ---------- mode confiance (par conversation, durée limitée)
+function updateTrust() {
+  const conv = state.replyTo && conversationOf(state.replyTo);
+  const until = conv ? state.trust[conv] || 0 : 0;
+  const left = until - Date.now() / 1000;
+  $('#trustSel').classList.toggle('on', left > 0);
+  $('#trustLeft').classList.toggle('hidden', left <= 0);
+  $('#trustLeft').dataset.until = left > 0 ? until : '';
+  if (left <= 0 && document.activeElement !== $('#trustSel')) $('#trustSel').value = '0';
+  tick();
+}
+
+$('#trustSel').addEventListener('change', async () => {
+  const minutes = Number($('#trustSel').value);
+  if (!state.replyTo) return;
+  if (minutes && !confirm(`Mode confiance pendant ${minutes >= 60 ? `${minutes / 60} h` : `${minutes} min`} : les validations de routine `
+    + 'de cette conversation (installations, suppressions dans le projet, commandes inconnues…) passeront sans toi. '
+    + 'Restent toujours demandés : cluster, services, dépôts, push sur main, sudo, .git et workflows de CI.')) {
+    updateTrust();
+    return;
+  }
+  try {
+    state.trust = (await api('confiance', { conversation: conversationOf(state.replyTo), minutes })).trust || {};
+  } catch (e) { alert(e.message); }
+  $('#trustSel').blur();
+  updateTrust();
+});
+
+// ---------- recadrage, modèle, variantes, commandes rapides
+const shownInstruction = (s) => String(s || '').replace(/\n\n\(Variante \d\/\d : [\s\S]*\)$/, '');
+// Ordre de création (celui du fil) : les variantes d'une demande naissent dans la même seconde.
+const variantsOf = (group) => state.order.map((id) => state.tasks.get(id)).filter((e) => e.task.group === group);
+function variantIndex(t) {
+  const list = variantsOf(t.group);
+  return `${list.findIndex((e) => e.task.id === t.id) + 1}/${list.length}`;
+}
+
+/** Saisie : recadrer Claude s'il travaille sur la conversation suivie, sinon nouvelle instruction ou suite. */
+function updateComposer() {
+  const cur = state.replyTo && state.tasks.get(state.replyTo)?.task;
+  const steering = !!cur && ACTIVE.has(cur.status);
+  input.placeholder = steering ? '✋ Recadrer Claude pendant qu\'il travaille…' : 'Ton instruction…';
+  $('#composer').classList.toggle('steering', steering);
+  if (cur) {
+    const txt = shownInstruction(cur.instruction);
+    $('#threadText').textContent = `${steering ? '✋ Recadrer' : '↪ Suite de'} « ${txt.length > 50 ? `${txt.slice(0, 50)}…` : txt} »`;
+  }
+  $('#variantSel').classList.toggle('hidden', !!state.replyTo);
+  updateTrust();
+  renderQuick();
+}
+
+const DEFAULT_COMMANDS = [
+  { titre: '🧪 Tests', instruction: 'Lance les tests du projet et corrige ce qui échoue.' },
+  { titre: '📋 État du projet', instruction: 'Résume l\'état du projet : ce qui marche, ce qui est en cours, les problèmes connus et les prochaines étapes.' },
+  { titre: '🔍 Relis mon travail', instruction: 'Relis les modifications non publiées et le dernier commit : bugs, cas oubliés, simplifications possibles. Corrige ce qui est sûr, liste le reste.' },
+  { titre: '🚀 Publie', instruction: 'Commite le travail en cours avec un message clair, pousse-le sur une branche de travail et ouvre une pull request.' },
+];
+const currentProject = () => state.selected || (state.replyTo && state.tasks.get(state.replyTo)?.task.project) || null;
+const commandsFor = (key) => state.commands[key] || (key === '*' ? DEFAULT_COMMANDS : []);
+
+function renderQuick() {
+  const proj = currentProject();
+  const list = [...commandsFor('*'), ...(proj ? commandsFor(proj) : [])];
+  const html = list.map((c, i) => `<button type="button" class="chip qc" data-quick="${i}" title="${esc(c.instruction)}">${esc(c.titre)}</button>`).join('')
+    + '<button type="button" class="chip qc edit" id="editQuick" title="modifier les commandes rapides">✎</button>';
+  if ($('#quick').dataset.html !== html) { $('#quick').innerHTML = html; $('#quick').dataset.html = html; }
+  state.quickList = list;
+}
+
+async function loadCommands() {
+  try { state.commands = await api('commandes'); } catch { /* commandes par défaut */ }
+  renderQuick();
+}
+
+function openCommands() {
+  const proj = currentProject();
+  const scopes = [['*', 'Toutes les conversations'], ...state.projects.map((p) => [p.id, `Projet ${p.name}`])];
+  $('#cmdScope').innerHTML = scopes.map(([k, l]) => `<option value="${esc(k)}"${k === (proj || '*') ? ' selected' : ''}>${esc(l)}</option>`).join('');
+  fillCommandRows();
+  $('#cmdHint').textContent = '';
+  $('#cmdDlg').showModal();
+}
+
+function fillCommandRows() {
+  const rows = commandsFor($('#cmdScope').value);
+  $('#cmdRows').innerHTML = rows.map((c) => commandRow(c)).join('') || '<p class="hint">Aucune commande : ajoute-en une.</p>';
+}
+const commandRow = (c = { titre: '', instruction: '' }) => `<div class="cmdrow">
+  <input class="ct" maxlength="60" placeholder="Titre (ex. 🧪 Tests)" value="${esc(c.titre)}">
+  <textarea class="ci" rows="2" placeholder="Instruction envoyée à Claude">${esc(c.instruction)}</textarea>
+  <button type="button" class="btn ghost" data-del-cmd>Supprimer</button></div>`;
+
+$('#cmdScope').addEventListener('change', fillCommandRows);
+$('#cmdForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const commandes = [...document.querySelectorAll('#cmdRows .cmdrow')].map((r) => ({
+    titre: r.querySelector('.ct').value.trim(), instruction: r.querySelector('.ci').value.trim() })).filter((c) => c.titre && c.instruction);
+  try {
+    await api('commandes_maj', { project: $('#cmdScope').value, commandes });
+    $('#cmdDlg').close();
+    await loadCommands();
+  } catch (e) { $('#cmdHint').textContent = e.message; }
+});
+
+// ---------- mémoire du projet (CLAUDE.md, lu par Claude au début de chaque tâche)
+async function openMemory(project) {
+  const p = state.projects.find((x) => x.id === project);
+  $('#memTitle').textContent = `🧠 Mémoire · ${p?.name || project}`;
+  $('#memText').value = '';
+  $('#memHint').textContent = 'Chargement…';
+  $('#memDlg').dataset.project = project;
+  $('#memDlg').showModal();
+  try {
+    const m = await api('memoire', undefined, `&project=${encodeURIComponent(project)}`);
+    $('#memText').value = m.content || '';
+    $('#memDlg').dataset.hash = m.hash || '';
+    $('#memHint').textContent = m.absent ? 'Mémoire pas encore publiée par le pod (worker à mettre à jour ?).'
+      : m.content ? `CLAUDE.md du projet · publié ${ago(m.maj)}` : 'Pas encore de CLAUDE.md : conventions, commandes utiles, choix d\'architecture…';
+    $('#memSave').disabled = !!m.absent;
+  } catch (e) { $('#memHint').textContent = e.message; }
+}
+$('#memForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  try {
+    await api('memoire_maj', { project: $('#memDlg').dataset.project, content: $('#memText').value, hash: $('#memDlg').dataset.hash });
+    $('#memDlg').close();
+  } catch (e) { $('#memHint').textContent = e.message; }
+});
+
+// ---------- captures, tests, CI, pull request, revue
+function imagesHtml(e) {
+  const shots = e.events.filter((x) => x.type === 'image');
+  if (!shots.length) return '';
+  return `<div class="shots">${shots.map((x) => `<figure><button class="shot" data-img="${esc(x.image)}" data-caption="${esc(x.caption || '')}">
+    <img src="api.php?r=image&amp;id=${esc(x.image)}" alt="${esc(x.caption || 'capture')}" loading="lazy"></button>
+    ${x.caption ? `<figcaption>${esc(x.caption)}</figcaption>` : ''}</figure>`).join('')}</div>`;
+}
+
+function testsHtml(e) {
+  const r = [...e.events].reverse().find((x) => x.type === 'tests');
+  if (!r) return '';
+  if (r.skipped) return `<div class="hint">🧪 ${esc(r.skipped)}</div>`;
+  return `<details class="tests ${r.ok ? 'ok' : 'ko'}" data-k="tests"><summary>🧪 Tests ${r.ok ? '✅ réussis' : '❌ en échec'} · ${duree(r.duration_s || 1)}
+    <code>${esc(r.command)}</code></summary><pre>${esc(r.output || '')}</pre></details>`;
+}
+
+function ciPrHtml(e) {
+  const t = e.task;
+  let html = '';
+  const ci = [...e.events].reverse().find((x) => x.type === 'ci');
+  if (ci && ci.state !== 'none') {
+    const lab = { pending: '⏳ CI en cours', success: '✅ CI réussie', failure: '❌ CI en échec' }[ci.state] || ci.state;
+    const failed = (ci.checks || []).filter((c) => c.conclusion && !['success', 'neutral', 'skipped'].includes(c.conclusion)).map((c) => c.name);
+    html += `<div class="ci ${esc(ci.state)}">${lab} · <code>${esc(ci.sha)}</code>${failed.length ? ` · ${esc(failed.join(', '))}` : ''}
+      ${ci.url ? `· <a href="${esc(ci.url)}" target="_blank" rel="noopener">détails</a>` : ''}</div>`;
+  }
+  const prs = e.events.filter((x) => x.type === 'pr');
+  html += prs.map((x) => `<div class="prlink">🔀 <a href="${esc(x.url)}" target="_blank" rel="noopener">Pull request #${esc(x.number)}</a> · ${esc(x.title)}
+    <span class="muted">(${esc(x.head)} → ${esc(x.base)})</span></div>`).join('');
+  const { c } = changesOf(e);
+  const conv = state.order.filter((id) => conversationOf(id) === conversationOf(t.id));
+  const hasPr = conv.some((id) => state.tasks.get(id).events.some((x) => x.type === 'pr'));
+  if (t.status === 'done' && c?.branch && !['main', 'master', 'HEAD'].includes(c.branch) && !hasPr && lastOfConversation(t.id) === t.id) {
+    html += `<div class="actions"><button class="btn" data-open-pr="${esc(t.id)}">🔀 Ouvrir une pull request</button></div>`;
+  }
+  return html;
+}
+
+/** Numéros de ligne d'un diff (nouvelle version ; « −n » pour une ligne supprimée), pour les commentaires de revue. */
+function numberedDiff(patch) {
+  let oldLn = 0, newLn = 0;
+  return patch.split('\n').map((l) => {
+    const h = l.match(/^@@ -(\d+)(?:,\d+)? \+(\d+)/);
+    if (h) { oldLn = Number(h[1]); newLn = Number(h[2]); return { l, cls: 'h' }; }
+    if (l.startsWith('+')) return { l, cls: 'a', ln: String(newLn++) };
+    if (l.startsWith('-')) return { l, cls: 'd', ln: `−${oldLn++}` };
+    if (l.startsWith('\\')) return { l, cls: '' };
+    oldLn++;
+    return { l, cls: '', ln: String(newLn++) };
+  });
+}
+
+function reviewBar(t) {
+  const list = state.review.get(t.id) || [];
+  if (!list.length) return '<div class="hint rvhint">💬 Touche une ligne d\'un diff pour la commenter : tes remarques partent ensemble à Claude.</div>';
+  return `<div class="review"><div class="rvhead">💬 Revue · ${list.length} commentaire${list.length > 1 ? 's' : ''}</div>
+    ${list.map((r, i) => `<div class="rvitem"><code>${esc(r.path)}:${esc(r.ln)}</code> ${esc(r.text)}
+      <button class="btn ghost" data-rv-del="${esc(t.id)}" data-i="${i}" aria-label="retirer">✕</button></div>`).join('')}
+    <div class="actions"><button class="btn ok" data-rv-send="${esc(t.id)}">Envoyer la revue à Claude</button></div></div>`;
+}
+
+function reviewInstruction(list) {
+  return 'Revue de ton travail, commentaires ligne par ligne :\n\n'
+    + list.map((r) => `- \`${r.path}\` ligne ${r.ln}${r.code ? ` (\`${r.code.slice(1).trim().slice(0, 80)}\`)` : ''} : ${r.text}`).join('\n')
+    + '\n\nApplique ces remarques, puis résume ce que tu as changé.';
+}
+
+document.addEventListener('click', (ev) => {
+  const line = ev.target.closest('.diffpre span[data-ln]');
+  if (!line) return;
+  const det = line.closest('details.file');
+  det.querySelector('.rvform')?.remove();
+  const form = document.createElement('form');
+  form.className = 'rvform';
+  form.innerHTML = `<label>💬 ${esc(det.dataset.path)} · ligne ${esc(line.dataset.ln)}</label>
+    <textarea rows="2" placeholder="Ta remarque (ex. gère le cas vide)" required></textarea>
+    <div class="actions"><button type="submit" class="btn ok">Ajouter à la revue</button><button type="button" class="btn ghost" data-rv-cancel>Annuler</button></div>`;
+  line.closest('.diff').appendChild(form);
+  form.querySelector('textarea').focus();
+  form.addEventListener('submit', (e) => {
+    e.preventDefault();
+    const id = det.dataset.task;
+    const list = state.review.get(id) || [];
+    list.push({ path: det.dataset.path, ln: line.dataset.ln, code: line.textContent, text: form.querySelector('textarea').value.trim() });
+    state.review.set(id, list);
+    render([id]);
+  });
+});
 
 // ---------- prochaines étapes proposées par Claude (suivi)
 /** Étapes à suivre : celles de la dernière tâche terminée d'une conversation, tant qu'elles ne sont pas ignorées. */
@@ -469,7 +707,7 @@ function meter(label, ratio, text, title) {
   const level = r >= 0.95 ? 'bad' : r >= 0.85 ? 'warn' : '';
   const flag = level === 'bad' ? '⛔ ' : level === 'warn' ? '⚠ ' : '';
   return `<div class="meter" title="${esc(title || '')}"><span>${label}</span>
-    <div class="bar ${level}" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(r * 100)}" aria-label="${label}"><i style="width:${(r * 100).toFixed(1)}%"></i></div>
+    <div class="bar ${level}" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(r * 100)}" aria-label="${label}"><i data-w="${(r * 100).toFixed(1)}"></i></div>
     <span class="mv">${flag}${text}</span></div>`;
 }
 
@@ -487,7 +725,7 @@ function liveCard(e) {
   const proj = state.projects.find((p) => p.id === t.project);
   const todos = [...e.events].reverse().find((x) => x.todos)?.todos;
   const done = todos ? todos.filter((x) => x.status === 'completed').length : 0;
-  const plan = todos?.length ? `<div class="plan"><div class="bar"><i style="width:${(done / todos.length * 100).toFixed(0)}%"></i></div><span>Plan ${done}/${todos.length}</span></div>` : '';
+  const plan = todos?.length ? `<div class="plan"><div class="bar"><i data-w="${(done / todos.length * 100).toFixed(0)}"></i></div><span>Plan ${done}/${todos.length}</span></div>` : '';
   return `<button class="live${t.status === 'waiting_approval' ? ' alert' : ''}" data-jump="${esc(t.id)}">
     <div class="lhead"><span class="pill st-${esc(t.status)}">${STATUS[t.status] || esc(t.status)}</span>
       <b>${esc(proj?.name || t.project || (t.kind === 'service' ? 'Onyxia' : 'Auto'))}</b>${t.worktree ? `<span class="wt">🌿 parallèle</span>` : ''}
@@ -516,7 +754,9 @@ function podCard(w) {
       g.ahead ? `↑${g.ahead} à pousser` : '', g.behind ? `↓${g.behind} en retard` : '',
     ].filter(Boolean).join(' · ');
     const last = g?.last_commit ? `<div class="lastc" title="${esc(g.last_commit.sha)}">${esc(g.last_commit.subject)} · <span data-ago="${g.last_commit.ts}"></span></div>` : '';
-    return `<div class="proj"><div class="pname">${esc(p?.name || pid)}</div><div class="pgit">${git}</div>${last}</div>`;
+    return `<div class="proj"><div class="pname">${esc(p?.name || pid)}
+        <button class="btn ghost mem" data-memory="${esc(pid)}" title="mémoire du projet (CLAUDE.md)">🧠 Mémoire</button></div>
+      <div class="pgit">${git}</div>${last}</div>`;
   }).join('');
   const wts = (st.worktrees || []).map((wt) => {
     const id = [...state.order].reverse().find((x) => conversationOf(x) === wt.conversation);
@@ -530,10 +770,35 @@ function podCard(w) {
     <div class="podhead"><span class="dot${w.online ? ' on' : ''}"></span><b>${esc(w.name)}</b>
       <span class="tag">${w.orchestrator ? 'orchestrateur' : 'projet'}</span>
       <span class="muted podseen">${w.online ? (st.started ? `actif depuis <span data-uptime="${st.started}"></span>` : 'en ligne') : `hors ligne · vu <span data-ago="${w.seen}"></span>`}</span></div>
-    ${slots}${meters ? `<div class="meters">${meters}</div>` : ''}
+    ${slots}${st.preview?.url && w.online ? `<a class="preview" href="${esc(st.preview.url)}" target="_blank" rel="noopener">👁 Aperçu de l'application · port ${esc(st.preview.port)}</a>` : ''}
+    ${meters ? `<div class="meters">${meters}</div>` : ''}
     ${projects ? `<div class="projs">${projects}</div>` : ''}
     ${wts ? `<div class="wts"><div class="sub">Branches parallèles</div>${wts}</div>` : ''}
     <div class="podfoot">Aujourd'hui : ${plural(w.tasks_today, 'tâche')} · ${fmtCost(w.cost_today)}</div></article>`;
+}
+
+/** Variantes d'une même demande, côte à côte : modifications, tests, capture ; « Garder » fusionne et jette les autres. */
+function variantsHtml(tasks) {
+  const groups = [...new Set(tasks.filter((e) => e.task.group).map((e) => e.task.group))]
+    .map(variantsOf).filter((g) => g.length > 1 && g.some((e) => e.task.worktree?.state !== 'discarded' || ACTIVE.has(e.task.status)))
+    .filter((g) => !g.some((e) => e.task.worktree?.state === 'merged'));
+  if (!groups.length) return '';
+  return `<section class="sect"><h3>Variantes à comparer</h3>${groups.map((g) => {
+    const allDone = g.every((e) => !ACTIVE.has(e.task.status));
+    return `<article class="vgroup"><div class="vinst">${esc(shownInstruction(g[0].task.instruction))}</div><div class="vcols">${g.map((e, i) => {
+      const t = e.task;
+      const { c } = changesOf(e);
+      const shot = [...e.events].reverse().find((x) => x.type === 'image');
+      const tests = [...e.events].reverse().find((x) => x.type === 'tests' && !x.skipped);
+      return `<div class="vcol"><div class="lhead"><b>Variante ${i + 1}</b><span class="pill st-${esc(t.status)}">${STATUS[t.status] || esc(t.status)}</span>
+          ${t.model ? `<span class="muted">${esc(MODELES[t.model] || '')}</span>` : ''}</div>
+        ${shot ? `<button class="shot" data-img="${esc(shot.image)}" data-caption="${esc(shot.caption || '')}"><img src="api.php?r=image&amp;id=${esc(shot.image)}" alt="capture" loading="lazy"></button>` : ''}
+        <div class="rmeta">${c && (c.file_count || c.commits?.length) ? changesLine(c) : ACTIVE.has(t.status) ? esc(currentStep(e)) : 'aucune modification'}
+          ${tests ? ` · 🧪 ${tests.ok ? '✅' : '❌'}` : ''}</div>
+        <div class="actions"><button class="btn ghost" data-jump="${esc(t.id)}">Voir</button>
+          ${allDone && t.worktree?.state === 'active' ? `<button class="btn ok" data-keep="${esc(t.id)}">✓ Garder</button>` : ''}</div></div>`;
+    }).join('')}</div></article>`;
+  }).join('')}</section>`;
 }
 
 function recentRow(e) {
@@ -568,7 +833,7 @@ function activityChart(days, start) {
   const max = Math.max(1, ...days);
   const bars = days.map((n, i) => {
     const label = `${jourFr(start + i * 86400 + 43200)} : ${n} tâche${n > 1 ? 's' : ''}`;
-    return `<span class="col" title="${esc(label)}"><i class="${n ? 'b' : 'z'}" style="height:${n ? Math.max(10, n / max * 100).toFixed(0) : 0}%"></i></span>`;
+    return `<span class="col" title="${esc(label)}"><i class="${n ? 'b' : 'z'}" data-h="${n ? Math.max(10, n / max * 100).toFixed(0) : 0}"></i></span>`;
   }).join('');
   const total = days.reduce((a, b) => a + b, 0);
   return `<figure class="activity"><div class="bars" role="img" aria-label="Activité : ${total} tâche(s) sur ${days.length} jours">${bars}</div>
@@ -592,6 +857,7 @@ function bilanCard(b, p) {
     <span class="rinst">${esc(t.instruction)}</span><span class="rtime" data-ago="${t.updated}"></span></button>`).join('');
   return `<article class="bcard">
     <div class="podhead"><b>${esc(proj?.name || p.project)}</b>${w ? `<span class="tag"><span class="dot${w.online ? ' on' : ''}"></span>${esc(w.name)}</span>` : ''}
+      <button class="btn ghost mem" data-memory="${esc(p.project)}" title="mémoire du projet (CLAUDE.md)">🧠</button>
       <span class="muted podseen">actif <span data-ago="${p.last}"></span></span></div>
     ${git ? `<div class="pgit">${git}</div>` : ''}
     <div class="bstats">
@@ -695,6 +961,7 @@ $('#podForm').addEventListener('submit', async (ev) => {
     const nouveau = podMode() === 'new';
     const t = await api('lancer_pod', { nom, depot_git: nouveau ? '' : $('#podRepo').value.trim(), branche: nouveau ? '' : $('#podBranch').value.trim(),
       cpu: $('#podCpu').value, memoire: $('#podMem').value, disque: $('#podDisk').value, gpu: $('#podGpu').checked,
+      apercu: $('#podPreview').checked,
       ...(nouveau ? { creer_depot: { nom: $('#newRepoName').value.trim() || nom, prive: $('#newRepoPrivate').checked } } : {}) });
     onEvent({ kind: 'task', task_id: t.id, task: t });
     $('#podDlg').close();
@@ -735,6 +1002,7 @@ function renderDash() {
     <section class="sect"><h3>En cours</h3>${active.length
       ? `<div class="lives">${active.map(liveCard).join('')}</div>`
       : '<div class="emptyd">Aucun Claude ne travaille. Envoie une instruction ; pour en lancer plusieurs, ouvre une nouvelle conversation par tâche.</div>'}</section>
+    ${variantsHtml(tasks)}
     ${followHtml(tasks.filter(pendingSteps).sort((a, b) => (b.task.updated || b.task.created) - (a.task.updated || a.task.created)).slice(0, 6))}
     ${bilanHtml()}
     <section class="sect"><div class="secthead"><h3>Pods · ${online.length} en ligne</h3><button type="button" class="btn ghost" id="newPod">＋ Nouveau pod</button></div>${state.workers.length
@@ -743,7 +1011,7 @@ function renderDash() {
     ${recent.length ? `<section class="sect"><h3>Terminées récemment</h3><div class="recents">${recent.map(recentRow).join('')}</div></section>` : ''}
   </div>`;
   // Reconstruit seulement si le contenu change (survol, focus et clics préservés) ; les durées vivent dans tick().
-  if (html !== state.dashHtml) { $('#dash').innerHTML = html; state.dashHtml = html; tick(); }
+  if (html !== state.dashHtml) { $('#dash').innerHTML = html; state.dashHtml = html; sizes($('#dash')); tick(); }
   loadBilan();
 }
 
@@ -815,6 +1083,12 @@ function renderProjects() {
 }
 
 function tick() {
+  const tl = $('#trustLeft');
+  if (tl.dataset.until) {
+    const s = Number(tl.dataset.until) - Date.now() / 1000;
+    tl.textContent = s > 0 ? `actif · ${Math.ceil(s / 60)} min` : '';
+    if (s <= 0) { tl.dataset.until = ''; updateTrust(); }
+  }
   document.querySelectorAll('[data-uptime]').forEach((el) => { el.textContent = dureeLongue(Date.now() / 1000 - Number(el.dataset.uptime)); });
   document.querySelectorAll('[data-expires]').forEach((el) => {
     const s = Math.max(0, Math.round(el.dataset.expires - Date.now() / 1000));
@@ -857,6 +1131,8 @@ async function poll() {
     render(touched);
     if (state.pendingJump && document.getElementById(`t-${state.pendingJump}`)) { jumpTo(state.pendingJump); state.pendingJump = null; }
     state.workers = s.workers || [];
+    state.trust = s.trust || {};
+    updateTrust();
     renderDash();
     state.replay = false;
   } catch (e) {
@@ -902,6 +1178,52 @@ document.addEventListener('click', async (ev) => {
       poll();
     } else if (b.dataset.cancel) {
       await api('annuler', { task_id: b.dataset.cancel });
+      poll();
+    } else if (b.dataset.quick) {
+      const c = state.quickList?.[Number(b.dataset.quick)];
+      if (c) { input.value = c.instruction; input.dispatchEvent(new Event('input')); input.focus(); }
+    } else if (b.id === 'editQuick') {
+      openCommands();
+    } else if (b.id === 'addCmd') {
+      $('#cmdRows').querySelector('p.hint')?.remove();
+      $('#cmdRows').insertAdjacentHTML('beforeend', commandRow());
+    } else if ('delCmd' in b.dataset) {
+      b.closest('.cmdrow').remove();
+    } else if (b.dataset.memory) {
+      await openMemory(b.dataset.memory);
+    } else if (b.dataset.img) {
+      $('#imgFull').src = `api.php?r=image&id=${encodeURIComponent(b.dataset.img)}`;
+      $('#imgCaption').textContent = b.dataset.caption || '';
+      $('#imgDlg').showModal();
+    } else if (b.dataset.resend) {
+      const n = await api('tache', { instruction: b.dataset.text, reply_to: lastOfConversation(b.dataset.resend) });
+      onEvent({ kind: 'task', task_id: n.id, task: n });
+      setReplyTo(n.id);
+      await poll();
+    } else if (b.dataset.openPr) {
+      b.disabled = true;
+      const n = await api('tache', { reply_to: b.dataset.openPr, instruction: 'Ouvre une pull request pour ce travail avec ouvrir_pr : '
+        + 'titre clair, description avec le contexte, les changements, les tests et les points d\'attention.' });
+      onEvent({ kind: 'task', task_id: n.id, task: n });
+      setReplyTo(n.id);
+      await poll();
+    } else if (b.dataset.rvSend) {
+      const list = state.review.get(b.dataset.rvSend) || [];
+      if (!list.length) return;
+      b.disabled = true;
+      const n = await api('tache', { instruction: reviewInstruction(list), reply_to: lastOfConversation(b.dataset.rvSend) });
+      state.review.delete(b.dataset.rvSend);
+      onEvent({ kind: 'task', task_id: n.id, task: n });
+      setReplyTo(n.id);
+      await poll();
+    } else if (b.dataset.rvDel) {
+      state.review.get(b.dataset.rvDel)?.splice(Number(b.dataset.i), 1);
+      render([b.dataset.rvDel]);
+    } else if ('rvCancel' in b.dataset) {
+      b.closest('.rvform').remove();
+    } else if (b.dataset.keep) {
+      if (!confirm('Garder cette variante (fusionnée dans le projet) et jeter les autres ?')) return;
+      await api('garder_variante', { task_id: b.dataset.keep });
       poll();
     } else if (b.dataset.nextEdit || b.dataset.nextRun) {
       if (b.dataset.nextRun) b.disabled = true;
@@ -1010,17 +1332,31 @@ $('#composer').addEventListener('submit', async (ev) => {
   if (!instruction) return;
   $('#send').disabled = true;
   try {
-    const t = await api('tache', { instruction, project: state.selected, reply_to: state.replyTo || null });
+    const cur = state.replyTo && state.tasks.get(state.replyTo)?.task;
+    if (cur && ACTIVE.has(cur.status)) {
+      // Claude travaille : le message lui parvient pendant la tâche (il est interrompu et reprend avec).
+      await api('recadrer', { task_id: cur.id, message: instruction });
+    } else {
+      const variants = state.replyTo ? 1 : state.variants;
+      const t = await api('tache', { instruction, project: state.selected, reply_to: state.replyTo || null,
+        model: state.model || null, variants });
+      onEvent({ kind: 'task', task_id: t.id, task: t });
+      setReplyTo(t.id);
+    }
     input.value = '';
     input.style.height = 'auto';
-    onEvent({ kind: 'task', task_id: t.id, task: t });
-    setReplyTo(t.id);
     await poll();
   } catch (e) {
     if (e instanceof AuthError) start(); else alert(e.message);
   }
   $('#send').disabled = false;
 });
+
+$('#modelSel').addEventListener('change', () => {
+  state.model = $('#modelSel').value;
+  try { localStorage.setItem('cockpit_model', state.model); } catch { /* sans importance */ }
+});
+$('#variantSel').addEventListener('change', () => { state.variants = Number($('#variantSel').value); });
 
 // ---------- application installée (Android, PC) : invite d'installation, raccourcis de l'icône, clavier
 let installPrompt = null;
@@ -1064,6 +1400,7 @@ async function start() {
     $('#auth').classList.add('hidden');
     refreshPushSubscription();
     poll();
+    loadCommands();
     applyLaunchParams();
   } catch (e) {
     authScreen({ title: 'Hors ligne', text: e.message, button: 'Réessayer', onClick: start });
@@ -1071,6 +1408,8 @@ async function start() {
 }
 
 try {
+  state.model = localStorage.getItem('cockpit_model') || '';
+  $('#modelSel').value = state.model;
   if ([1, 7, 30].includes(Number(localStorage.getItem('cockpit_bilan')))) state.bilanJours = Number(localStorage.getItem('cockpit_bilan'));
   if (localStorage.getItem('cockpit_view') === 'dash') setView('dash');
 } catch { /* navigation privée */ }

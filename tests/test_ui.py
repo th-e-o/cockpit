@@ -16,6 +16,7 @@ from test_relay import KEY, PHP, relay, worker_call  # noqa: F401  (fixture réu
 sync_playwright = pytest.importorskip("playwright.sync_api").sync_playwright
 pytestmark = pytest.mark.skipif(not PHP, reason="PHP introuvable (définir COCKPIT_PHP)")
 SHOTS = Path(os.environ.get("COCKPIT_SHOTS", "/tmp"))
+ROOT_DIR = Path(__file__).resolve().parent.parent
 
 
 def start_worker(relay, tmp_path, monkeypatch):
@@ -112,7 +113,7 @@ def test_parcours_mobile(relay, tmp_path, monkeypatch):
             page.click("#send")
             page.wait_for_selector("section.suite.current")
             page.click(".approval:not(.resolved) >> text=Approuver")
-            page.wait_for_function("document.querySelectorAll('.pill.st-done').length === 2")
+            wait_js(page, "document.querySelectorAll('.pill.st-done').length === 2")
             assert page.locator("section.current").count() == 2
             page.screenshot(path=SHOTS / "4b-conversation.png")
             page.click("#newConv")
@@ -209,14 +210,40 @@ def seed_dashboard(relay, p):
     return t1
 
 
+def wait_js(page, expr, timeout=10):
+    """Comme page.wait_for_function, sans eval (interdit par la CSP) : interroge la page depuis Python."""
+    end = time.time() + timeout
+    while not page.evaluate(expr):
+        assert time.time() < end, f"condition jamais vraie : {expr}"
+        page.wait_for_timeout(100)
+
+
+def csp():
+    """Politique de sécurité du contenu de production (web/.htaccess), appliquée aussi pendant les tests."""
+    import re
+
+    return re.search(r'Content-Security-Policy "([^"]+)"', (ROOT_DIR / "web" / ".htaccess").read_text()).group(1)
+
+
+def with_csp(ctx):
+    def handler(route):
+        if route.request.resource_type != "document":
+            return route.continue_()
+        resp = route.fetch()
+        route.fulfill(response=resp, headers={**resp.headers, "content-security-policy": csp()})
+    ctx.route("**/*", handler)
+    return ctx
+
+
 def browser_page(p, browser, relay, **ctx_args):
-    ctx = browser.new_context(**ctx_args)
+    ctx = with_csp(browser.new_context(**ctx_args))
     host = relay["origin"].removeprefix("http://").split(":")[0]
     ctx.add_cookies([{"name": c.name, "value": c.value, "domain": host, "path": "/"} for c in p.cookies.jar])
     page = ctx.new_page()
     errors = []
     page.on("pageerror", lambda e: errors.append(str(e)))
     page.on("console", lambda m: m.type == "error" and errors.append(m.text))
+    page.on("console", lambda m: "Content Security Policy" in m.text and errors.append(m.text))
     page.goto(relay["app"])
     return page, errors
 
@@ -247,7 +274,7 @@ def test_tableau_de_bord(relay):
         assert "10 min" in bilan.inner_text() and "398" in bilan.inner_text() and "app.js" in bilan.inner_text()
         assert bilan.locator(".activity i.b").count() == 1
         page.click("button[data-bilan='30']")
-        page.wait_for_function("document.querySelectorAll('.bcard:first-child .activity i.z').length === 29")
+        wait_js(page, "document.querySelectorAll('.bcard:first-child .activity i.z').length === 29")
         page.locator(".bcard").first.screenshot(path=SHOTS / "7b-bilan-mobile.png")
         # Nouveau pod sur un de mes dépôts
         page.click("#newPod")
@@ -289,7 +316,7 @@ def test_tableau_de_bord(relay):
         card = page.locator(f"#t-{t1}")
         assert "4 fichiers" in card.inner_text() and "+398" in card.inner_text() and "1 commit" in card.inner_text()
         page.click(f"#t-{t1} button[data-dismiss]")  # Ignorer
-        page.wait_for_function(f"!document.querySelector('#t-{t1} .nexts')")
+        wait_js(page, f"!document.querySelector('#t-{t1} .nexts')")
         card.locator("details.file >> text=app.js").click()
         card.locator(".diffpre .a >> text=const c = 4;").wait_for()
         assert card.locator("button[data-wt='merge']").count() == 1
@@ -388,5 +415,143 @@ def test_appairage_ordinateur_par_cle(relay):
         page.click("#authBtn")  # Créer ma passkey
         page.wait_for_selector("#auth.hidden", state="attached")
         page.wait_for_selector("#composer")
+        assert not errors, errors
+        browser.close()
+
+
+
+def seed_vibe(relay, p):
+    """Un pod avec aperçu et mémoire ; une tâche finie (diff, capture, tests et CI en échec), une en cours, deux variantes."""
+    import base64
+
+    from test_relay import call, wpoll
+
+    gi = 1024 ** 3
+    wpoll(relay, "pod-vibe", False, [{"id": "vibe", "name": "Vibe"}], hello=True, state={
+        "resources": {"cpu": 0.2, "cpu_cores": 2, "mem_used": 2 * gi, "mem_limit": 8 * gi, "disk_used": 1 * gi, "disk_total": 10 * gi},
+        "projects": {"vibe": {"branch": "main", "dirty": 0}}, "running": 1, "max_agents": 3, "started": time.time() - 600,
+        "preview": {"url": "https://user-x-cockpit-vibe-user.example/", "port": 5000}, "worktrees": []})
+    worker_call(relay, "w_memoire", {"project": "vibe", "content": "# Vibe\n- tests : pytest", "hash": "m1", "worker_id": "pod-vibe"})
+    ev = lambda *events: worker_call(relay, "w_evenements", {"worker_id": "pod-vibe", "events": list(events)})
+    msg = lambda tid, **kw: {"kind": "message", "task_id": tid, "ts": time.time(), **kw}
+    jpeg = (ROOT_DIR / "web" / "static" / "icon-192.png").read_bytes()  # remplacée ci-dessous par un vrai JPEG
+    from playwright.sync_api import sync_playwright as spw
+    with spw() as pw:
+        b = pw.chromium.launch()
+        pg = b.new_page(viewport={"width": 390, "height": 600})
+        pg.set_content("<body style='margin:0;font:24px sans-serif;background:#fff'><h1 style='background:#d97757;color:#fff;padding:20px'>Mon app</h1><p>Accueil</p></body>")
+        jpeg = pg.screenshot(type="jpeg", quality=60)
+        b.close()
+
+    a = call(p, "tache", {"instruction": "Ajoute une page d'accueil", "project": "vibe", "model": "standard"}).json()["id"]
+    changes = {"files": [{"path": "app/main.py", "status": "M", "added": 2, "removed": 1}], "file_count": 1, "added": 2, "removed": 1,
+               "branch": "feat/accueil", "upstream": "origin/feat/accueil", "ahead": 0, "commits": [{"sha": "abc1234", "subject": "Accueil"}]}
+    ev(msg(a, type="changes", changes=changes, patches={"app/main.py": "@@ -10,3 +10,4 @@\n def accueil():\n-    return 'ok'\n+    titre = 'Mon app'\n+    return titre"}),
+       {"kind": "task", "task_id": a, "task": {"status": "done", "project": "vibe", "changes": changes, "result": "**Fait** — page d'accueil",
+                                               "tests": {"ok": False, "command": "pytest -q", "duration_s": 4}}},
+       msg(a, type="tests", ok=False, command="pytest -q", duration_s=4, output="FAILED tests/test_app.py::test_titre - AssertionError"),
+       msg(a, type="ci", state="failure", sha="abc1234", url="https://github.com/a/b/actions/runs/1",
+           checks=[{"name": "tests", "status": "completed", "conclusion": "failure"}]))
+    worker_call(relay, "w_image", {"task_id": a, "data": base64.b64encode(jpeg).decode(), "caption": "Accueil (téléphone)", "worker_id": "pod-vibe"})
+
+    v = call(p, "tache", {"instruction": "Propose un logo", "project": "vibe", "variants": 2}).json()["variants"]
+    for i, vid in enumerate(v):
+        ev({"kind": "task", "task_id": vid, "task": {"status": "done", "project": "vibe",
+            "worktree": {"branch": f"cockpit/{vid}", "path": "/w", "state": "active"},
+            "changes": {"files": [{"path": f"logo{i}.svg", "status": "A", "added": 20 + i, "removed": 0}], "file_count": 1, "added": 20 + i, "removed": 0, "commits": []}}})
+        worker_call(relay, "w_image", {"task_id": vid, "data": base64.b64encode(jpeg).decode(), "caption": f"Logo {i + 1}", "worker_id": "pod-vibe"})
+
+    r = call(p, "tache", {"instruction": "Refais le menu de navigation", "project": "vibe"}).json()["id"]
+    wpoll(relay, "pod-vibe", False)  # livrée au worker, qui la démarre
+    ev({"kind": "task", "task_id": r, "task": {"status": "running", "project": "vibe"}},
+       msg(r, type="tool_use", tool="Edit", text="{}", label="✏️ Modifie menu.py"))
+    return a, v, r
+
+
+def test_vibe_coding_ui(relay):
+    from test_relay import paired_phone, wpoll
+
+    p = paired_phone(relay)
+    a, v, r = seed_vibe(relay, p)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        page, errors = browser_page(p, browser, relay, viewport={"width": 1440, "height": 1000})
+        page.on("dialog", lambda d: d.accept())
+        page.wait_for_selector(f"#t-{r}")
+        # Barres du tableau de bord dimensionnées malgré la CSP (pas de style en ligne)
+        page.wait_for_selector(".podcard >> text=Vibe")
+        assert page.evaluate("document.querySelector('.meter .bar i').getBoundingClientRect().width") > 0
+        assert page.locator("a.preview", has_text="Aperçu").get_attribute("href").startswith("https://user-x-cockpit-vibe-user")
+
+        # Recadrer la tâche en cours (conversation reprise automatiquement)
+        assert "Recadrer" in page.get_attribute("#input", "placeholder")
+        page.fill("#input", "Garde les icônes actuelles")
+        page.click("#send")
+        page.wait_for_selector(f"#t-{r} .steer >> text=Garde les icônes actuelles")
+        assert wpoll(relay, "pod-vibe", False)["steers"] == [{"task_id": r, "text": "Garde les icônes actuelles"}]
+
+        # Carte terminée : capture, tests et CI en échec, PR à ouvrir, revue ligne à ligne
+        card = page.locator(f"#t-{a}")
+        card.locator(".shot").first.click()
+        page.wait_for_selector("#imgDlg[open] #imgFull")
+        assert page.evaluate("document.querySelector('#imgFull').naturalWidth") > 0
+        page.click("#imgDlg [data-close]")
+        assert "Tests ❌ en échec" in card.locator("details.tests summary").inner_text()
+        assert "CI en échec" in card.locator(".ci").inner_text()
+        card.locator("details.file").click()
+        card.locator(".diffpre span[data-ln='11']").click()  # « +    titre = 'Mon app' »
+        card.locator(".rvform textarea").fill("utilise une constante")
+        card.locator(".rvform button[type=submit]").click()
+        page.wait_for_selector(f"#t-{a} .review >> text=1 commentaire")
+        card.locator(".diffpre").first.scroll_into_view_if_needed()
+        card.screenshot(path=SHOTS / "11-carte-vibe.png")
+        card.locator("[data-rv-send]").click()
+        page.wait_for_selector("section.suite .user >> text=Revue de ton travail")
+        assert "`app/main.py` ligne 11" in page.locator("section.suite .user").last.inner_text()
+
+        # Ouvrir une PR depuis une carte : demandée à Claude dans la conversation
+        assert page.locator(f"#t-{a} [data-open-pr]").count() == 0  # la conversation a avancé (revue envoyée)
+
+        # Mode confiance sur la conversation suivie : confirmé, transmis au worker, temps restant affiché
+        page.select_option("#trustSel", "30")
+        page.wait_for_selector("#trustLeft:not(.hidden) >> text=actif · 30 min")
+        conv = page.evaluate("conversationOf(state.replyTo)")
+        assert conv in wpoll(relay, "pod-vibe", False)["trust"]
+        worker_call(relay, "w_evenements", {"worker_id": "pod-vibe", "events": [{"kind": "message", "task_id": r,
+            "type": "trusted", "tool": "Bash", "text": "opération sensible : pip install rich", "ts": time.time()}]})
+        page.wait_for_selector(f"#t-{r} details.trusted >> text=1 validation passée en mode confiance")
+        page.locator("#thread").screenshot(path=SHOTS / "14-confiance.png")
+
+        # Modèle choisi pour une nouvelle conversation, commandes rapides
+        page.click("#newConv")
+        page.select_option("#modelSel", "rapide")
+        page.click(".chip.qc >> text=🧪 Tests")
+        assert page.input_value("#input").startswith("Lance les tests")
+        page.click("#send")
+        page.wait_for_selector("section .pill >> text=⚡ Rapide")
+        page.click("#editQuick")
+        page.click("#addCmd")
+        page.locator("#cmdRows .cmdrow").last.locator(".ct").fill("📦 Dépendances")
+        page.locator("#cmdRows .cmdrow").last.locator(".ci").fill("Mets à jour les dépendances")
+        page.click("#cmdForm button[type=submit]")
+        page.wait_for_selector(".chip.qc >> text=📦 Dépendances")
+
+        # Mémoire du projet
+        page.locator(".podcard", has_text="Vibe").locator("[data-memory]").click()
+        wait_js(page, "document.querySelector('#memText').value.includes('tests : pytest')")
+        page.fill("#memText", "# Vibe\n- tests : pytest\n- style : black")
+        page.click("#memSave")
+        page.wait_for_selector("#memDlg", state="hidden")
+        assert wpoll(relay, "pod-vibe", False)["memory_edits"][0]["content"].endswith("style : black")
+
+        # Variantes : comparées côte à côte, on en garde une
+        group = page.locator(".vgroup", has_text="Propose un logo")
+        assert group.locator(".vcol").count() == 2 and group.locator(".vcol img").count() == 2
+        group.screenshot(path=SHOTS / "12-variantes.png")
+        group.locator("[data-keep]").nth(1).click()
+        page.wait_for_timeout(300)
+        actions = {x["task_id"]: x["action"] for x in wpoll(relay, "pod-vibe", False)["worktree_actions"]}
+        assert actions == {v[1]: "merge", v[0]: "discard"}
+        page.screenshot(path=SHOTS / "13-vibe-ordinateur.png")
         assert not errors, errors
         browser.close()

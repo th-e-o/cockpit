@@ -54,6 +54,13 @@ function notifications(s) {
     out.push({ key: `p-${p.id}-${p.since}`, title: `🟢 Pod « ${p.name} » connecté`, tag: `pod-${p.id}`,
       body: 'Le projet est prêt : tu peux lui envoyer une instruction.', data: {} });
   }
+  for (const c of s.ci_failures || []) {
+    const fix = `La CI GitHub échoue sur le commit ${c.sha}${c.checks?.length ? ` (${c.checks.join(', ')})` : ''}. `
+      + `Consulte les journaux${c.url ? ` (${c.url})` : ''}, trouve la cause, corrige et pousse.`;
+    out.push({ key: `ci-${c.task_id}-${c.sha}`, title: '❌ CI en échec', tag: `ci-${c.task_id}`,
+      body: `${c.instruction}${c.checks?.length ? `\n${c.checks.join(' · ')}` : ''}`,
+      actions: [{ action: 'ci-fix', title: '▶ Corriger' }], data: { task: c.task_id, fix } });
+  }
   for (const t of s.finished || []) {
     const steps = t.status === 'done' && !t.next_steps_dismissed ? (t.next_steps || []) : [];
     const suite = steps.length ? `\n💡 ${steps.map((x) => x.titre).join(' · ')}` : '';
@@ -114,6 +121,12 @@ self.addEventListener('notificationclick', (e) => {
     try {
       if ((e.action === 'approve' || e.action === 'deny') && d.approval) {
         await appel('decider', { approval_id: d.approval, decision: e.action });
+        return;
+      }
+      if (e.action === 'ci-fix' && d.task && d.fix) {
+        const t = await appel('tache', { instruction: d.fix, reply_to: d.task });
+        await self.registration.showNotification('▶ Correction de la CI lancée', { body: 'Claude reprend la conversation.',
+          tag: `tache-${t.id}`, silent: true, data: { task: t.id }, ...ICONE });
         return;
       }
       if (e.action?.startsWith('next-') && d.task) {

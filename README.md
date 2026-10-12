@@ -84,6 +84,28 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
   le relier au projet (`origin`) et y pousser la branche courante. *＋ Nouveau pod* → *＋ Nouveau dépôt* crée le
   dépôt puis lance un pod qui le clone. Il faut que le token git d'Onyxia puisse créer des dépôts : droit
   *Administration : écriture* (token à grain fin) ou portée `repo` (token classique).
+- **Vibe coding** :
+  - *Modèle* par conversation (⚡ Rapide = Haiku, ● Standard = Sonnet, ◆ Approfondi = Opus), hérité par ses suites.
+  - *Recadrer* : pendant que Claude travaille, un message dans la conversation l'interrompt et il reprend avec
+    (une validation en attente est alors refusée).
+  - *Captures* : Claude photographie l'application servie dans le pod (`capturer_ecran`, localhost seulement) ; il
+    voit l'image et toi aussi, sur la carte. Navigateur installé par `./run.sh` (`playwright install chromium`).
+    *Aperçu en direct* : option du formulaire *Nouveau pod* qui publie le port 5000 (URL **publique**, lien dans
+    le tableau de bord ; VSCode reçoit alors un mot de passe aléatoire).
+  - *Tests* après chaque tâche qui modifie des fichiers : commande `test` de `projects.yaml` ou du `.cockpit.yml`
+    du dépôt (lancée seulement si la politique l'autorise sans validation). Un échec devient la première étape
+    proposée (« Corriger les tests »). *CI GitHub* suivie après un push : notification en cas d'échec avec ▶ Corriger.
+  - *Variantes* (×2, ×3) : plusieurs Claude traitent la même demande, chacun dans son worktree ; le tableau de bord
+    les compare (modifications, tests, capture) et *Garder* fusionne la choisie et jette les autres.
+  - *Revue* : toucher une ligne d'un diff pour la commenter, puis *Envoyer la revue à Claude*. *Ouvrir une pull
+    request* demande à Claude de la rédiger (`ouvrir_pr`, jamais depuis main/master).
+  - *Mode confiance* (🛡 dans la barre de conversation : 15 min à 2 h) : les validations de routine de cette
+    conversation passent sans toi (installations, suppressions dans le projet, commandes non répertoriées,
+    fichiers sensibles du projet). Restent toujours demandés : refus (`deny`), écritures hors du projet, `.git/`
+    et workflows de CI, services, dépôts GitHub, agents en parallèle, cluster, push sur main ou forcé, `sudo`
+    (section `trust` de `config/policy.yaml`). Chaque auto-approbation est journalisée et signalée sur la carte.
+  - *Commandes rapides* (puces au-dessus de la saisie, ✎ pour les modifier, communes ou par projet) et *mémoire du
+    projet* (🧠 : le `CLAUDE.md`, lu par Claude au début de chaque tâche, modifiable depuis le téléphone).
 - **Bilan par projet** (tableau de bord, aujourd'hui / 7 / 30 jours) : tâches réussies ou en erreur, temps de travail
   des agents, fichiers distincts touchés, lignes `+/−`, commits, activité par jour, fichiers les plus modifiés,
   dernières tâches et état git actuel du projet.
@@ -112,6 +134,7 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
 
 ## Sécurité : ce qu'il faut savoir
 
+- **Le mode confiance élargit ce que l'agent fait sans toi** : à n'activer que sur une conversation que tu suis.
 - **La politique est un garde-fou, pas une frontière de sécurité.** Un agent autorisé à lancer `python`
   ou `pytest` peut exécuter du code arbitraire. La vraie frontière, ce sont le RBAC du namespace Kubernetes et
   l'isolation des pods.

@@ -25,7 +25,9 @@ from claude_agent_sdk import (
     UserMessage,
 )
 
-from . import github, gitstate
+import base64
+
+from . import apercu, github, gitstate, projet
 from . import services as svc
 from .policy import ALLOW, DENY, Policy
 from .router import Project
@@ -50,6 +52,13 @@ Juste avant cette réponse finale, appelle proposer_suite avec 1 à 4 prochaines
 (par exemple : tester, publier, fusionner, l'amélioration suivante) ; l'utilisateur les lance d'un geste.
 Pour une simple question sans suite évidente, tu peux t'en passer.
 Si le projet n'a pas de dépôt distant et qu'il faut publier le travail, crée-le avec creer_depot (validation).
+Pour ouvrir une pull request, utilise ouvrir_pr (il pousse la branche si besoin).
+Pour une interface web, vérifie le rendu : lance le serveur de développement en arrière-plan, puis appelle
+capturer_ecran avec son adresse locale ; tu vois la capture, et l'utilisateur aussi sur son téléphone.
+Si le projet a des tests, déclare leur commande dans .cockpit.yml (« test: pytest -q ») : le cockpit les lance
+après chaque tâche et te signale les échecs.
+Si l'utilisateur t'envoie un message pendant que tu travailles, tu es interrompu et le reçois : tiens-en compte
+et poursuis.
 Le cockpit affiche déjà la liste des fichiers modifiés et leurs diffs : inutile de les recopier.
 Pour publier ton travail, crée une branche et pousse-la avec « git push -u origin <branche> » : c'est
 automatique. Un push sur main ou master demande une validation sur le téléphone.
@@ -73,6 +82,11 @@ dans son propre worktree git (branche dédiée), partie du dernier commit — co
 Ne l'utilise pas pour des tâches courtes ou très liées : fais-les toi-même.
 """
 
+PREVIEW_APPEND = """
+Le port {port} de ce pod est publié pour l'utilisateur à {url} : fais écouter le serveur de développement sur
+0.0.0.0:{port} pour qu'il puisse ouvrir l'application lui-même.
+"""
+
 WORKTREE_APPEND = """
 Un autre agent travaille en même temps dans le dossier principal du projet : tu travailles dans un worktree git
 dédié ({cwd}, branche {branch}). Reste dans ce dossier et commite ton travail sur cette branche ; l'utilisateur
@@ -80,8 +94,13 @@ la fusionnera ou la jettera depuis le cockpit.
 """
 
 MAX_AGENTS = int(os.environ.get("COCKPIT_MAX_AGENTS", "3"))
+# Choix du téléphone -> alias de modèle de Claude Code (toujours la dernière version de chaque famille)
+MODELS = {"rapide": "haiku", "standard": "sonnet", "approfondi": "opus"}
 PARALLEL_TOOL = "mcp__cockpit__lancer_en_parallele"
 REPO_TOOL = "mcp__cockpit__creer_depot"
+SHOT_TOOL = "mcp__cockpit__capturer_ecran"
+PR_TOOL = "mcp__cockpit__ouvrir_pr"
+CI_POLL_S, CI_MAX_S = 45, 1200
 NEXT_TOOL = "mcp__cockpit__proposer_suite"
 FILE_TOOLS = {"Write", "Edit", "MultiEdit", "NotebookEdit"}
 log = logging.getLogger("cockpit.agent")
@@ -130,6 +149,10 @@ def tool_label(tool: str, i: dict) -> str | None:
             return f"🛑 Arrête le service {i.get('nom', '')}"
         case "proposer_suite":
             return None  # affiché comme « Prochaines étapes » sous la réponse
+        case "capturer_ecran":
+            return "📸 Capture l'écran de l'application"
+        case "ouvrir_pr":
+            return f"🔀 Ouvre une pull request : {_clip(i.get('titre', ''), 50)}"
         case "creer_depot":
             return f"📦 Crée le dépôt GitHub {i.get('nom', '')}"
         case "lancer_en_parallele":
@@ -173,8 +196,26 @@ async def create_repo(cwd: str, args: dict) -> str:
     return "\n".join(lines)
 
 
-def cockpit_server(cwd: str, on_next, spawn=None):
-    """Outils propres au cockpit : prochaines étapes, création de dépôt GitHub, agents en parallèle."""
+async def open_pr(cwd: str, args: dict) -> dict:
+    """Pousse la branche courante si besoin et ouvre une pull request vers la branche par défaut."""
+    rc, remote = await gitstate.git(cwd, "remote", "get-url", "origin")
+    target = github.owner_repo(remote) if rc == 0 else None
+    if not target:
+        raise github.GitHubError("pas de dépôt GitHub « origin » : crée-le d'abord avec creer_depot")
+    rc, branch = await gitstate.git(cwd, "rev-parse", "--abbrev-ref", "HEAD")
+    if rc or branch in ("HEAD", "main", "master"):
+        raise github.GitHubError("place-toi sur une branche de travail (pas main/master) avant d'ouvrir une PR")
+    info = await gitstate.branch_info(cwd)
+    if not info.get("upstream") or info.get("ahead"):
+        rc, out = await gitstate.git(cwd, "push", "-u", "origin", branch, timeout=120)
+        if rc:
+            raise github.GitHubError(f"push de {branch} impossible : {out[-300:]}")
+    return await github.creer_pr(*target, branch, args.get("titre") or branch, args.get("description", ""),
+                                 args.get("base", ""), bool(args.get("brouillon")))
+
+
+def cockpit_server(cwd: str, on_next, spawn=None, pub=None, upload=None):
+    """Outils propres au cockpit : prochaines étapes, dépôts et PR GitHub, captures d'écran, agents en parallèle."""
 
     @tool("proposer_suite",
           "Propose à l'utilisateur 1 à 4 prochaines étapes concrètes, qu'il pourra lancer d'un geste depuis son "
@@ -203,7 +244,45 @@ def cockpit_server(cwd: str, on_next, spawn=None):
         except github.GitHubError as e:
             return _text(str(e), error=True)
 
-    tools = [proposer_suite, creer_depot]
+    @tool("capturer_ecran",
+          "Capture d'écran d'une page servie dans ce pod (http://localhost:<port>/…), en vue téléphone par défaut "
+          "(mobile=false : vue ordinateur ; page_entiere=true : toute la hauteur). Tu reçois l'image, et "
+          "l'utilisateur la voit sur son téléphone avec la légende.",
+          {"type": "object", "properties": {"url": {"type": "string"}, "mobile": {"type": "boolean"},
+                                            "page_entiere": {"type": "boolean"}, "legende": {"type": "string"}},
+           "required": ["url"]})
+    async def capturer_ecran(args: dict) -> dict:
+        try:
+            data = await apercu.capture(args.get("url", ""), args.get("mobile", True), bool(args.get("page_entiere")))
+        except apercu.ApercuError as e:
+            return _text(str(e), error=True)
+        b64 = base64.b64encode(data).decode()
+        sent = ""
+        if upload:
+            try:
+                await upload(b64, str(args.get("legende") or args.get("url"))[:200])
+                sent = " Capture envoyée à l'utilisateur."
+            except Exception as e:
+                sent = f" (envoi au téléphone impossible : {e})"
+        return {"content": [{"type": "image", "data": b64, "mimeType": "image/jpeg"},
+                            {"type": "text", "text": f"Capture de {args.get('url')}.{sent}"}]}
+
+    @tool("ouvrir_pr",
+          "Ouvre une pull request GitHub depuis la branche courante (poussée si besoin) vers la branche par défaut "
+          "(ou base). titre : court et explicite ; description : contexte, changements, tests, points d'attention.",
+          {"type": "object", "properties": {"titre": {"type": "string"}, "description": {"type": "string"},
+                                            "base": {"type": "string"}, "brouillon": {"type": "boolean"}},
+           "required": ["titre"]})
+    async def ouvrir_pr(args: dict) -> dict:
+        try:
+            pr = await open_pr(cwd, args)
+        except github.GitHubError as e:
+            return _text(str(e), error=True)
+        if pub:
+            pub(type="pr", **pr)
+        return _text(f"Pull request #{pr['number']} ouverte : {pr['url']} ({pr['head']} → {pr['base']}).")
+
+    tools = [proposer_suite, creer_depot, capturer_ecran, ouvrir_pr]
     if spawn:
         @tool("lancer_en_parallele",
               "Lance jusqu'à 5 autres agents Claude en parallèle, chacun avec une instruction autonome et complète (il ne "
@@ -244,6 +323,11 @@ class Runner:
         self.clients: dict[str, ClaudeSDKClient] = {}  # task_id -> client actif
         # Création de tâches filles (fournie par le worker) : async (parent, [{"instruction", "projet"}]) -> [ids]
         self.spawn_tasks = None
+        self.upload_image = None  # async (task_id, jpeg_base64, légende) -> id, fourni par le worker
+        self.preview: dict | None = None  # URL publique du port utilisateur du pod {url, port}
+        self.steers: dict[str, list[str]] = {}  # messages de l'utilisateur pendant une tâche
+        self.trust: dict[str, float] = {}  # mode confiance : conversation -> fin (activé depuis le téléphone)
+        self._background: set[asyncio.Task] = set()
 
     @staticmethod
     def _lock(locks: dict[str, asyncio.Lock], key: str) -> asyncio.Lock:
@@ -300,6 +384,10 @@ class Runner:
                 ok = True
             elif d.action == DENY:
                 ok = False
+            elif self.trusted(task) and self.policy.trusted(tool, tool_input, cwd):
+                # Mode confiance : validation de routine auto-approuvée (journalisée et signalée sur la carte)
+                ok, d.action = True, "trust"
+                self.store.publish("message", {"task_id": task.id, "type": "trusted", "tool": tool, "text": d.reason})
             else:
                 ok = await self.request_approval(task, project, tool, tool_input, d.reason)
             self.store.audit("tool", task=task.id, project=project.id, tool=tool,
@@ -330,7 +418,12 @@ class Runner:
         spawn = (lambda items: self.spawn_tasks(task, items)) if self.spawn_tasks else None
         if spawn:
             append += PARALLEL_APPEND
-        servers["cockpit"] = cockpit_server(cwd, lambda steps: setattr(task, "next_steps", steps), spawn)
+        upload = (lambda b64, caption: self.upload_image(task.id, b64, caption)) if self.upload_image else None
+        servers["cockpit"] = cockpit_server(cwd, lambda steps: setattr(task, "next_steps", steps), spawn,
+                                            pub=lambda **kw: self.store.publish("message", {"task_id": task.id, **kw}),
+                                            upload=upload)
+        if self.preview:
+            append += PREVIEW_APPEND.format(**self.preview)
         if task.worktree:
             append += WORKTREE_APPEND.format(cwd=cwd, branch=task.worktree["branch"])
         return ClaudeAgentOptions(
@@ -343,6 +436,7 @@ class Runner:
                                               timeout=self.policy.timeout + 60)]},
             can_use_tool=can_use_tool,
             resume=session,
+            model=MODELS.get(task.model or ""),
         )
 
     def _session(self, task: Task, project: Project, cwd: str | None = None) -> str | None:
@@ -375,7 +469,7 @@ class Runner:
         key = f"{conv}:{project.id}"
         if key not in self.workspaces:
             busy = self.main_users.get(project.id, 0) > 0
-            if gitstate.worktree_path(project.id, conv).exists() or busy:
+            if gitstate.worktree_path(project.id, conv).exists() or busy or task.isolate:
                 self.workspaces[key] = "?"  # réservé pendant la création (pas de second worktree en parallèle)
                 try:
                     self.workspaces[key] = await gitstate.add_worktree(project.cwd, project.id, conv)
@@ -394,9 +488,9 @@ class Runner:
                 return
             # Réservation immédiate du dossier principal (avant tout await) : la conversation suivante le voit occupé.
             key = f"{conv}:{project.id}"
-            main = self.workspaces.get(key) == "" or (
+            main = not task.isolate and (self.workspaces.get(key) == "" or (
                 key not in self.workspaces and self.main_users.get(project.id, 0) == 0
-                and not gitstate.worktree_path(project.id, conv).exists())
+                and not gitstate.worktree_path(project.id, conv).exists()))
             if main:
                 self.workspaces[key] = ""
                 self.main_users[project.id] = self.main_users.get(project.id, 0) + 1
@@ -431,25 +525,103 @@ class Runner:
             before = await self._snapshot(cwd)
             edited: set[str] = set()
             final: dict = {}
+            duration = 0
             try:
                 async with ClaudeSDKClient(self._options(task, project, cwd, session, edited)) as client:
                     self.clients[task.id] = client
-                    await client.query(self._prompt(task, session))
-                    async for msg in client.receive_response():
-                        final = self._relay(task, msg) or final
+                    prompt = self._prompt(task, session)
+                    if early := self.steers.pop(task.id, None):  # précisions envoyées avant le démarrage
+                        prompt += "\n\nPrécisions de l'utilisateur :\n" + "\n".join(early)
+                    await client.query(prompt)
+                    while True:
+                        async for msg in client.receive_response():
+                            if r := self._relay(task, msg):
+                                duration += r.pop("duration_s", 0)
+                                final = r
+                        # Message de l'utilisateur pendant le travail : l'agent a été interrompu, il reprend avec.
+                        pending = self.steers.pop(task.id, None)
+                        if not pending or task.status == "cancelled":
+                            break
+                        await client.query("Message de l'utilisateur pendant ton travail (tu as été interrompu) :\n"
+                                           + "\n".join(pending) + "\nTiens-en compte et poursuis la tâche.")
             except Exception as e:
                 final = {"status": "error", "result": f"{type(e).__name__}: {e}"}
             finally:
                 self.clients.pop(task.id, None)
                 self.running.discard(task.id)
+                if late := self.steers.pop(task.id, None):  # arrivé après la dernière réponse de l'agent
+                    self.store.publish("message", {"task_id": task.id, "type": "steer_late", "text": "\n".join(late)})
+            final["duration_s"] = duration
             changes = await self._changes(task, cwd, before, edited)
             if task.status == "cancelled":
                 final = {k: v for k, v in final.items() if k != "status"}
+            elif final.get("status") == "done" and changes and changes.get("file_count"):
+                final |= await self._tests(task, project, cwd)
             # Statut final et modifications publiés ensemble : la notification de fin peut les résumer.
             self.store.task_update(task, **final, changes=changes)
             self.store.audit("task_end", task=task.id, project=project.id, status=task.status,
                              cost_usd=task.cost_usd, result=_short(task.result, 2000),
                              files=(changes or {}).get("file_count", 0))
+            if changes and changes.get("commits") and changes.get("upstream") and not changes.get("ahead"):
+                self._spawn(self._watch_ci(task, cwd))
+
+    def trusted(self, task: Task) -> bool:
+        """La conversation de la tâche est-elle en mode confiance (activé depuis le téléphone, non expiré) ?"""
+        return self.trust.get(task.conversation or task.id, 0) > time.time()
+
+    def _spawn(self, coro) -> None:
+        t = asyncio.create_task(coro)
+        self._background.add(t)
+        t.add_done_callback(self._background.discard)
+
+    async def steer(self, task: Task, text: str) -> None:
+        """Message de l'utilisateur pendant la tâche : l'agent est interrompu et reprend avec ce message."""
+        self.steers.setdefault(task.id, []).append(text)
+        for a in self.store.approvals.values():  # une validation en attente est caduque : l'agent reprend
+            if a.task_id == task.id and a.future and not a.future.done():
+                a.future.set_result("deny")
+        if client := self.clients.get(task.id):
+            await client.interrupt()
+
+    async def _tests(self, task: Task, project: Project, cwd: str) -> dict:
+        """Tests du projet après une tâche qui a modifié des fichiers ; un échec devient la première étape proposée."""
+        cmd, why = projet.test_command(cwd, self.policy, getattr(project, "test", ""))
+        if not cmd:
+            if "non lancée" in why:
+                self.store.publish("message", {"task_id": task.id, "type": "tests", "skipped": why})
+            return {}
+        self.store.publish("message", {"task_id": task.id, "type": "tool_use", "tool": "tests", "text": cmd,
+                                       "label": f"🧪 Lance les tests ({_clip(cmd, 40)})"})
+        result = await projet.run_tests(cwd, cmd)
+        self.store.publish("message", {"task_id": task.id, "type": "tests", **result})
+        self.store.audit("tests", task=task.id, project=project.id, command=cmd, ok=result["ok"])
+        out = {"tests": {k: result[k] for k in ("ok", "command", "duration_s")}}
+        if not result["ok"]:
+            out["next_steps"] = [projet.fix_tests_step(result)] + (task.next_steps or [])[:3]
+        return out
+
+    async def _watch_ci(self, task: Task, cwd: str) -> None:
+        """Suit la CI GitHub du commit poussé et publie chaque changement d'état (en cours, réussie, en échec)."""
+        rc, remote = await gitstate.git(cwd, "remote", "get-url", "origin")
+        target = github.owner_repo(remote) if rc == 0 else None
+        sha = await gitstate.head(cwd)
+        if not target or not sha or not os.environ.get("GIT_PERSONAL_ACCESS_TOKEN"):
+            return
+        last, waited = None, 0
+        await asyncio.sleep(15)  # le temps que GitHub déclenche les workflows
+        while waited < CI_MAX_S:
+            try:
+                ci = await github.etat_ci(*target, sha)
+            except Exception as e:
+                log.info("état de la CI indisponible : %s", e)
+                ci = None
+            if ci and ci["state"] != last and not (ci["state"] == "none" and waited < 120):
+                last = ci["state"]
+                self.store.publish("message", {"task_id": task.id, "type": "ci", **ci})
+            if ci and ci["state"] in ("success", "failure") or (ci and ci["state"] == "none" and waited >= 120):
+                return
+            await asyncio.sleep(CI_POLL_S)
+            waited += CI_POLL_S
 
     @staticmethod
     async def _snapshot(cwd: str):
