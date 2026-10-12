@@ -484,3 +484,21 @@ def test_suite_et_notifications(relay):
     livrees = wpoll(relay, wid, True, instance="inst-orch-2" if wid == "orch" else None)["tasks"]
     act = [x for x in livrees if x["id"] == t2["id"]][0]["action"]
     assert act["creer_depot"] == {"nom": "Drones.vols", "prive": False} and act["depot_git"] == ""
+
+
+def test_cle_d_appairage(relay):
+    """Clé à saisir sur un ordinateur : usage unique, liée au lien QR, saisie tolérante, échecs comptés."""
+    import re
+
+    r = worker_call(relay, "w_appairage", {}).json()
+    assert re.fullmatch(r"[0-9A-HJKMNP-TV-Z]{5}-[0-9A-HJKMNP-TV-Z]{5}", r["code"])
+    pc = phone(relay)
+    assert call(pc, "appairer", {"code": "ABC"}).status_code == 401  # format invalide
+    assert call(pc, "appairer", {"code": "00000-00000"}).status_code == 401  # inconnue
+    # Saisie en minuscules, sans tiret, avec O / I à la place de 0 / 1
+    saisie = r["code"].replace("-", " ").lower().replace("0", "o").replace("1", "i")
+    assert call(pc, "appairer", {"code": saisie}).json()["ok"]
+    assert call(pc, "moi").json()["authed"] is True
+    assert call(phone(relay), "appairer", {"code": r["code"]}).status_code == 401  # usage unique
+    # Le lien QR de la même génération est invalidé lui aussi
+    assert call(phone(relay), "appairer", {"token": r["url"].split("#pair=")[1]}).status_code == 401

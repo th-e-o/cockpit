@@ -50,7 +50,7 @@
   <aside id="dash" aria-label="Tableau de bord"></aside>
   </div>
 
-  <!-- Écran de connexion : passkey, ou appairage par QR code -->
+  <!-- Écran de connexion : passkey, ou appairage (QR code sur téléphone, clé à saisir sur ordinateur) -->
   <section id="auth" class="auth hidden">
     <div class="authbox">
       <img src="static/icon.svg" alt="" width="72" height="72">
@@ -58,6 +58,14 @@
       <p id="authText"></p>
       <button id="authBtn" class="btn ok big hidden"></button>
       <button id="authAlt" class="btn ghost hidden"></button>
+      <form id="pairForm" class="pairform hidden" autocomplete="off">
+        <label for="pairCode">Clé d'appairage</label>
+        <div class="pairrow">
+          <input id="pairCode" placeholder="XXXXX-XXXXX" maxlength="14" autocapitalize="characters" spellcheck="false"
+                 autocomplete="one-time-code" inputmode="text" aria-describedby="authHint">
+          <button type="submit" id="pairBtn" class="btn ok">Connecter</button>
+        </div>
+      </form>
       <p id="authHint" class="hint"></p>
     </div>
   </section>

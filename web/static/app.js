@@ -48,8 +48,11 @@ const b64u = {
 };
 
 // ---------- connexion : appairage (QR) puis passkey
-function authScreen({ title, text, button, onClick, alt, onAlt, hint }) {
+function authScreen({ title, text, button, onClick, alt, onAlt, hint, code = false }) {
   $('#auth').classList.remove('hidden');
+  $('#pairForm').classList.toggle('hidden', !code);
+  $('#pairCode').value = '';
+  $('#pairBtn').disabled = false;
   $('#authTitle').textContent = title;
   $('#authText').textContent = text || '';
   $('#authHint').textContent = hint || '';
@@ -126,18 +129,39 @@ async function ensureAuth() {
       title: 'Cockpit', text: 'Connexion sécurisée par passkey.',
       button: isIOS ? 'Se connecter avec Face ID' : 'Se connecter avec ma passkey',
       onClick: async () => { await loginPasskey(); $('#auth').classList.add('hidden'); resolve(true); },
-      hint: 'Nouvel appareil sans passkey synchronisée ? Lance « ./run.sh pair » dans Onyxia et scanne le QR code.',
+      hint: 'Nouvel appareil sans passkey synchronisée ? Lance « ./run.sh pair » dans Onyxia : scanne le QR code '
+        + '(téléphone) ou saisis ici la clé affichée (ordinateur).',
+      code: true,
     }));
   }
-  authScreen({ title: 'Bienvenue', text: 'Pour connecter ce téléphone, lance dans ton terminal Onyxia :',
-    hint: './run.sh pair — puis scanne le QR code avec l\'appareil photo.' });
+  authScreen({ title: 'Bienvenue', text: 'Pour connecter cet appareil, lance « ./run.sh pair » dans ton terminal Onyxia.',
+    hint: 'Téléphone : scanne le QR code avec l\'appareil photo. Ordinateur : saisis la clé d\'appairage affichée sous le QR code.',
+    code: true });
+  if (!matchMedia('(pointer: coarse)').matches) $('#pairCode').focus();
   return false;
 }
 
+// Clé d'appairage saisie (ordinateur sans appareil photo) : même effet que le lien du QR code.
+$('#pairCode').addEventListener('input', () => { $('#pairCode').value = $('#pairCode').value.toUpperCase(); });
+$('#pairForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  $('#pairBtn').disabled = true;
+  try {
+    await api('appairer', { code: $('#pairCode').value });
+    if (await afterPairing()) start();
+  } catch (e) {
+    $('#authHint').textContent = e.message;
+    $('#pairBtn').disabled = false;
+    $('#pairCode').select();
+  }
+});
+
 function afterPairing() {
   return new Promise((resolve) => authScreen({
-    title: 'Téléphone connecté ✓',
-    text: 'Crée une passkey : tu te reconnecteras d\'un regard, sans jamais taper de code.',
+    title: `${/iPhone|iPad|Android/.test(navigator.userAgent) ? 'Téléphone' : 'Ordinateur'} connecté ✓`,
+    text: /iPhone|iPad|Android/.test(navigator.userAgent)
+      ? 'Crée une passkey : tu te reconnecteras d\'un regard, sans jamais taper de code.'
+      : 'Crée une passkey (Windows Hello, Touch ID, clé de sécurité ou ton téléphone) : tu te reconnecteras sans code.',
     button: isIOS ? 'Activer Face ID' : 'Créer ma passkey',
     onClick: async () => { await createPasskey(); $('#auth').classList.add('hidden'); resolve(true); },
     alt: 'Plus tard', onAlt: () => { $('#auth').classList.add('hidden'); resolve(true); },

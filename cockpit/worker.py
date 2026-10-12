@@ -68,7 +68,8 @@ def init_key() -> None:
 
 async def pair() -> None:
     relay = make_relay()
-    url = await relay.pairing_url()
+    pairing = await relay.pairing()
+    url, code = pairing["url"], pairing.get("code")
     try:
         import qrcode
 
@@ -77,7 +78,11 @@ async def pair() -> None:
         qr.print_ascii(invert=True)
     except ImportError:
         pass
-    print(f"\nScanne ce QR code avec ton téléphone (valable 10 minutes, usage unique) :\n{url}\n")
+    print(f"\nTéléphone : scanne ce QR code avec l'appareil photo.\n{url}\n")
+    if code:
+        base = url.split("#", 1)[0]
+        print(f"Ordinateur : ouvre {base} et saisis la clé d'appairage :\n\n    {code}\n")
+    print("Valable 10 minutes, pour un seul appareil.")
 
 
 class Worker:

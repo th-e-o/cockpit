@@ -58,8 +58,9 @@ class Relay:
         """Publie la liste des dépôts git de l'utilisateur (formulaire « Nouveau pod » du téléphone)."""
         await self.call("w_depots", {"depots": depots})
 
-    async def pairing_url(self) -> str:
-        return (await self.call("w_appairage", {}))["url"]
+    async def pairing(self) -> dict:
+        """Lien d'appairage (QR code) et clé équivalente à saisir sur un ordinateur : {"url", "code"}."""
+        return await self.call("w_appairage", {})
 
     def send(self, evt: dict) -> None:
         self.events.append(evt)

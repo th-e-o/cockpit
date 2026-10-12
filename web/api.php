@@ -86,6 +86,10 @@ SQL);
     foreach (['worker_id', 'conversation', 'suite_de', 'session', 'extra', 'parent', 'action_worktree', 'action'] as $c) {
         if (!in_array($c, $colonnes, true)) $pdo->exec("ALTER TABLE taches ADD COLUMN $c TEXT");
     }
+    // Clé d'appairage à saisir (ordinateur sans appareil photo) : même ligne que le jeton du lien QR.
+    if (!in_array('code_hash', array_column($pdo->query('PRAGMA table_info(appairages)')->fetchAll(), 'name'), true)) {
+        $pdo->exec('ALTER TABLE appairages ADD COLUMN code_hash TEXT');
+    }
     $colonnesW = array_column($pdo->query('PRAGMA table_info(workers)')->fetchAll(), 'name');
     if (!in_array('etat', $colonnesW, true)) $pdo->exec('ALTER TABLE workers ADD COLUMN etat TEXT');
     if (!in_array('apparu_le', $colonnesW, true)) $pdo->exec('ALTER TABLE workers ADD COLUMN apparu_le INTEGER NOT NULL DEFAULT 0');
@@ -116,6 +120,20 @@ function b64url_dec(string $s): string {
     return $bin;
 }
 function jeton(): string { return b64url(random_bytes(32)); }
+
+const CODE_ALPHABET = '0123456789ABCDEFGHJKMNPQRSTVWXYZ'; // base32 de Crockford : ni I, L, O, U
+
+/** Clé d'appairage lisible : 10 caractères (50 bits), affichée en deux groupes de 5. */
+function code_appairage(): string {
+    $c = '';
+    for ($i = 0; $i < 10; $i++) $c .= CODE_ALPHABET[random_int(0, 31)];
+    return $c;
+}
+
+/** Saisie tolérante : minuscules, espaces et tirets, O pour 0, I ou L pour 1. */
+function normaliser_code(string $saisie): string {
+    return strtr(preg_replace('/[^A-Z0-9]/', '', strtoupper($saisie)), ['O' => '0', 'I' => '1', 'L' => '1']);
+}
 function h(string $jeton): string { return hash('sha256', $jeton); }
 
 function corps(): array {
@@ -428,10 +446,17 @@ switch ($route) {
             'worker_online' => worker_en_ligne(),
         ]);
 
-    case 'appairer': // lien QR généré par le worker
+    case 'appairer': // lien du QR code, ou clé d'appairage saisie (ordinateur), générés par « ./run.sh pair »
         limiter_echecs();
-        $st = q('DELETE FROM appairages WHERE jeton_hash = ? AND expire_le >= ?', [h((string)($in['token'] ?? '')), time()]);
-        if ($st->rowCount() !== 1) echec("lien d'appairage expiré ou déjà utilisé");
+        if (isset($in['code'])) {
+            $code = normaliser_code((string)$in['code']);
+            if (strlen($code) !== 10) echec("clé d'appairage invalide : 10 caractères, par exemple K7P4Q-X2MDA");
+            $st = q('DELETE FROM appairages WHERE code_hash = ? AND expire_le >= ?', [h($code), time()]);
+            if ($st->rowCount() !== 1) echec("clé d'appairage incorrecte, expirée ou déjà utilisée");
+        } else {
+            $st = q('DELETE FROM appairages WHERE jeton_hash = ? AND expire_le >= ?', [h((string)($in['token'] ?? '')), time()]);
+            if ($st->rowCount() !== 1) echec("lien d'appairage expiré ou déjà utilisé");
+        }
         ouvrir_session();
         repondre(['ok' => true]);
 
@@ -663,8 +688,10 @@ switch ($route) {
         exiger_worker();
         $jeton = jeton();
         q('DELETE FROM appairages WHERE expire_le < ?', [time()]);
-        q('INSERT INTO appairages(jeton_hash, expire_le) VALUES(?, ?)', [h($jeton), time() + APPAIRAGE_DUREE]);
-        repondre(['url' => origine() . base() . '#pair=' . $jeton, 'expires_in' => APPAIRAGE_DUREE]);
+        $code = code_appairage();
+        q('INSERT INTO appairages(jeton_hash, code_hash, expire_le) VALUES(?, ?, ?)', [h($jeton), h($code), time() + APPAIRAGE_DUREE]);
+        repondre(['url' => origine() . base() . '#pair=' . $jeton, 'code' => substr($code, 0, 5) . '-' . substr($code, 5),
+                  'expires_in' => APPAIRAGE_DUREE]);
 
     case 'w_poll':
         exiger_worker();

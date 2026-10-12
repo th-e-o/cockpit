@@ -358,3 +358,35 @@ def test_notifications_du_service_worker(relay):
     assert done["body"].startswith("2 fichiers · +5 −1\nFait — ok") and "💡 Lancer les tests · Publier · Trois" in done["body"]
     assert [a["title"] for a in done["actions"]] == ["▶ Lancer les tests", "▶ Publier"] and done["data"]["task"] == "t1"
     assert err["actions"] == [] and err["title"] == "❌ Tâche en erreur"
+
+
+def test_appairage_ordinateur_par_cle(relay):
+    """Ordinateur sans appareil photo : clé d'appairage saisie, puis passkey (authentificateur de plateforme virtuel)."""
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        ctx = browser.new_context(viewport={"width": 1280, "height": 800})
+        page = ctx.new_page()
+        errors = []
+        page.on("pageerror", lambda e: errors.append(str(e)))
+        cdp = ctx.new_cdp_session(page)
+        cdp.send("WebAuthn.enable")
+        cdp.send("WebAuthn.addVirtualAuthenticator", {"options": {
+            "protocol": "ctap2", "transport": "internal", "hasResidentKey": True,
+            "hasUserVerification": True, "isUserVerified": True, "automaticPresenceSimulation": True}})
+        page.goto(relay["app"])
+        page.wait_for_selector("#pairForm:not(.hidden)")
+        page.fill("#pairCode", "zzzzz-zzzzz")
+        page.click("#pairBtn")
+        page.wait_for_selector("#authHint >> text=incorrecte")
+        code = worker_call(relay, "w_appairage", {}).json()["code"]
+        page.fill("#pairCode", code.lower())
+        assert page.input_value("#pairCode") == code  # affichée en majuscules
+        page.screenshot(path=SHOTS / "10-cle-appairage.png")
+        page.press("#pairCode", "Enter")
+        page.wait_for_selector("text=Ordinateur connecté ✓")
+        assert page.is_hidden("#pairForm")
+        page.click("#authBtn")  # Créer ma passkey
+        page.wait_for_selector("#auth.hidden", state="attached")
+        page.wait_for_selector("#composer")
+        assert not errors, errors
+        browser.close()

@@ -309,3 +309,11 @@ dialog form .repo[aria-selected="true"] { background: color-mix(in srgb, var(--a
 .forigin:hover { color: var(--accent); }
 .podmode { align-self: flex-start; }
 dialog form .podmode button { width: auto; padding: 5px 10px; }
+
+/* Clé d'appairage (ordinateur) */
+.pairform { width: 100%; display: flex; flex-direction: column; gap: 6px; text-align: left; }
+.pairform label { font-size: 13px; color: var(--muted); }
+.pairrow { display: flex; gap: 8px; }
+.pairrow input { flex: 1; min-width: 0; padding: 10px 12px; font: 600 18px/1.2 ui-monospace, monospace; letter-spacing: .08em;
+  text-transform: uppercase; background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 10px; }
+.pairrow input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }

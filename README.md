@@ -14,7 +14,8 @@ avec une forte autonomie et une validation humaine pour les opérations sensible
 
 - **Le pod Onyxia n'est jamais exposé** : le worker ouvre une connexion sortante vers le relais.
   L'adresse du téléphone ne change pas quand tu relances ton service Onyxia.
-- **Connexion sans code** : un QR code une seule fois, puis Face ID / empreinte (passkey). Session de 180 jours.
+- **Connexion sans mot de passe** : un QR code (téléphone) ou une clé d'appairage à saisir (ordinateur) une seule
+  fois, puis Face ID / empreinte / Windows Hello (passkey). Session de 180 jours.
 - **Validation** : carte avec la commande exacte, notification même écran verrouillé, refus après 15 min sans réponse.
 
 ## Mise en place (une seule fois)
@@ -45,8 +46,12 @@ du worker d'un service à l'autre, ajoute aussi `COCKPIT_WORKER_KEY` avec le con
 ### 4. Lancer et connecter le téléphone
 ```bash
 ./run.sh          # démarre le worker en arrière-plan
-./run.sh pair     # QR code → scan avec l'appareil photo → « Activer Face ID »
+./run.sh pair     # QR code (téléphone) + clé d'appairage à saisir (ordinateur)
 ```
+Sur un **ordinateur** sans appareil photo, ouvre `https://deltastat.fr/cockpit/` et saisis la clé d'appairage
+affichée sous le QR code (`XXXXX-XXXXX`, insensible à la casse), puis crée une passkey (Windows Hello, Touch ID,
+clé de sécurité ou ton téléphone).
+
 Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer les notifications* :
 - **Android** (Chrome) : ☰ → *📲 Installer l'application* (ou menu du navigateur → *Installer l'application*).
   Chrome en fait une vraie application Android (WebAPK) : icône dans le tiroir, fenêtre plein écran, notifications.
@@ -115,7 +120,9 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
   instructions au worker, toujours bornées par la politique.
 - **Authentification** : passkey ES256 vérifiée côté serveur (origine, rpId, challenge à usage unique, présence
   et vérification biométrique). Cookie `HttpOnly; Secure; SameSite=Strict`. Les requêtes d'écriture exigent du JSON
-  (anti-CSRF), avec une limite de 20 échecs par IP sur 15 min. Liens d'appairage : 10 min, usage unique.
+  (anti-CSRF), avec une limite de 20 échecs par IP sur 15 min. Liens et clés d'appairage : 10 min, usage
+  unique (le lien et la clé d'une même génération s'invalident mutuellement), clé de 50 bits, échecs comptés dans la
+  limite par IP.
 - **Révoquer un appareil** : ☰ → Passkeys → Supprimer. **Révoquer le worker** : supprimer `data/worker_key`,
   puis `./run.sh init` et pousser la nouvelle empreinte.
 
