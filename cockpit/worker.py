@@ -12,6 +12,7 @@ import hashlib
 import logging
 import os
 import secrets
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -105,6 +106,7 @@ class Worker:
         self._state_ts = 0.0
         self._repos_dirty = False  # dépôt créé : liste à republier
         self.runner.upload_image = self.relay.image
+        self.runner.project_status = self.relay.projet_etat
         self._memory: dict[str, str] = {}  # projet -> empreinte du CLAUDE.md publié
         self.usage = usage.Usage()
         self.vscode: dict | None = None  # {"url", "password"} : bouton « Ouvrir VSCode » du tableau de bord
@@ -188,6 +190,27 @@ class Worker:
                 log.info("usage du forfait lu par : %s", how)
             self._state = None
             await asyncio.sleep(300 if account else 600)
+
+    def ensure_project_dirs(self) -> None:
+        """Pod de projet : dossier du projet absent (dépôt vide, que le chart n'a pas cloné) -> clone, sinon git init
+        relié au dépôt (origin), pour que les agents puissent travailler et pousser."""
+        if ORCHESTRATOR:
+            return
+        repo = os.environ.get("GIT_REPOSITORY", "")
+        for p in self.projects.values():
+            cwd = Path(p.cwd)
+            if cwd.exists():
+                continue
+            cwd.parent.mkdir(parents=True, exist_ok=True)
+            run = lambda *a, **k: subprocess.run(a, capture_output=True, text=True, timeout=120, **k)  # noqa: E731
+            if repo and run("git", "clone", "-q", repo, str(cwd)).returncode == 0 and cwd.exists():
+                log.info("projet %s : dépôt cloné dans %s", p.id, cwd)
+                continue
+            cwd.mkdir(parents=True, exist_ok=True)
+            run("git", "init", "-q", "-b", "main", cwd=cwd)
+            if repo:
+                run("git", "remote", "add", "origin", repo, cwd=cwd)
+            log.info("projet %s : dossier %s créé (git init%s)", p.id, cwd, ", origin " + repo if repo else "")
 
     def busy(self) -> bool:
         return bool(self.runner.running) or any(t.status in ACTIVE for t in self.store.tasks.values())
@@ -402,6 +425,10 @@ class Worker:
                 self.spawn(self.hand_over(task, c["project"]))
 
     async def run(self) -> None:
+        try:
+            self.ensure_project_dirs()
+        except Exception as e:
+            log.warning("dossier du projet : %s", e)
         self.spawn(self.relay.flush_forever())
         self.spawn(self.poll_usage())
         if AUTO_UPDATE:

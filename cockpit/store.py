@@ -41,6 +41,7 @@ class Task:
     tests: dict | None = None  # résultat des tests lancés après la tâche {ok, command, duration_s}
     model_used: str | None = None  # modèle qui a réellement écrit les réponses (ex. claude-opus-5-5)
     models: list[str] = field(default_factory=list)  # tous les modèles utilisés, sous-agents compris
+    question: dict | None = None  # question posée à l'utilisateur {text, options, detected}
 
 
 @dataclass

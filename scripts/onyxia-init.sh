@@ -11,6 +11,10 @@ WORK="${HOME:-/home/onyxia}/work"
 COCKPIT="$WORK/.cockpit"
 if [ -n "$REPO" ]; then
   CWD="$WORK/$(basename "$REPO" .git)"   # cloné par le chart Onyxia
+  # Dépôt vide (tout juste créé) : le chart ne crée pas de dossier ; on clone, sinon on part d'un dépôt local relié
+  if [ ! -d "$CWD" ]; then
+    git clone -q "$REPO" "$CWD" 2>/dev/null || { mkdir -p "$CWD"; git -C "$CWD" init -q -b main; git -C "$CWD" remote add origin "$REPO"; }
+  fi
 else
   CWD="$WORK/$PROJECT_ID"                 # nouveau projet : dossier vide sous git
   mkdir -p "$CWD"

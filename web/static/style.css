@@ -400,3 +400,17 @@ details.trusted summary { color: var(--ok); font-size: 12px; cursor: pointer; }
 .podlinks .btn.ghost { font-size: 12.5px; }
 .pill.model { color: var(--text); }
 .pill.model small { color: var(--muted); font-size: 10.5px; }
+
+/* ---------- Questions de Claude */
+form.question { margin-top: 10px; border: 2px solid var(--accent); border-radius: 12px; padding: 10px 12px; display: flex; flex-direction: column; gap: 8px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel)); }
+form.question.compact { margin-top: 0; border-width: 1px; }
+.qhead { font-weight: 700; color: var(--accent); font-size: 13.5px; }
+.qtext { font-size: 14.5px; word-break: break-word; }
+.qopts { display: flex; flex-wrap: wrap; gap: 6px; }
+.qopts .btn { font-size: 13.5px; padding: 6px 12px; min-height: 0; background: var(--panel); }
+.qrow { display: flex; gap: 6px; align-items: flex-end; }
+.qrow textarea { flex: 1; min-width: 0; font: inherit; font-size: 15px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px;
+  background: var(--panel); color: var(--text); resize: vertical; }
+.follow.ask { border-left-color: var(--accent); }
+.badge.ask { background: var(--accent); color: #fff; }

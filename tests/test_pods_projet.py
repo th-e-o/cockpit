@@ -100,3 +100,32 @@ def test_mise_a_jour_automatique(clone, tmp_path, monkeypatch):
     with pytest.raises(SystemExit):
         asyncio.run(w.auto_update())
     assert (clone / "nouveau.py").exists() and installed and restarted[0][-3:] == ["-m", "cockpit.worker", "run"]
+
+
+def test_dossier_du_projet_cree_si_absent(tmp_path, monkeypatch):
+    """Pod lancé sur un dépôt vide : le dossier du projet n'existe pas ; le worker le crée, relié au dépôt."""
+    from cockpit import worker as worker_mod
+    from cockpit.relay import Relay
+
+    monkeypatch.setattr(worker_mod, "DATA", tmp_path / "data")
+    monkeypatch.setattr(worker_mod, "ORCHESTRATOR", False)
+    monkeypatch.setenv("GIT_REPOSITORY", str(tmp_path / "inexistant.git"))  # clone impossible (dépôt vide)
+    w = worker_mod.Worker(Relay("http://relais.invalid", "k"))
+    cwd = tmp_path / "work" / "russe-telegram-cartes"
+    w.projects = {"russe": Project(id="russe", name="russe", cwd=str(cwd))}
+    w.ensure_project_dirs()
+    assert (cwd / ".git").is_dir()
+    remote = subprocess.run(["git", "remote", "get-url", "origin"], cwd=cwd, capture_output=True, text=True).stdout.strip()
+    assert remote == str(tmp_path / "inexistant.git")
+
+
+def test_outils_interdits_et_etapes_completes():
+    from cockpit.agent import clean_next_steps
+
+    policy = Policy.load(ROOT / "config" / "policy.yaml")
+    for tool in ("ListAgents", "SendMessage", "RemoteTrigger", "CronCreate"):
+        assert policy.evaluate(tool, {}, "/").action == "deny"  # jamais d'accès aux autres sessions Claude
+    steps = clean_next_steps([{"titre": "Infos OVH", "instruction": "Mon offre est : <mutualisé / VPS>."},
+                              {"titre": "Hébergement", "instruction": "Voici l'hébergement : à compléter"},
+                              {"titre": "Tests", "instruction": "Lance pytest"}])
+    assert steps == [{"titre": "Tests", "instruction": "Lance pytest"}]

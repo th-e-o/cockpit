@@ -382,9 +382,12 @@ def test_notifications_du_service_worker(relay):
           new_pods: [{id: 'pod-x', name: 'drones', since: 1}],
           finished: [{id: 't1', status: 'done', result: '**Fait** — ok', changes: {file_count: 2, added: 5, removed: 1, commits: []},
                       next_steps: [{titre: 'Lancer les tests', instruction: 'pytest'}, {titre: 'Publier', instruction: 'push'}, {titre: 'Trois', instruction: '3'}]},
-                     {id: 't2', status: 'error', result: 'boom', next_steps: [{titre: 'x', instruction: 'y'}]}]})""")
+                     {id: 't2', status: 'error', result: 'boom', next_steps: [{titre: 'x', instruction: 'y'}]},
+                     {id: 't3', status: 'done', result: 'Quel format ?', question: {text: 'Quel **format** ?', options: ['Anki', 'CSV', 'JSON']}}]})""")
         browser.close()
-    v, pod, done, err = out
+    v, pod, done, err, ask = out
+    assert ask["title"] == "❓ Claude attend ta réponse" and ask["body"] == "Quel format ?" and ask["urgent"]
+    assert [a["action"] for a in ask["actions"]] == ["answer-0", "answer-1"] and ask["data"]["options"] == ["Anki", "CSV"]
     assert v["body"] == "opération sensible : rm\nrm -rf build" and [a["action"] for a in v["actions"]] == ["approve", "deny"]
     assert v["data"] == {"approval": "a1"} and v["urgent"]
     assert pod["title"] == "🟢 Pod « drones » connecté"
@@ -587,5 +590,81 @@ def test_vibe_coding_ui(relay):
         actions = {x["task_id"]: x["action"] for x in wpoll(relay, "pod-vibe", False)["worktree_actions"]}
         assert actions == {v[1]: "merge", v[0]: "discard"}
         page.screenshot(path=SHOTS / "13-vibe-ordinateur.png")
+        assert not errors, errors
+        browser.close()
+
+
+
+def test_nouveau_pod_depuis_un_projet(relay):
+    """Un « nouveau pod » demandé dans la conversation d'un projet part, après confirmation, à l'orchestrateur."""
+    from test_relay import call, paired_phone, wpoll
+
+    p = paired_phone(relay)
+    wpoll(relay, "orch-np2", True, [{"id": "np2-onyxia", "name": "Environnement Onyxia"}], hello=True)
+    wpoll(relay, "pod-np2", False, [{"id": "np2-etp", "name": "np2-etp"}], hello=True)
+    t = call(p, "tache", {"instruction": "analyse les ETP", "project": "np2-etp"}).json()
+    worker_call(relay, "w_evenements", {"worker_id": "pod-np2", "events": [
+        {"kind": "task", "task_id": t["id"], "task": {"status": "done", "project": "np2-etp", "result": "fait"}}]})
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        page, errors = browser_page(p, browser, relay, viewport={"width": 1280, "height": 900})
+        page.wait_for_selector(f"#t-{t['id']} .pill.st-done")
+        page.evaluate(f"setReplyTo('{t['id']}')")  # la conversation du projet est suivie
+        assert "np2-etp" in page.inner_text("#threadText")
+        dialogs = []
+        page.on("dialog", lambda d: (dialogs.append(d.message), d.accept()))
+        page.fill("#input", "relance le bot telegram dans un nouveau pod")
+        page.click("#send")
+        page.wait_for_selector("section .user >> text=relance le bot telegram dans un nouveau pod")
+        assert dialogs and "orchestrateur" in dialogs[0]
+        mine = [e["task"] for e in call(p, "etat").json()["events"]
+                if e["kind"] == "task" and e["task"]["instruction"] == "relance le bot telegram dans un nouveau pod"][-1]
+        assert mine["project"] is None and mine["reply_to"] is None  # nouvelle conversation, routée (Auto)
+        # Un message ordinaire reste une suite du projet, sans question
+        page.evaluate(f"setReplyTo('{t['id']}')")
+        page.fill("#input", "ajoute un graphique")
+        page.click("#send")
+        page.wait_for_selector("section .user >> text=ajoute un graphique")
+        assert len(dialogs) == 1
+        assert not errors, errors
+        browser.close()
+
+
+
+def test_questions_de_claude(relay):
+    """Une question de Claude : en évidence (carte, pastille, tableau de bord), réponse par un choix ou en texte libre."""
+    from test_relay import call, paired_phone, wpoll
+
+    p = paired_phone(relay)
+    wpoll(relay, "pod-qu", False, [{"id": "qu", "name": "Russe"}], hello=True)
+    q = call(p, "tache", {"instruction": "Crée le bot de cartes de russe", "project": "qu"}).json()
+    q2 = call(p, "tache", {"instruction": "Ajoute l'export", "project": "qu"}).json()
+    worker_call(relay, "w_evenements", {"worker_id": "pod-qu", "events": [
+        {"kind": "task", "task_id": q["id"], "task": {"status": "done", "project": "qu", "result": "Plan prêt.",
+         "question": {"text": "Quel format pour les cartes ?", "options": ["Anki .apkg", "CSV"]}}},
+        {"kind": "task", "task_id": q2["id"], "task": {"status": "done", "project": "qu", "result": "Quel format d'export ?",
+         "question": {"text": "Quel format d'export ?", "options": [], "detected": True}}}]})
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        page, errors = browser_page(p, browser, relay, **pw.devices["iPhone 13"])
+        page.wait_for_selector(f"#t-{q['id']} form.question >> text=Quel format pour les cartes ?")
+        assert "❓" in page.inner_text("#pendingBtn") and "2" in page.inner_text("#pendingBtn")
+        page.locator(f"#t-{q['id']} form.question").scroll_into_view_if_needed()
+        page.screenshot(path=SHOTS / "16-question.png")
+        # Réponse libre : le texte tapé survit à un nouveau rendu du fil
+        box = page.locator(f"#t-{q2['id']} form.question textarea")
+        box.fill("CSV avec point-virgule")
+        page.evaluate("render(state.order)")
+        assert box.input_value() == "CSV avec point-virgule"
+        page.locator(f"#t-{q2['id']} form.question [type=submit]").click()
+        page.wait_for_selector("section.suite .user >> text=CSV avec point-virgule")
+        # Réponse par un choix, depuis le tableau de bord
+        page.click("#tabDash")
+        page.wait_for_selector(".follow.ask >> text=Quel format pour les cartes ?")
+        page.click(".follow.ask [data-answer] >> text=Anki .apkg")
+        page.wait_for_selector("section.suite .user >> text=Anki .apkg")
+        assert page.locator("#feed form.question").count() == 0 and "❓" not in page.inner_text("#pendingBtn")
+        suites = {e["task"]["instruction"]: e["task"]["reply_to"] for e in call(p, "etat").json()["events"] if e["kind"] == "task"}
+        assert suites["Anki .apkg"] == q["id"] and suites["CSV avec point-virgule"] == q2["id"]
         assert not errors, errors
         browser.close()

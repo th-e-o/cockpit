@@ -67,6 +67,10 @@ class Relay:
         """Publie la mémoire du projet (CLAUDE.md) pour l'afficher et la modifier depuis le téléphone."""
         await self.call("w_memoire", {"project": project, "content": content, "hash": digest, "worker_id": self.worker_id})
 
+    async def projet_etat(self, project: str = "") -> dict:
+        """État d'un projet du cockpit (ou liste des projets si vide), vu du relais."""
+        return await self.call("w_projet_etat", {"project": project})
+
     async def depots(self, depots: list[dict]) -> None:
         """Publie la liste des dépôts git de l'utilisateur (formulaire « Nouveau pod » du téléphone)."""
         await self.call("w_depots", {"depots": depots})

@@ -320,6 +320,7 @@ function taskHtml(e) {
       <div class="actions">${state.projects.map((p) => `<button class="btn" data-choose="${esc(p.id)}">${esc(p.name)}</button>`).join('')}</div>`;
   }
   if (t.result && !ACTIVE.has(t.status)) body += `<div class="result">${md(t.result)}</div>`;
+  if (openQuestion(e)) body += questionHtml(t);
   if (!active) body += changesHtml(e) + testsHtml(e) + ciPrHtml(e) + worktreeHtml(e) + nextStepsHtml(e);
 
   return `<div class="meta">
@@ -352,7 +353,13 @@ function render(ids) {
     wrap.querySelector('.user').textContent = shownInstruction(e.task.instruction);
     const box = wrap.querySelector('.task');
     const open = new Set([...box.querySelectorAll('details[data-k][open]')].map((d) => d.dataset.k));
+    const draft = box.querySelector('form.question textarea');
+    const typed = draft?.value;
+    const focused = draft && document.activeElement === draft;
     box.innerHTML = taskHtml(e);
+    const again = box.querySelector('form.question textarea');
+    if (again && typed) again.value = typed;
+    if (again && focused) again.focus();
     box.querySelectorAll('details[data-k]').forEach((d) => { if (open.has(d.dataset.k)) d.open = true; });
     sizes(box);
     wrap.classList.toggle('suite', !!e.task.reply_to);
@@ -440,6 +447,46 @@ function worktreeHtml(e) {
   }
   return html + msgs + '</div>';
 }
+
+// ---------- questions de Claude : en évidence, réponse d'un geste ou en texte libre
+/** Question ouverte : posée par la dernière tâche (terminée) de sa conversation, pas encore répondue. */
+const openQuestion = (e) => !!(e.task.question?.text && e.task.status === 'done' && lastOfConversation(e.task.id) === e.task.id);
+
+function questionHtml(t, compact = false) {
+  const q = t.question;
+  return `<form class="question${compact ? ' compact' : ''}" data-question="${esc(t.id)}">
+    <div class="qhead">❓ Claude attend ta réponse</div>
+    <div class="qtext">${md(q.text)}</div>
+    ${q.options?.length ? `<div class="qopts">${q.options.map((o) => `<button type="button" class="btn" data-answer="${esc(t.id)}" data-text="${esc(o)}">${esc(o)}</button>`).join('')}</div>` : ''}
+    <div class="qrow"><textarea rows="2" placeholder="Ta réponse…" aria-label="ta réponse"></textarea>
+      <button type="submit" class="btn ok">Répondre</button></div></form>`;
+}
+
+async function answerQuestion(id, text) {
+  if (!text?.trim()) return;
+  const n = await api('tache', { instruction: text.trim(), reply_to: id });
+  onEvent({ kind: 'task', task_id: n.id, task: n });
+  setReplyTo(n.id);
+  // Réponse donnée depuis le tableau de bord sur téléphone : on suit la conversation qui reprend
+  if (state.view === 'dash' && !matchMedia('(min-width: 1100px)').matches) setView('chat');
+  await poll();
+}
+
+document.addEventListener('submit', async (ev) => {
+  const form = ev.target.closest?.('form.question');
+  if (!form) return;
+  ev.preventDefault();
+  const btn = form.querySelector('[type=submit]');
+  btn.disabled = true;
+  try { await answerQuestion(form.dataset.question, form.querySelector('textarea').value); } catch (e) { alert(e.message); btn.disabled = false; }
+});
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.target.closest?.('form.question')) e.target.closest('form.question').requestSubmit();
+});
+
+// ---------- nouveau pod demandé dans la conversation d'un projet
+const wantsNewPod = (text) => /\b(nouveau|nouvel|nouvelle|autre|propre)\s+(pod|projet|repo|dépôt|depot|service)\b|\bdans un (nouveau|autre) pod\b|\b(crée|créer|creer|lance|lancer|ouvre|ouvrir)\s+(un|le)\s+(pod|projet)\b/i.test(text);
+const isOrchestratorProject = (pid) => state.workers.some((w) => w.orchestrator && (w.projects || []).includes(pid));
 
 // ---------- mode confiance (par conversation, durée limitée)
 function updateTrust() {
@@ -829,6 +876,17 @@ function variantsHtml(tasks) {
   }).join('')}</section>`;
 }
 
+function questionsSection(tasks) {
+  const open = tasks.filter(openQuestion);
+  if (!open.length) return '';
+  return `<section class="sect"><h3>❓ En attente de ta réponse · ${open.length}</h3><div class="follows">${open.map((e) => {
+    const proj = state.projects.find((p) => p.id === e.task.project);
+    return `<article class="follow ask"><div class="fhead"><b>${esc(proj?.name || e.task.project || '')}</b>
+      <button class="btn ghost" data-jump="${esc(e.task.id)}">Voir</button></div>
+      <button class="forigin" data-jump="${esc(e.task.id)}">↳ ${esc(shownInstruction(e.task.instruction))}</button>${questionHtml(e.task, true)}</article>`;
+  }).join('')}</div></section>`;
+}
+
 function recentRow(e) {
   const t = e.task;
   const { c } = changesOf(e);
@@ -1058,6 +1116,7 @@ function renderDash() {
   const kpi = (v, l, cls = '', title = '') => `<div class="kpi ${cls}" title="${esc(title)}"><div class="v">${v}</div><div class="l">${l}</div></div>`;
   const html = `<div class="dashwrap">
     ${usageHtml(latestUsage())}
+    ${questionsSection(tasks)}
     <div class="kpis">
       ${kpi(`${working}<small>/${capacity || '—'}</small>`, 'Claude au travail', '', 'agents actifs / capacité des pods en ligne')}
       ${kpi(pending ? `⚠ ${pending}` : '0', 'Validation(s) en attente', pending ? 'warn' : '')}
@@ -1123,11 +1182,14 @@ function followConversation() {
 function updatePending() {
   let n = 0;
   for (const e of state.tasks.values()) for (const a of e.approvals.values()) if (!a.decision) n++;
+  const q = [...state.tasks.values()].filter(openQuestion).length;
   const b = $('#pendingBtn');
-  b.textContent = n;
-  b.classList.toggle('hidden', n === 0);
-  document.title = n ? `(${n}) Cockpit` : 'Cockpit';
-  navigator.setAppBadge?.(n).catch(() => {});
+  b.textContent = n && q ? `${n} · ❓${q}` : n ? `${n}` : `❓ ${q}`;
+  b.title = [n ? `${n} validation(s) en attente` : '', q ? `${q} question(s) de Claude en attente de ta réponse` : ''].filter(Boolean).join(' · ');
+  b.classList.toggle('hidden', n + q === 0);
+  b.classList.toggle('ask', !n && q > 0);
+  document.title = n + q ? `(${n + q}) Cockpit` : 'Cockpit';
+  navigator.setAppBadge?.(n + q).catch(() => {});
 }
 
 function renderProjects() {
@@ -1179,6 +1241,11 @@ async function poll() {
     state.replay = state.lastId === 0;
     const touched = new Set();
     for (const evt of s.events) { onEvent(evt); touched.add(evt.task_id); }
+    // Une conversation qui avance redessine ses cartes précédentes (question répondue, étapes proposées…)
+    if (!state.replay) {
+      const convs = new Set([...touched].map(conversationOf));
+      for (const id of state.order) if (convs.has(conversationOf(id))) touched.add(id);
+    }
     state.lastId = s.last_id;
     if (state.replyTo === undefined) {
       const last = [...state.order].reverse().map((id) => state.tasks.get(id).task).find((t) => t.kind !== 'service');
@@ -1340,7 +1407,12 @@ document.addEventListener('click', async (ev) => {
     } else if ('close' in b.dataset) {
       b.closest('dialog').close();
     } else if (b.id === 'pendingBtn') {
-      document.querySelector('.approval:not(.resolved)')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      if (state.view === 'dash' && !matchMedia('(min-width: 1100px)').matches) setView('chat');
+      (document.querySelector('#feed .approval:not(.resolved)') || document.querySelector('#feed form.question'))
+        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } else if (b.dataset.answer) {
+      b.disabled = true;
+      await answerQuestion(b.dataset.answer, b.dataset.text);
     } else if (b.id === 'menuBtn') {
       $('#mNotif').classList.toggle('hidden', window.Notification?.permission === 'granted' && localStorage.getItem('cockpit_push') === '1');
       $('#workerInfo').textContent = state.workerOnline ? '🟢 Worker Onyxia connecté' : '🔴 Worker Onyxia hors ligne (lance ./run.sh dans ton service VSCode)';
@@ -1406,7 +1478,16 @@ $('#composer').addEventListener('submit', async (ev) => {
   if (!instruction) return;
   $('#send').disabled = true;
   try {
-    const cur = state.replyTo && state.tasks.get(state.replyTo)?.task;
+    let cur = state.replyTo && state.tasks.get(state.replyTo)?.task;
+    // Nouveau projet ou nouveau pod demandé dans la conversation d'un projet : seul l'orchestrateur crée des pods.
+    if (cur && wantsNewPod(instruction) && !isOrchestratorProject(cur.project)
+      && confirm(`Seul l'orchestrateur peut créer un nouveau pod ou un nouveau projet. Envoyer ce message à l'orchestrateur `
+        + `dans une nouvelle conversation, plutôt qu'à « ${cur.project} » ?`)) {
+      setReplyTo(null);
+      state.selected = null;
+      renderProjects();
+      cur = null;
+    }
     if (cur && ACTIVE.has(cur.status)) {
       // Claude travaille : le message lui parvient pendant la tâche (il est interrompu et reprend avec).
       await api('recadrer', { task_id: cur.id, message: instruction });

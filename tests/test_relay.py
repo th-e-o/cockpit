@@ -628,3 +628,25 @@ def test_consigne_vers_l_orchestrateur(relay):
     assert t["project"] is None and t["waiting_project"] is False and t["parent"] == parent["id"]
     livree = [x for x in wpoll(relay, "orch-vo", True)["tasks"] if x["id"] == tid]
     assert livree and livree[0]["project"] is None  # l'orchestrateur la route
+
+
+def test_etat_d_un_projet_pour_les_agents(relay):
+    """etat_projet : tâches, résultat, modifications, PR, CI et question d'un projet, vus du relais."""
+    p = paired_phone(relay)
+    wpoll(relay, "pod-et", False, [{"id": "et-russe", "name": "russe"}], hello=True)
+    t = call(p, "tache", {"instruction": "prépare le déploiement", "project": "et-russe"}).json()
+    worker_call(relay, "w_evenements", {"worker_id": "pod-et", "events": [
+        {"kind": "message", "task_id": t["id"], "type": "pr", "url": "https://github.com/a/b/pull/3", "title": "Déploiement", "number": 3},
+        {"kind": "message", "task_id": t["id"], "type": "ci", "state": "success", "sha": "abc"},
+        {"kind": "task", "task_id": t["id"], "task": {"status": "done", "project": "et-russe", "result": "Prêt.",
+         "changes": {"file_count": 3, "added": 40, "removed": 2, "commits": [{"sha": "a", "subject": "Déploiement OVH"}],
+                     "branch": "feat/deploy", "upstream": "origin/feat/deploy", "ahead": 0},
+         "question": {"text": "Quelle offre OVH ?", "options": []}}}]})
+    r = worker_call(relay, "w_projet_etat", {"project": "et-russe"}).json()
+    assert r["known"] and r["online"] and r["pod"] == "pod-et"
+    x = r["tasks"][0]
+    assert x["status"] == "done" and x["changes"]["files"] == 3 and x["changes"]["pushed"] is True
+    assert x["pull_requests"] == [{"url": "https://github.com/a/b/pull/3", "title": "Déploiement"}] and x["ci"] == "success"
+    assert x["question"] == "Quelle offre OVH ?"
+    assert "et-russe" in [p["id"] for p in worker_call(relay, "w_projet_etat", {}).json()["projects"]]
+    assert worker_call(relay, "w_projet_etat", {"project": "inconnu"}).json()["known"] is False

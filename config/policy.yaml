@@ -12,10 +12,12 @@ approval_timeout_s: 900   # sans réponse => refus
 # confier_au_projet : transmet la demande de l'utilisateur à un projet du cockpit (sa politique s'y applique)
 allow_tools: [Read, Glob, Grep, TodoWrite, Task, Agent, WebSearch, ToolSearch, mcp__services__lister_services, mcp__cockpit__proposer_suite,
               mcp__cockpit__capturer_ecran, mcp__cockpit__ouvrir_pr, mcp__cockpit__chercher_depots,
-              mcp__cockpit__confier_au_projet]
+              mcp__cockpit__confier_au_projet, mcp__cockpit__poser_question,
+              mcp__cockpit__etat_projet]
 
-# Outils jamais autorisés
-deny_tools: [AskUserQuestion]
+# Outils jamais autorisés : questions bloquantes (poser_question les remplace), et outils de Claude Code qui
+# atteignent d'autres sessions Claude de la machine ou planifient du travail hors du cockpit.
+deny_tools: [AskUserQuestion, ListAgents, SendMessage, RemoteTrigger, CronCreate, CronDelete, ScheduleWakeup, PushNotification]
 
 # Outils toujours soumis à validation
 # Lancement et arrêt de services : toujours validés (la carte affiche dépôt, ressources et quota)

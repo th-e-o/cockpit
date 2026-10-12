@@ -358,6 +358,7 @@ function tache_publique(array $t): array {
         'model' => $t['modele'] ?? null, 'group' => $t['groupe'] ?? null, 'tests' => $extra['tests'] ?? null,
         'waiting_project' => !empty($t['attente_projet']),
         'model_used' => $extra['model_used'] ?? null, 'models' => $extra['models'] ?? [], 'model_auto' => $extra['model_auto'] ?? null,
+        'question' => $extra['question'] ?? null,
     ];
 }
 
@@ -968,6 +969,33 @@ switch ($route) {
                 'maj' => time(), 'worker' => (string)($in['worker_id'] ?? '')], JSON_UNESCAPED_UNICODE));
         repondre(['ok' => true]);
 
+    case 'w_projet_etat': // état d'un projet pour un agent (outil etat_projet) : dernières tâches, PR, CI, question
+        exiger_worker();
+        $projet = (string)($in['project'] ?? '');
+        $liste = projets();
+        if ($projet === '') repondre(['projects' => array_map(fn($p) => ['id' => $p['id'], 'name' => $p['name'] ?? $p['id'],
+            'online' => $p['online'], 'pod' => $p['worker_name'] ?? ''], $liste)]);
+        $info = current(array_filter($liste, fn($p) => $p['id'] === $projet)) ?: null;
+        $taches = [];
+        foreach (q('SELECT * FROM taches WHERE projet = ? ORDER BY cree_le DESC, rowid DESC LIMIT 8', [$projet])->fetchAll() as $t) {
+            $p = tache_publique($t);
+            $evts = array_map(fn($d) => json_decode($d, true), q("SELECT donnees FROM evenements WHERE tache_id = ? AND
+                (donnees LIKE '%\"type\":\"pr\"%' OR donnees LIKE '%\"type\":\"ci\"%')", [$t['id']])->fetchAll(PDO::FETCH_COLUMN));
+            $ci = array_values(array_filter($evts, fn($e) => ($e['type'] ?? '') === 'ci'));
+            $c = $p['changes'] ?? null;
+            $taches[] = ['id' => $p['id'], 'instruction' => mb_substr($p['instruction'], 0, 300), 'status' => $p['status'],
+                'created' => date('Y-m-d H:i', $p['created']), 'result' => mb_substr($p['result'], 0, 600),
+                'changes' => $c ? ['files' => $c['file_count'] ?? 0, 'added' => $c['added'] ?? 0, 'removed' => $c['removed'] ?? 0,
+                    'commits' => array_map(fn($x) => $x['subject'] ?? '', $c['commits'] ?? []), 'branch' => $c['branch'] ?? null,
+                    'pushed' => isset($c['upstream']) && empty($c['ahead'])] : null,
+                'tests' => $p['tests'], 'question' => $p['question']['text'] ?? null, 'waiting_pod' => $p['waiting_project'],
+                'pull_requests' => array_values(array_map(fn($e) => ['url' => $e['url'] ?? '', 'title' => $e['title'] ?? ''],
+                    array_filter($evts, fn($e) => ($e['type'] ?? '') === 'pr'))),
+                'ci' => $ci ? (end($ci)['state'] ?? null) : null, 'model' => $p['model_used']];
+        }
+        repondre(['project' => $projet, 'known' => (bool)$info, 'online' => $info['online'] ?? false,
+                  'pod' => $info['worker_name'] ?? null, 'tasks' => $taches]);
+
     case 'w_depots':
         exiger_worker();
         $depots = array_slice(is_array($in['depots'] ?? null) ? $in['depots'] : [], 0, 300);
@@ -1020,7 +1048,7 @@ switch ($route) {
                     $t = $evt['task'];
                     $avant = q('SELECT statut FROM taches WHERE id = ?', [$tacheId])->fetchColumn();
                     $extra = json_decode((string)q('SELECT extra FROM taches WHERE id = ?', [$tacheId])->fetchColumn(), true) ?: [];
-                    foreach (['changes', 'worktree', 'duration_s', 'next_steps', 'tests', 'model_used', 'models', 'model_auto'] as $k) if (isset($t[$k])) $extra[$k] = $t[$k];
+                    foreach (['changes', 'worktree', 'duration_s', 'next_steps', 'tests', 'model_used', 'models', 'model_auto', 'question'] as $k) if (isset($t[$k])) $extra[$k] = $t[$k];
                     q('UPDATE taches SET statut = ?, projet = COALESCE(?, projet), raison_routage = ?, resultat = ?, cout = ?, maj_le = ?,
                        session = COALESCE(?, session), extra = ? WHERE id = ?',
                       [$t['status'], $t['project'] ?? null, (string)($t['route_reason'] ?? ''), (string)($t['result'] ?? ''),

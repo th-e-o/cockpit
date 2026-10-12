@@ -62,6 +62,15 @@ function notifications(s) {
       actions: [{ action: 'ci-fix', title: '▶ Corriger' }], data: { task: c.task_id, fix } });
   }
   for (const t of s.finished || []) {
+    if (t.status === 'done' && t.question?.text) {
+      // Claude attend une réponse : la question d'abord, ses choix en boutons
+      const options = (t.question.options || []).slice(0, 2);
+      out.push({ key: `q-${t.id}`, tag: `tache-${t.id}`, urgent: true, title: '❓ Claude attend ta réponse',
+        body: t.question.text.replace(/\*\*|`/g, '').slice(0, 220),
+        actions: options.map((o, i) => ({ action: `answer-${i}`, title: o.slice(0, 40) })),
+        data: { task: t.id, options } });
+      continue;
+    }
     const steps = t.status === 'done' && !t.next_steps_dismissed ? (t.next_steps || []) : [];
     const suite = steps.length ? `\n💡 ${steps.map((x) => x.titre).join(' · ')}` : '';
     out.push({ key: `t-${t.id}-${t.status}`, tag: `tache-${t.id}`,
@@ -126,6 +135,14 @@ self.addEventListener('notificationclick', (e) => {
       if (e.action === 'ci-fix' && d.task && d.fix) {
         const t = await appel('tache', { instruction: d.fix, reply_to: d.task });
         await self.registration.showNotification('▶ Correction de la CI lancée', { body: 'Claude reprend la conversation.',
+          tag: `tache-${t.id}`, silent: true, data: { task: t.id }, ...ICONE });
+        return;
+      }
+      if (e.action?.startsWith('answer-') && d.task) {
+        const answer = d.options?.[Number(e.action.slice(7))];
+        if (!answer) return ouvrir(d.task);
+        const t = await appel('tache', { instruction: answer, reply_to: d.task });
+        await self.registration.showNotification(`↪ ${answer}`.slice(0, 60), { body: 'Réponse envoyée : Claude reprend la conversation.',
           tag: `tache-${t.id}`, silent: true, data: { task: t.id }, ...ICONE });
         return;
       }

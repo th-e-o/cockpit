@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import time
 from pathlib import Path
 
@@ -49,6 +50,9 @@ Pour la réponse finale, sois concis et utilise ces trois rubriques (omets une r
 **Fait** — ce qui a été fait, en quelques puces ;
 **Choix** — les décisions prises à la place de l'utilisateur ;
 **À faire** — ce qui reste à décider ou ta question, s'il y en a.
+Si tu as besoin d'une réponse de l'utilisateur pour continuer (choix, information manquante, confirmation),
+appelle poser_question juste avant ta réponse finale, avec des choix courts quand c'est possible : il la voit en
+évidence sur son téléphone et y répond d'un geste.
 Juste avant cette réponse finale, appelle proposer_suite avec 1 à 4 prochaines étapes concrètes et utiles
 (par exemple : tester, publier, fusionner, l'amélioration suivante) ; l'utilisateur les lance d'un geste.
 Pour une simple question sans suite évidente, tu peux t'en passer.
@@ -74,6 +78,7 @@ lancer_service, lister_services et arreter_service. N'utilise pas helm directeme
 Si l'utilisateur parle d'un de ses dépôts ou de son code GitHub qui n'est pas encore un projet du cockpit, trouve-le
 avec chercher_depots (plusieurs requêtes si besoin : synonymes, sigles), puis lance un service dessus avec
 lancer_service (depot_git = son URL) pour qu'il devienne un projet ; dis à l'utilisateur ce que tu as trouvé.
+Pour suivre un projet confié à un autre pod (avancement, PR, erreurs), utilise etat_projet.
 Pour un NOUVEAU projet : crée son dépôt GitHub avec creer_depot(nom, relier=false), lance un service dessus
 (lancer_service, depot_git = URL du dépôt créé), puis confie-lui la demande avec confier_au_projet.
 Tu ne peux pas lire le code d'un autre pod depuis ici : après avoir lancé un service pour travailler sur un dépôt,
@@ -167,6 +172,10 @@ def tool_label(tool: str, i: dict) -> str | None:
             return None  # affiché comme « Prochaines étapes » sous la réponse
         case "confier_au_projet":
             return f"📨 Confie la demande au projet {i.get('projet', '')}"
+        case "etat_projet":
+            return f"📊 Consulte l'état du projet {i.get('projet') or '(tous)'}"
+        case "poser_question":
+            return "❓ Te pose une question"
         case "chercher_depots":
             return f"🔎 Cherche « {_clip(i.get('requete', ''), 40)} » dans tes dépôts GitHub"
         case "capturer_ecran":
@@ -189,10 +198,15 @@ def _text(text: str, error: bool = False) -> dict:
     return {"content": [{"type": "text", "text": text}], **({"is_error": True} if error else {})}
 
 
+_PLACEHOLDER = re.compile(r"<[^<>\n]{2,80}>|à compléter", re.I)
+
+
 def clean_next_steps(items) -> list[dict]:
-    """Prochaines étapes proposées par l'agent : 1 à 4, chacune {titre, instruction}."""
+    """Prochaines étapes proposées par l'agent : 1 à 4, chacune {titre, instruction}, sans champ à compléter."""
     out = []
     for x in items if isinstance(items, list) else []:
+        if isinstance(x, dict) and _PLACEHOLDER.search(str(x.get("instruction", ""))):
+            continue  # une étape lancée d'un geste doit être complète
         if isinstance(x, dict) and str(x.get("titre", "")).strip() and str(x.get("instruction", "")).strip():
             out.append({"titre": " ".join(str(x["titre"]).split())[:90], "instruction": str(x["instruction"]).strip()[:2000]})
     return out[:4]
@@ -234,13 +248,24 @@ async def open_pr(cwd: str, args: dict) -> dict:
                                  args.get("base", ""), bool(args.get("brouillon")))
 
 
-def cockpit_server(cwd: str, on_next, spawn=None, pub=None, upload=None, delegate=None):
+def detect_question(result: str) -> dict | None:
+    """Question restée dans la réponse finale (si l'agent n'a pas appelé poser_question) : dernières phrases en « ? »."""
+    tail = re.sub(r"```.*?```", " ", (result or "").strip()[-800:], flags=re.S)
+    tail = re.sub(r"\*\*[^*\n]+\*\*\s*[—:-]?\s*", "", tail)  # rubriques (**À faire** —) et gras
+    found = [q.strip(" *-•\n") for q in re.findall(r"[^.!?\n]*\?", tail)
+             if len(q.strip()) > 8 and "://" not in q and "`" not in q]
+    return {"text": " ".join(found[-3:])[:600], "options": [], "detected": True} if found else None
+
+
+def cockpit_server(cwd: str, on_next, spawn=None, pub=None, upload=None, delegate=None, on_question=None, status=None):
     """Outils propres au cockpit : prochaines étapes, dépôts et PR GitHub, captures d'écran, agents en parallèle."""
 
     @tool("proposer_suite",
           "Propose à l'utilisateur 1 à 4 prochaines étapes concrètes, qu'il pourra lancer d'un geste depuis son "
           "téléphone (ou depuis la notification de fin). titre : quelques mots ; instruction : la consigne complète "
-          "que tu recevras s'il la choisit. À appeler une fois, juste avant ta réponse finale.",
+          "que tu recevras s'il la choisit, envoyée telle quelle : JAMAIS de champ à compléter (« <…> », « à "
+          "compléter ») ; s'il te manque une information, pose plutôt la question avec poser_question. "
+          "À appeler une fois, juste avant ta réponse finale.",
           {"type": "object", "properties": {"etapes": {"type": "array", "minItems": 1, "maxItems": 4, "items": {
               "type": "object", "properties": {"titre": {"type": "string"}, "instruction": {"type": "string"}},
               "required": ["titre", "instruction"]}}}, "required": ["etapes"]})
@@ -317,7 +342,37 @@ def cockpit_server(cwd: str, on_next, spawn=None, pub=None, upload=None, delegat
         return _text(json.dumps([{k: x.get(k) for k in ("name", "url", "branch", "private", "description", "pushed", "why")}
                                  for x in found], ensure_ascii=False))
 
-    tools = [proposer_suite, creer_depot, capturer_ecran, ouvrir_pr, chercher_depots]
+    @tool("poser_question",
+          "Pose une question à l'utilisateur quand tu as besoin de sa réponse pour continuer. Elle s'affiche en évidence "
+          "sur son téléphone (et dans la notification), avec les choix proposés en boutons et un champ libre. "
+          "question : claire et autonome ; choix : 2 à 4 réponses courtes possibles (facultatif). À appeler une fois, "
+          "juste avant ta réponse finale ; sa réponse arrivera comme suite de la conversation.",
+          {"type": "object", "properties": {"question": {"type": "string"},
+                                            "choix": {"type": "array", "items": {"type": "string"}, "maxItems": 4}},
+           "required": ["question"]})
+    async def poser_question(args: dict) -> dict:
+        text = " ".join(str(args.get("question", "")).split())[:1000]
+        if not text:
+            return _text("question vide", error=True)
+        options = [" ".join(str(c).split())[:80] for c in (args.get("choix") or []) if str(c).strip()][:4]
+        if on_question:
+            on_question({"text": text, "options": options})
+        return _text("Question transmise à l'utilisateur. Termine par ta réponse finale (sans répéter la question en détail).")
+
+    tools = [proposer_suite, creer_depot, capturer_ecran, ouvrir_pr, chercher_depots, poser_question]
+    if status:
+        @tool("etat_projet",
+              "État d'un projet du cockpit, vu du relais : pod en ligne ou non, dernières tâches (statut, résultat, "
+              "fichiers modifiés, commits, branche poussée, tests, CI, pull requests, question en attente). Sans projet : "
+              "liste des projets. À utiliser pour suivre un projet confié à un autre pod, au lieu de deviner.",
+              {"type": "object", "properties": {"projet": {"type": "string"}}})
+        async def etat_projet(args: dict) -> dict:
+            try:
+                return _text(json.dumps(await status(str(args.get("projet") or "")), ensure_ascii=False))
+            except Exception as e:
+                return _text(f"état indisponible : {e}", error=True)
+
+        tools.append(etat_projet)
     if spawn:
         @tool("lancer_en_parallele",
               "Lance jusqu'à 5 autres agents Claude en parallèle, chacun avec une instruction autonome et complète (il ne "
@@ -384,6 +439,7 @@ class Runner:
         self.steers: dict[str, list[str]] = {}  # messages de l'utilisateur pendant une tâche
         self.trust: dict[str, float] = {}  # mode confiance : conversation -> fin (activé depuis le téléphone)
         self.on_rate_limit = None  # RateLimitInfo -> None (barre d'usage), fourni par le worker
+        self.project_status = None  # async (projet) -> état vu du relais (outil etat_projet), fourni par le worker
         self._background: set[asyncio.Task] = set()
 
     @staticmethod
@@ -480,7 +536,8 @@ class Runner:
                                                                   defer=True)) if self.spawn_tasks else None)
         servers["cockpit"] = cockpit_server(cwd, lambda steps: setattr(task, "next_steps", steps), spawn,
                                             pub=lambda **kw: self.store.publish("message", {"task_id": task.id, **kw}),
-                                            upload=upload, delegate=delegate)
+                                            upload=upload, delegate=delegate,
+                                            on_question=lambda q: setattr(task, "question", q), status=self.project_status)
         if self.preview:
             append += PREVIEW_APPEND.format(**self.preview)
         if not self.services and delegate:
@@ -630,6 +687,9 @@ class Runner:
                 final = {k: v for k, v in final.items() if k != "status"}
             elif final.get("status") == "done" and changes and changes.get("file_count"):
                 final |= await self._tests(task, project, cwd)
+            if final.get("status") == "done" and not task.question:
+                if q := detect_question(final.get("result", "")):
+                    final["question"] = q
             # Statut final et modifications publiés ensemble : la notification de fin peut les résumer.
             self.store.task_update(task, **final, changes=changes)
             self.store.audit("task_end", task=task.id, project=project.id, status=task.status,

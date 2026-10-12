@@ -32,7 +32,7 @@ def test_proposer_suite(tmp_path):
     captured = []
     h = handlers(str(tmp_path), captured)
     # lancer_en_parallele seulement avec un worker
-    assert set(h) == {"proposer_suite", "creer_depot", "capturer_ecran", "ouvrir_pr", "chercher_depots"}
+    assert set(h) == {"proposer_suite", "creer_depot", "capturer_ecran", "ouvrir_pr", "chercher_depots", "poser_question"}
     r = asyncio.run(h["proposer_suite"]({"etapes": [
         {"titre": "  Lancer   les tests ", "instruction": "Lance pytest et corrige"}, {"titre": "", "instruction": "x"},
         {"titre": "Publier", "instruction": "Pousse la branche"}] + [{"titre": "t", "instruction": "i"}] * 5}))
@@ -164,3 +164,25 @@ def test_confier_au_projet(tmp_path):
     assert "dès que son pod sera connecté" in r["content"][0]["text"] and sent == [("analyse-etp", "Analyse le code des ETP")]
     assert asyncio.run(created["confier_au_projet"]({"projet": "", "instruction": "x"}))["is_error"]
     assert Policy.load(ROOT / "config" / "policy.yaml").evaluate("mcp__cockpit__confier_au_projet", {}, "/").action == "allow"
+
+
+def test_poser_question(tmp_path):
+    from cockpit.agent import detect_question
+
+    asked = []
+    created = {}
+    real = agent_mod.create_sdk_mcp_server
+    agent_mod.create_sdk_mcp_server = lambda name, tools: created.update({t.name: t.handler for t in tools}) or {}
+    try:
+        agent_mod.cockpit_server(str(tmp_path), [].extend, on_question=asked.append)
+    finally:
+        agent_mod.create_sdk_mcp_server = real
+    asyncio.run(created["poser_question"]({"question": " Quel  format pour les cartes ? ", "choix": ["Anki .apkg", "CSV", "", "a", "b", "c"]}))
+    assert asked == [{"text": "Quel format pour les cartes ?", "options": ["Anki .apkg", "CSV", "a", "b"]}]
+    assert asyncio.run(created["poser_question"]({"question": "  "}))["is_error"]
+    assert Policy.load(ROOT / "config" / "policy.yaml").evaluate("mcp__cockpit__poser_question", {}, "/").action == "allow"
+    # Repli : question restée dans la réponse finale
+    q = detect_question("**Fait** — page.\n**À faire** — Quel format veux-tu pour les cartes ? Faut-il un dépôt privé ?")
+    assert q == {"text": "Quel format veux-tu pour les cartes ? Faut-il un dépôt privé ?", "options": [], "detected": True}
+    assert detect_question("Tout est fait, voir https://x.fr/a?b=1.") is None
+    assert detect_question("```\nif x?\n```\nTerminé.") is None
