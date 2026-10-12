@@ -17,6 +17,7 @@ import time
 from pathlib import Path
 
 from . import gitstate
+from . import services as svc
 from .agent import Runner
 from .podstate import PodState
 from .policy import Policy
@@ -154,6 +155,30 @@ class Worker:
                                        "ok": state != "active"})
         self._state = None  # tableau de bord à jour au prochain poll
 
+    async def run_action(self, task: Task, action: dict) -> None:
+        """Action directe demandée depuis le téléphone (sans agent) : lancement d'un pod sur un dépôt git."""
+        self.store.task_update(task, status="running")
+        try:
+            if action.get("type") != "lancer_service":
+                raise svc.ServiceError(f"action inconnue : {action.get('type')}")
+            p = svc.Launch(nom=action.get("nom", ""), depot_git=action.get("depot_git", ""), branche=action.get("branche", ""),
+                           cpu=str(action.get("cpu", "2")), memoire=action.get("memoire", "8Gi"),
+                           disque=action.get("disque", "10Gi"), gpu=bool(action.get("gpu")))
+            text, status = await svc.lancer_nouveau(p), "done"
+        except Exception as e:
+            text, status = f"Lancement impossible : {e}", "error"
+        self.store.audit("service_launch", task=task.id, action=action, result=text)
+        self.store.task_update(task, status=status, result=text)
+
+    async def publish_repos(self) -> None:
+        """Orchestrateur : liste des dépôts GitHub envoyée au relais au démarrage, puis toutes les 10 minutes."""
+        while True:
+            try:
+                await self.relay.depots(await svc.depots_github())
+            except Exception as e:
+                log.warning("liste des dépôts git indisponible : %s", e)
+            await asyncio.sleep(600)
+
     @staticmethod
     def routing_text(task: Task) -> str:
         """Instruction à router, précédée des échanges de la conversation (« ce projet », « oui », …)."""
@@ -202,7 +227,10 @@ class Worker:
                         conversation=t.get("conversation"), context=t.get("context") or [],
                         resume_session=t.get("resume_session"), parent=t.get("parent"))
             self.store.tasks[task.id] = task
-            self.spawn(self.dispatch(task, t.get("project")))
+            if t.get("action"):
+                self.spawn(self.run_action(task, t["action"]))
+            else:
+                self.spawn(self.dispatch(task, t.get("project")))
         for d in msg.get("decisions", []):
             a = self.store.approvals.get(d["id"])
             if a and a.future and not a.future.done():
@@ -224,6 +252,8 @@ class Worker:
 
     async def run(self) -> None:
         self.spawn(self.relay.flush_forever())
+        if ORCHESTRATOR:
+            self.spawn(self.publish_repos())
         hello, delay = True, 2
         log.info("connecté au relais %s — projets : %s", RELAY_URL, ", ".join(self.projects))
         while True:

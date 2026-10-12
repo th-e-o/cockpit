@@ -423,7 +423,8 @@ class Runner:
             if task.conversation and msg.session_id:
                 self.store.conversations[f"{task.conversation}:{task.project}"] = msg.session_id
             return {"status": "error" if msg.is_error else "done", "result": msg.result or "",
-                    "session_id": msg.session_id, "cost_usd": msg.total_cost_usd or 0.0}
+                    "session_id": msg.session_id, "cost_usd": msg.total_cost_usd or 0.0,
+                    "duration_s": round((msg.duration_ms or 0) / 1000)}
         return None
 
     async def worktree_action(self, task: Task, project: Project, action: str) -> str:

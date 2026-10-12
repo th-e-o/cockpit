@@ -167,7 +167,7 @@ def seed_dashboard(relay, p):
                "commits": [{"sha": "9f1e2d3", "subject": "Tableau de bord des pods"}]}
     ev("orch-ui", msg(t1, type="tool_use", tool="Edit", text="{}", label="✏️ Modifie app.js"),
        msg(t1, type="changes", changes=changes, patches={"web/static/app.js": "@@ -10,3 +10,4 @@\n const a = 1;\n-const b = 2;\n+const b = 3;\n+const c = 4;"}),
-       task(t1, status="done", project="ui-cockpit", cost_usd=0.84, changes=changes,
+       task(t1, status="done", project="ui-cockpit", cost_usd=0.84, changes=changes, duration_s=640,
             worktree={"branch": "cockpit/" + t1, "path": "/w", "state": "active"},
             result="**Fait**\n- tableau de bord avec jauges CPU, mémoire, disque\n- résumé des modifications\n**Choix** — onglets sur téléphone, vue côte à côte sur ordinateur\n**À faire** — fusionner la branche"))
 
@@ -189,7 +189,7 @@ def seed_dashboard(relay, p):
     t4 = call(p, "tache", {"instruction": "Corrige le calcul des altitudes", "project": "ui-drones"}).json()["id"]
     c4 = {"files": [{"path": "src/altitude.py", "status": "M", "added": 6, "removed": 4}], "file_count": 1, "added": 6,
           "removed": 4, "branch": "feat/carte", "upstream": "origin/feat/carte", "ahead": 0, "commits": [{"sha": "c0ffee1", "subject": "Altitude : corrige l'unité"}]}
-    ev("pod-drones", msg(t4, type="changes", changes=c4, patches={}), task(t4, status="done", project="ui-drones", cost_usd=0.21, changes=c4,
+    ev("pod-drones", msg(t4, type="changes", changes=c4, patches={}), task(t4, status="done", project="ui-drones", cost_usd=0.21, changes=c4, duration_s=180,
                                                                            result="**Fait** — unité corrigée (pieds → mètres)."))
     # Le worktree listé par l'orchestrateur correspond à la conversation de t1
     st = {"resources": {"cpu": 0.37, "cpu_cores": 4, "mem_used": 5.6 * gi, "mem_limit": 16 * gi, "disk_used": 8.9 * gi, "disk_total": 9.8 * gi},
@@ -198,6 +198,11 @@ def seed_dashboard(relay, p):
           "running": 2, "max_agents": 3, "started": time.time() - 7300,
           "worktrees": [{"project": "ui-cockpit", "conversation": t1, "branch": "cockpit/" + t1}]}
     wpoll(relay, "orch-ui", True, state=st)
+    worker_call(relay, "w_depots", {"depots": [
+        {"name": "th-e-o/drones-vols", "url": "https://github.com/th-e-o/drones-vols", "private": True, "branch": "main",
+         "description": "Analyse des vols de drones", "pushed": "2026-10-11T10:00:00Z", "archived": False},
+        {"name": "th-e-o/PLFMarket", "url": "https://github.com/th-e-o/PLFMarket", "private": False, "branch": "main",
+         "description": "Marché de prédiction", "pushed": "2026-10-10T22:49:29Z", "archived": False}]})
     return t1
 
 
@@ -223,18 +228,38 @@ def test_tableau_de_bord(relay):
         # Téléphone : onglet « Pods »
         page, errors = browser_page(p, browser, relay, **pw.devices["iPhone 13"])
         page.wait_for_selector(".pill.st-done")
-        assert page.inner_text("#tabCount") == "2"
+        assert int(page.inner_text("#tabCount")) >= 2  # d’autres tests du module peuvent laisser des tâches actives
         page.click("#tabDash")
         page.wait_for_selector(".podcard >> text=drones")
         assert "⚠ 1" in page.inner_text(".kpis")
-        assert page.locator(".live").count() == 2 and page.locator(".live.alert").count() == 1
+        assert page.locator(".live", has_text="Refactorise le routeur").count() == 1 and page.locator(".live.alert", has_text="mlflow").count() == 1
         assert "Plan 2/4" in page.inner_text(".lives") and "Lance les tests du routeur" in page.inner_text(".lives")
         assert "⚠ 8,9 Go / 9,8 Go" in page.inner_text(".podcard")  # disque presque plein : alerte avec icône
         assert page.locator(f".wtrow >> text=cockpit/{t1}").count() == 1
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")  # pas de défilement horizontal
         page.screenshot(path=SHOTS / "7-pods-mobile.png", full_page=True)
+        # Bilan par projet : période modifiable
+        page.wait_for_selector(".bcard >> text=Cockpit")
+        bilan = page.locator(".bcard", has_text="Cockpit").first
+        assert "10 min" in bilan.inner_text() and "398" in bilan.inner_text() and "app.js" in bilan.inner_text()
+        assert bilan.locator(".activity i.b").count() == 1
+        page.click("button[data-bilan='30']")
+        page.wait_for_function("document.querySelectorAll('.bcard:first-child .activity i.z').length === 29")
+        page.locator(".bcard").first.screenshot(path=SHOTS / "7b-bilan-mobile.png")
+        # Nouveau pod sur un de mes dépôts
+        page.click("#newPod")
+        page.wait_for_selector(".repo >> text=th-e-o/drones-vols")
+        page.fill("#repoSearch", "drone")
+        assert page.locator(".repo").count() == 1
+        page.click(".repo")
+        assert page.input_value("#podName") == "drones-vols" and "main" in page.get_attribute("#podBranch", "placeholder")
+        page.select_option("#podMem", "16Gi")
+        page.screenshot(path=SHOTS / "7c-nouveau-pod.png")
+        page.click("#podSubmit")
+        page.wait_for_selector("#podDlg", state="hidden")
+        page.wait_for_selector(".live >> text=Nouveau pod « drones-vols »")
         # Retour au fil depuis une tâche du tableau de bord : résumé des modifications, diff à la demande
-        page.click(f".recent[data-jump='{t1}']")
+        page.click(f".recents .recent[data-jump='{t1}']")
         page.wait_for_selector("#feed", state="visible")
         card = page.locator(f"#t-{t1}")
         assert "4 fichiers" in card.inner_text() and "+398" in card.inner_text() and "1 commit" in card.inner_text()
@@ -250,6 +275,13 @@ def test_tableau_de_bord(relay):
         page.wait_for_selector(".podcard >> text=drones")
         assert page.is_visible("#feed") and page.is_visible("#dash") and not page.is_visible(".tabs")
         page.screenshot(path=SHOTS / "9-pods-ordinateur.png")
+        page.keyboard.press("Control+k")
+        assert page.evaluate("document.activeElement.id") == "input"
+        # Raccourcis de l'icône de l'application installée (manifest)
+        page.goto(relay["app"] + "?vue=pods&action=pod")
+        page.wait_for_selector("#podDlg[open] .repo >> text=th-e-o/PLFMarket")
+        assert page.evaluate("location.search") == "" and "view-dash" in page.get_attribute("body", "class")
+        page.keyboard.press("Escape")
         dark, dark_errors = browser_page(p, browser, relay, viewport={"width": 1440, "height": 900}, color_scheme="dark")
         dark.wait_for_selector(".podcard >> text=drones")
         dark.screenshot(path=SHOTS / "9b-pods-ordinateur-sombre.png")
@@ -259,3 +291,17 @@ def test_tableau_de_bord(relay):
         assert wpoll(relay, "orch-ui", True)["worktree_actions"][0]["action"] == "merge"
         assert not errors, errors
         browser.close()
+
+
+def test_manifeste_application():
+    """Manifeste de l'application installable (Android, PC) : icônes présentes, raccourcis dans le périmètre."""
+    import json
+    from pathlib import Path
+
+    static = Path(__file__).resolve().parent.parent / "web" / "static"
+    m = json.loads((static / "manifest.json").read_text())
+    assert m["display"] == "standalone" and m["scope"] == m["start_url"] == "../"
+    assert {i["purpose"] for i in m["icons"]} == {"any", "maskable"}
+    for icon in m["icons"] + [i for sc in m["shortcuts"] for i in sc["icons"]]:
+        assert (static / icon["src"]).exists(), icon
+    assert all(sc["url"].startswith("../?") for sc in m["shortcuts"])

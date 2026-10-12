@@ -78,3 +78,46 @@ def test_politique_et_validation(monkeypatch):
     assert "cockpit-test" in text and "PLFMarket" in text and "2 CPU" in text and "pods 5/100" in text
     assert asyncio.run(svc.describe("Bash", {})) is None
     assert "sans dépôt" in asyncio.run(svc.describe(svc.LAUNCH_TOOL, {"nom": "drones"}))
+
+
+def test_nom_depuis_depot():
+    assert svc.nom_depuis_depot("https://github.com/th-e-o/PLFMarket") == "plfmarket"
+    assert svc.nom_depuis_depot("https://github.com/AIML4OS/WP7_landcover.git") == "wp7-landcover"
+    assert svc.nom_depuis_depot("https://github.com/a/" + "x" * 40) == "x" * 30
+    assert svc.nom_depuis_depot("https://github.com/a/__") == "projet"
+
+
+def test_lancement_depuis_le_telephone(tmp_path, monkeypatch):
+    """Action « lancer_service » : exécutée par l'orchestrateur sans agent, sans écraser un service existant."""
+    from cockpit import worker as worker_mod
+    from cockpit.relay import Relay
+    from cockpit.store import Task
+
+    monkeypatch.setattr(worker_mod, "DATA", tmp_path)
+    launched = []
+
+    async def lister():
+        return [{"nom": "existant"}]
+
+    async def lancer(p):
+        launched.append(p)
+        return f"Service {p.release} lancé."
+
+    monkeypatch.setattr(svc, "lister", lister)
+    monkeypatch.setattr(svc, "lancer", lancer)
+
+    async def scenario():
+        w = worker_mod.Worker(Relay("http://relais.invalid", "k"))
+        ok = Task(id="t1", instruction="pod")
+        await w.run_action(ok, {"type": "lancer_service", "nom": "drones", "depot_git": "https://github.com/a/drones"})
+        dup = Task(id="t2", instruction="pod")
+        await w.run_action(dup, {"type": "lancer_service", "nom": "existant"})
+        bad = Task(id="t3", instruction="pod")
+        await w.run_action(bad, {"type": "lancer_service", "nom": "Pas Bon"})
+        return ok, dup, bad
+
+    ok, dup, bad = asyncio.run(scenario())
+    assert ok.status == "done" and ok.result == "Service cockpit-drones lancé."
+    assert launched[0].depot_git == "https://github.com/a/drones" and launched[0].cpu == "2"
+    assert dup.status == "error" and "existe déjà" in dup.result
+    assert bad.status == "error" and "nom invalide" in bad.result and len(launched) == 1

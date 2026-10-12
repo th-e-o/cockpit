@@ -54,6 +54,10 @@ class Relay:
         """Crée des tâches filles (une conversation chacune) ; le relais les livre au worker de leur projet."""
         return (await self.call("w_taches", {"parent": parent, "tasks": tasks, "worker_id": self.worker_id}))["ids"]
 
+    async def depots(self, depots: list[dict]) -> None:
+        """Publie la liste des dépôts git de l'utilisateur (formulaire « Nouveau pod » du téléphone)."""
+        await self.call("w_depots", {"depots": depots})
+
     async def pairing_url(self) -> str:
         return (await self.call("w_appairage", {}))["url"]
 

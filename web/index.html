@@ -40,7 +40,7 @@
       <button type="button" id="newConv" class="btn ghost" title="un autre Claude démarre, en parallèle si le projet est occupé">Nouvelle conversation</button>
     </div>
     <form id="composer">
-      <textarea id="input" rows="1" placeholder="Ton instruction…" enterkeyhint="send"></textarea>
+      <textarea id="input" rows="1" placeholder="Ton instruction…" title="Ctrl+K ou / pour écrire depuis n'importe où" enterkeyhint="send"></textarea>
       <button type="submit" id="send" aria-label="envoyer">➤</button>
     </form>
   </footer>
@@ -65,12 +65,37 @@
   <dialog id="menuDlg">
     <div class="dlghead"><h2>Menu</h2><button class="icon" data-close>✕</button></div>
     <div class="menu">
+      <button class="btn hidden" id="mInstall">📲 Installer l'application</button>
+      <button class="btn" id="mPod">🚀 Nouveau pod sur un dépôt git</button>
       <button class="btn" id="mAudit">📜 Journal d'audit</button>
       <button class="btn" id="mNotif">🔔 Activer les notifications</button>
       <button class="btn" id="mDevices">🔑 Passkeys et appareils</button>
       <button class="btn bad" id="mLogout">Se déconnecter</button>
     </div>
     <p class="hint" id="workerInfo"></p>
+  </dialog>
+
+  <!-- Nouveau pod Onyxia : clone d'un dépôt git, lancé par l'orchestrateur -->
+  <dialog id="podDlg">
+    <div class="dlghead"><h2>Nouveau pod</h2><button class="icon" data-close>✕</button></div>
+    <form id="podForm" class="podform">
+      <input id="repoSearch" type="search" placeholder="Rechercher dans mes dépôts…" autocomplete="off" aria-label="rechercher un dépôt">
+      <div id="repoList" class="repolist" role="listbox" aria-label="mes dépôts"></div>
+      <label>Dépôt git (https) — vide : dossier vide
+        <input id="podRepo" type="url" placeholder="https://github.com/…" autocomplete="off"></label>
+      <div class="row2">
+        <label>Nom du pod<input id="podName" required maxlength="30" autocomplete="off"></label>
+        <label>Branche<input id="podBranch" placeholder="par défaut" autocomplete="off"></label>
+      </div>
+      <div class="row3">
+        <label>CPU<select id="podCpu"><option>1</option><option selected>2</option><option>4</option><option>8</option></select></label>
+        <label>Mémoire<select id="podMem"><option>4Gi</option><option selected>8Gi</option><option>16Gi</option><option>32Gi</option></select></label>
+        <label>Disque<select id="podDisk"><option selected>10Gi</option><option>20Gi</option><option>50Gi</option><option>100Gi</option></select></label>
+      </div>
+      <label class="check"><input type="checkbox" id="podGpu"> 1 GPU</label>
+      <p class="hint" id="podHint"></p>
+      <button type="submit" id="podSubmit">🚀 Lancer le pod</button>
+    </form>
   </dialog>
 
   <dialog id="listDlg">

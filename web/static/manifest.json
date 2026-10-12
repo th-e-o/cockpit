@@ -1,15 +1,28 @@
 {
   "name": "Cockpit Onyxia × Claude Code",
   "short_name": "Cockpit",
+  "description": "Piloter des agents Claude Code dans Onyxia : instructions, validations, modifications et tableau de bord des pods.",
+  "lang": "fr",
+  "dir": "ltr",
+  "categories": ["developer", "productivity"],
   "id": "../",
   "start_url": "../",
   "scope": "../",
   "display": "standalone",
+  "orientation": "any",
+  "launch_handler": { "client_mode": "focus-existing" },
   "background_color": "#0f1115",
   "theme_color": "#0f1115",
   "icons": [
-    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
-    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any maskable" },
-    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" }
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ],
+  "shortcuts": [
+    { "name": "Tableau de bord", "short_name": "Pods", "url": "../?vue=pods",
+      "icons": [{ "src": "icon-192.png", "sizes": "192x192", "type": "image/png" }] },
+    { "name": "Nouveau pod sur un dépôt git", "short_name": "Nouveau pod", "url": "../?action=pod",
+      "icons": [{ "src": "icon-192.png", "sizes": "192x192", "type": "image/png" }] }
   ]
 }

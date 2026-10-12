@@ -3,7 +3,7 @@
 const $ = (s) => document.querySelector(s);
 // replyTo : tâche dont le prochain message est la suite (undefined tant que l'historique n'est pas chargé)
 const state = { projects: [], selected: null, tasks: new Map(), order: [], lastId: 0, workerOnline: false, replay: false, replyTo: undefined,
-  workers: [], diffs: new Map(), view: 'chat' };
+  workers: [], diffs: new Map(), view: 'chat', bilan: null, bilanAt: 0, bilanJours: 7, repos: null };
 const REPRISE_AUTO = 2 * 3600; // à l'ouverture, la dernière conversation continue si elle a moins de 2 h
 
 const STATUS = {
@@ -263,7 +263,7 @@ function taskHtml(e) {
       ${t.worktree ? `<span class="pill wt" title="Claude en parallèle, dans son propre worktree git">🌿 ${esc(t.worktree.branch)}</span>` : ''}
       ${t.parent ? `<span class="pill" title="lancée par un autre Claude (lancer_en_parallele)">🔀 sous-tâche</span>` : ''}
       ${ACTIVE.has(t.status) ? `<button class="btn ghost" data-cancel="${esc(t.id)}">Arrêter</button>`
-        : t.id !== state.replyTo ? `<button class="btn ghost" data-reply="${esc(t.id)}">Répondre</button>` : ''}
+        : t.id !== state.replyTo && t.kind !== 'service' ? `<button class="btn ghost" data-reply="${esc(t.id)}">Répondre</button>` : ''}
     </div><div class="log">${body}</div>`;
 }
 
@@ -412,7 +412,7 @@ function liveCard(e) {
   const plan = todos?.length ? `<div class="plan"><div class="bar"><i style="width:${(done / todos.length * 100).toFixed(0)}%"></i></div><span>Plan ${done}/${todos.length}</span></div>` : '';
   return `<button class="live${t.status === 'waiting_approval' ? ' alert' : ''}" data-jump="${esc(t.id)}">
     <div class="lhead"><span class="pill st-${esc(t.status)}">${STATUS[t.status] || esc(t.status)}</span>
-      <b>${esc(proj?.name || t.project || 'Auto')}</b>${t.worktree ? `<span class="wt">🌿 parallèle</span>` : ''}
+      <b>${esc(proj?.name || t.project || (t.kind === 'service' ? 'Onyxia' : 'Auto'))}</b>${t.worktree ? `<span class="wt">🌿 parallèle</span>` : ''}
       <span class="since" data-since="${Number(t.created)}"></span></div>
     <div class="linst">${esc(t.instruction || '')}</div>
     <div class="lstep">${t.status === 'running' ? '<span class="spin"></span>' : ''}<span>${esc(currentStep(e))}</span></div>${plan}</button>`;
@@ -469,6 +469,143 @@ function recentRow(e) {
     <span class="rtime" data-ago="${Number(t.updated || t.created)}"></span></button>`;
 }
 
+// ---------- bilan par projet
+const BILAN_PERIODES = [[1, 'Aujourd\'hui'], [7, '7 jours'], [30, '30 jours']];
+const jourFr = (ts) => new Date(ts * 1000).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', month: 'short' });
+
+async function loadBilan(force = false) {
+  if (state.bilanLoading || !dashVisible()) return;
+  if (!force && state.bilan?.days === state.bilanJours && Date.now() - state.bilanAt < 30000) return;
+  state.bilanLoading = true;
+  try {
+    state.bilan = await api('bilan', undefined, `&jours=${state.bilanJours}`);
+    state.bilanAt = Date.now();
+  } catch { /* nouvel essai au prochain rendu */ }
+  state.bilanLoading = false;
+  renderDash();
+}
+
+/** Activité par jour (tâches) : une seule série, barres fines arrondies posées sur la ligne de base. */
+function activityChart(days, start) {
+  const max = Math.max(1, ...days);
+  const bars = days.map((n, i) => {
+    const label = `${jourFr(start + i * 86400 + 43200)} : ${n} tâche${n > 1 ? 's' : ''}`;
+    return `<span class="col" title="${esc(label)}"><i class="${n ? 'b' : 'z'}" style="height:${n ? Math.max(10, n / max * 100).toFixed(0) : 0}%"></i></span>`;
+  }).join('');
+  const total = days.reduce((a, b) => a + b, 0);
+  return `<figure class="activity"><div class="bars" role="img" aria-label="Activité : ${total} tâche(s) sur ${days.length} jours">${bars}</div>
+    <figcaption><span>${jourFr(start + 43200)}</span><span>aujourd'hui</span></figcaption></figure>`;
+}
+
+function bilanCard(b, p) {
+  const proj = state.projects.find((x) => x.id === p.project);
+  const w = state.workers.find((x) => (x.projects || []).includes(p.project));
+  const g = w?.state?.projects?.[p.project];
+  const stat = (v, l, sub = '') => `<div class="bstat"><div class="v">${v}</div><div class="l">${l}</div>${sub ? `<div class="s">${sub}</div>` : ''}</div>`;
+  const statuts = [p.done ? `✅ ${p.done}` : '', p.error ? `❌ ${p.error}` : '', p.active ? `◐ ${p.active}` : ''].filter(Boolean).join(' · ');
+  const git = g ? [`⎇ ${esc(g.branch || '?')}`, g.dirty ? `<span class="warnt">● ${g.dirty} non commité${g.dirty > 1 ? 's' : ''}</span>` : '<span class="okt">propre</span>',
+    g.ahead ? `↑${g.ahead} à pousser` : ''].filter(Boolean).join(' · ') : '';
+  const files = p.top_files.length ? `<div class="bsub">Fichiers les plus touchés</div>${p.top_files.map((f) => {
+    const i = f.path.lastIndexOf('/');
+    return `<div class="tfile"><span class="fp"><span class="dir">${esc(f.path.slice(0, i + 1))}</span>${esc(f.path.slice(i + 1))}</span><span class="muted">×${f.count}</span></div>`;
+  }).join('')}` : '';
+  const icon = { done: '✅', error: '❌', cancelled: '⏹', needs_project: '❓' };
+  const recent = p.recent.map((t) => `<button class="brecent" data-jump="${esc(t.id)}"><span>${icon[t.status] || '◐'}</span>
+    <span class="rinst">${esc(t.instruction)}</span><span class="rtime" data-ago="${t.updated}"></span></button>`).join('');
+  return `<article class="bcard">
+    <div class="podhead"><b>${esc(proj?.name || p.project)}</b>${w ? `<span class="tag"><span class="dot${w.online ? ' on' : ''}"></span>${esc(w.name)}</span>` : ''}
+      <span class="muted podseen">actif <span data-ago="${p.last}"></span></span></div>
+    ${git ? `<div class="pgit">${git}</div>` : ''}
+    <div class="bstats">
+      ${stat(p.tasks, plural(p.tasks, 'tâche').replace(/^\d+ /, ''), statuts)}
+      ${stat(p.duration_s ? dureeLongue(p.duration_s) : '—', 'de travail')}
+      ${stat(p.file_count, plural(p.file_count, 'fichier').replace(/^\d+ /, ''), p.added || p.removed ? `<span class="add">+${p.added}</span> <span class="del">−${p.removed}</span>` : '')}
+      ${stat(p.commits, plural(p.commits, 'commit').replace(/^\d+ /, ''))}
+    </div>
+    ${b.days > 1 ? activityChart(p.days, b.start) : ''}
+    ${files ? `<div class="tfiles">${files}</div>` : ''}
+    ${recent ? `<div class="brecents">${recent}</div>` : ''}
+  </article>`;
+}
+
+function bilanHtml() {
+  const b = state.bilan;
+  const seg = `<div class="seg" role="group" aria-label="période">${BILAN_PERIODES.map(([d, l]) =>
+    `<button type="button" data-bilan="${d}" aria-pressed="${state.bilanJours === d}">${l}</button>`).join('')}</div>`;
+  const body = !b || b.days !== state.bilanJours ? '<div class="emptyd">Chargement…</div>'
+    : b.projects.length ? `<div class="bilans">${b.projects.map((p) => bilanCard(b, p)).join('')}</div>`
+    : '<div class="emptyd">Aucune tâche sur cette période.</div>';
+  return `<section class="sect"><div class="secthead"><h3>Bilan par projet</h3>${seg}</div>${body}</section>`;
+}
+
+// ---------- nouveau pod sur un dépôt git
+const slug = (url) => (url.replace(/\/+$/, '').replace(/\.git$/, '').split('/').pop() || '').toLowerCase()
+  .replace(/[^a-z0-9-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '').slice(0, 30).replace(/-$/, '') || 'projet';
+
+async function openPodDialog() {
+  $('#menuDlg').close();
+  $('#podForm').reset();
+  $('#podHint').textContent = '';
+  $('#podSubmit').disabled = false;
+  $('#podDlg').showModal();
+  renderRepos();
+  try {
+    const r = await api('depots');
+    state.repos = r.depots;
+    if (!r.orchestrateur) $('#podHint').textContent = '⚠️ Orchestrateur hors ligne : le pod ne pourra pas être lancé.';
+    else if (!r.depots.length) $('#podHint').textContent = 'Liste des dépôts indisponible : colle l\'URL du dépôt.';
+  } catch (e) {
+    state.repos = [];
+    $('#podHint').textContent = e.message;
+  }
+  renderRepos();
+}
+
+function renderRepos() {
+  const q = $('#repoSearch').value.trim().toLowerCase();
+  const list = state.repos;
+  if (!list) { $('#repoList').innerHTML = '<div class="hint">Chargement de tes dépôts…</div>'; return; }
+  const hits = list.filter((r) => !r.archived && (!q || `${r.name} ${r.description}`.toLowerCase().includes(q))).slice(0, q ? 20 : 8);
+  const sel = $('#podRepo').value;
+  $('#repoList').innerHTML = hits.map((r) => `<button type="button" class="repo" role="option" aria-selected="${r.url === sel}"
+      data-repo="${esc(r.url)}" data-branch="${esc(r.branch)}">
+      <span class="rn">${r.private ? '🔒 ' : ''}${esc(r.name)}</span>
+      <span class="rd">${esc(r.description || '')}</span>
+      <span class="rp">${r.pushed ? `poussé ${ago(Date.parse(r.pushed) / 1000)}` : ''}</span></button>`).join('')
+    || `<div class="hint">${list.length ? 'Aucun dépôt ne correspond.' : ''}</div>`;
+}
+
+$('#repoSearch').addEventListener('input', renderRepos);
+$('#podRepo').addEventListener('change', () => { if ($('#podRepo').value && !$('#podName').value) $('#podName').value = slug($('#podRepo').value); });
+$('#repoList').addEventListener('click', (ev) => {
+  const b = ev.target.closest('[data-repo]');
+  if (!b) return;
+  ev.stopPropagation();
+  $('#podRepo').value = b.dataset.repo;
+  $('#podName').value = slug(b.dataset.repo);
+  $('#podBranch').value = '';
+  $('#podBranch').placeholder = `par défaut (${b.dataset.branch})`;
+  renderRepos();
+});
+
+$('#podForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const nom = $('#podName').value.trim();
+  if (!/^[a-z0-9]([a-z0-9-]{0,28}[a-z0-9])?$/.test(nom)) { $('#podHint').textContent = 'Nom : minuscules, chiffres et tirets (30 au plus).'; return; }
+  $('#podSubmit').disabled = true;
+  try {
+    const t = await api('lancer_pod', { nom, depot_git: $('#podRepo').value.trim(), branche: $('#podBranch').value.trim(),
+      cpu: $('#podCpu').value, memoire: $('#podMem').value, disque: $('#podDisk').value, gpu: $('#podGpu').checked });
+    onEvent({ kind: 'task', task_id: t.id, task: t });
+    $('#podDlg').close();
+    await poll();
+  } catch (e) {
+    if (e instanceof AuthError) return start();
+    $('#podHint').textContent = e.message;
+    $('#podSubmit').disabled = false;
+  }
+});
+
 const dashVisible = () => getComputedStyle($('#dash')).display !== 'none';
 
 function renderDash() {
@@ -498,13 +635,15 @@ function renderDash() {
     <section class="sect"><h3>En cours</h3>${active.length
       ? `<div class="lives">${active.map(liveCard).join('')}</div>`
       : '<div class="emptyd">Aucun Claude ne travaille. Envoie une instruction ; pour en lancer plusieurs, ouvre une nouvelle conversation par tâche.</div>'}</section>
-    <section class="sect"><h3>Pods · ${online.length} en ligne</h3>${state.workers.length
+    ${bilanHtml()}
+    <section class="sect"><div class="secthead"><h3>Pods · ${online.length} en ligne</h3><button type="button" class="btn ghost" id="newPod">＋ Nouveau pod</button></div>${state.workers.length
       ? `<div class="pods">${state.workers.map(podCard).join('')}</div>`
       : '<div class="emptyd">Aucun pod connecté. Lance « ./run.sh » dans un service VSCode Onyxia.</div>'}</section>
     ${recent.length ? `<section class="sect"><h3>Terminées récemment</h3><div class="recents">${recent.map(recentRow).join('')}</div></section>` : ''}
   </div>`;
   // Reconstruit seulement si le contenu change (survol, focus et clics préservés) ; les durées vivent dans tick().
   if (html !== state.dashHtml) { $('#dash').innerHTML = html; state.dashHtml = html; tick(); }
+  loadBilan();
 }
 
 function setView(v) {
@@ -517,9 +656,9 @@ function setView(v) {
 }
 
 function jumpTo(id) {
-  if (state.view === 'dash' && !matchMedia('(min-width: 1100px)').matches) setView('chat');
   const el = document.getElementById(`t-${id}`);
-  if (!el) return;
+  if (!el) return; // tâche ancienne, absente du fil
+  if (state.view === 'dash' && !matchMedia('(min-width: 1100px)').matches) setView('chat');
   el.scrollIntoView({ behavior: 'smooth', block: 'center' });
   el.classList.remove('flash');
   void el.offsetWidth;
@@ -602,7 +741,7 @@ async function poll() {
     for (const evt of s.events) { onEvent(evt); touched.add(evt.task_id); }
     state.lastId = s.last_id;
     if (state.replyTo === undefined) {
-      const last = state.tasks.get(state.order[state.order.length - 1])?.task;
+      const last = [...state.order].reverse().map((id) => state.tasks.get(id).task).find((t) => t.kind !== 'service');
       state.replyTo = null;
       if (last?.created && Date.now() / 1000 - last.created < REPRISE_AUTO) setReplyTo(last.id);
     }
@@ -662,6 +801,15 @@ document.addEventListener('click', async (ev) => {
     } else if (b.dataset.cancel) {
       await api('annuler', { task_id: b.dataset.cancel });
       poll();
+    } else if (b.dataset.bilan) {
+      state.bilanJours = Number(b.dataset.bilan);
+      try { localStorage.setItem('cockpit_bilan', b.dataset.bilan); } catch { /* sans importance */ }
+      renderDash();
+    } else if (b.id === 'mInstall') {
+      $('#menuDlg').close();
+      await installPrompt?.prompt();
+    } else if (b.id === 'newPod' || b.id === 'mPod') {
+      await openPodDialog();
     } else if (b.dataset.view) {
       setView(b.dataset.view);
     } else if (b.dataset.jump) {
@@ -764,6 +912,39 @@ $('#composer').addEventListener('submit', async (ev) => {
   $('#send').disabled = false;
 });
 
+// ---------- application installée (Android, PC) : invite d'installation, raccourcis de l'icône, clavier
+let installPrompt = null;
+addEventListener('beforeinstallprompt', (ev) => {
+  ev.preventDefault();
+  installPrompt = ev;
+  $('#mInstall').classList.remove('hidden');
+});
+addEventListener('appinstalled', () => { installPrompt = null; $('#mInstall').classList.add('hidden'); });
+
+/** Raccourcis de l'icône (manifest) : ?vue=pods ouvre le tableau de bord, ?action=pod le formulaire « Nouveau pod ». */
+function applyLaunchParams() {
+  const q = new URLSearchParams(location.search);
+  if (!q.has('vue') && !q.has('action')) return;
+  history.replaceState(null, '', location.pathname);
+  if (q.get('vue') === 'pods') setView('dash');
+  if (q.get('action') === 'pod') openPodDialog();
+}
+
+// Clavier : « / » ou Ctrl/⌘+K pour écrire, Échap pour quitter la saisie, Alt+1 / Alt+2 pour changer de vue.
+document.addEventListener('keydown', (e) => {
+  const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName);
+  if ((e.key === 'k' && (e.ctrlKey || e.metaKey)) || (e.key === '/' && !typing)) {
+    e.preventDefault();
+    if (state.view === 'dash' && !matchMedia('(min-width: 1100px)').matches) setView('chat');
+    input.focus();
+  } else if (e.key === 'Escape' && document.activeElement === input) {
+    input.blur();
+  } else if (e.altKey && (e.key === '1' || e.key === '2')) {
+    e.preventDefault();
+    setView(e.key === '1' ? 'chat' : 'dash');
+  }
+});
+
 // ---------- démarrage
 async function start() {
   try {
@@ -771,12 +952,16 @@ async function start() {
     $('#auth').classList.add('hidden');
     refreshPushSubscription();
     poll();
+    applyLaunchParams();
   } catch (e) {
     authScreen({ title: 'Hors ligne', text: e.message, button: 'Réessayer', onClick: start });
   }
 }
 
-try { if (localStorage.getItem('cockpit_view') === 'dash') setView('dash'); } catch { /* navigation privée */ }
+try {
+  if ([1, 7, 30].includes(Number(localStorage.getItem('cockpit_bilan')))) state.bilanJours = Number(localStorage.getItem('cockpit_bilan'));
+  if (localStorage.getItem('cockpit_view') === 'dash') setView('dash');
+} catch { /* navigation privée */ }
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(console.error);
 // Lien d'appairage ouvert alors que le cockpit est déjà affiché : seul le #hash change.
 window.addEventListener('hashchange', () => { if (location.hash.includes('pair=')) start(); });

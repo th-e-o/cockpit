@@ -47,8 +47,14 @@ du worker d'un service à l'autre, ajoute aussi `COCKPIT_WORKER_KEY` avec le con
 ./run.sh          # démarre le worker en arrière-plan
 ./run.sh pair     # QR code → scan avec l'appareil photo → « Activer Face ID »
 ```
-Puis, sur iPhone : Partager → *Sur l'écran d'accueil*. Ouvre le cockpit depuis l'icône, puis
-☰ → *Activer les notifications*. Sur Android : menu → *Installer l'application*.
+Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer les notifications* :
+- **Android** (Chrome) : ☰ → *📲 Installer l'application* (ou menu du navigateur → *Installer l'application*).
+  Chrome en fait une vraie application Android (WebAPK) : icône dans le tiroir, fenêtre plein écran, notifications.
+  Un appui long sur l'icône propose *Pods* (tableau de bord) et *Nouveau pod*.
+- **PC** (Chrome, Edge) : icône d'installation dans la barre d'adresse, ou ☰ → *Installer l'application* :
+  fenêtre dédiée, épinglable dans la barre des tâches. Fil et tableau de bord côte à côte ; `Ctrl+K` ou `/` pour
+  écrire, `Alt+1` / `Alt+2` pour changer de vue sur un écran étroit.
+- **iPhone** : Partager → *Sur l'écran d'accueil*.
 
 ## Au quotidien
 
@@ -62,6 +68,14 @@ Puis, sur iPhone : Partager → *Sur l'écran d'accueil*. Ouvre le cockpit depui
 - **Tableau de bord** (onglet *Pods* sur téléphone, à droite du fil sur un écran large) : Claude au travail,
   validations en attente, tâches et coût du jour ; pour chaque pod, CPU / mémoire (cgroup, comme `kubectl top`) /
   disque de `~/work`, agents actifs, état git de chaque projet et branches parallèles. Toucher une carte ouvre la tâche.
+- **Bilan par projet** (tableau de bord, aujourd'hui / 7 / 30 jours) : tâches réussies ou en erreur, temps de travail
+  des agents, fichiers distincts touchés, lignes `+/−`, commits, activité par jour, fichiers les plus modifiés,
+  dernières tâches et état git actuel du projet.
+- **Nouveau pod sur un dépôt git** (tableau de bord → *＋ Nouveau pod*, ou ☰) : choix parmi tes dépôts GitHub
+  (publics et privés, listés par l'orchestrateur avec le token git d'Onyxia, rafraîchis toutes les 10 min) ou URL
+  collée, nom, branche et ressources. L'orchestrateur lance le service directement, sans agent ni validation
+  supplémentaire (c'est toi qui le demandes), et refuse de remplacer un service existant. Le projet apparaît dans le
+  cockpit dès que le worker du pod est connecté (1 à 3 min).
 - **Plusieurs Claude en parallèle** : chaque conversation a son agent. Des conversations sur des projets différents
   tournent ensemble ; sur le même projet, la première travaille dans le dossier principal et les suivantes dans un
   **worktree git** dédié (`~/work/.cockpit-worktrees/<projet>-<conversation>`, branche `cockpit/<conversation>`).

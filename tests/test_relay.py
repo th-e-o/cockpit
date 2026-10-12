@@ -410,3 +410,39 @@ def test_tableau_de_bord_modifications_et_parallele(relay):
     livrees = wpoll(relay, "pod-tb", False)["tasks"]
     assert [x["id"] for x in livrees] == ids and all(x["parent"] == t["id"] and x["conversation"] == x["id"] for x in livrees)
     assert last_status(p)[ids[0]]["parent"] == t["id"]
+
+
+def test_nouveau_pod_et_bilan(relay):
+    """Dépôts publiés par l'orchestrateur, lancement d'un pod depuis le téléphone, bilan par projet."""
+    p = paired_phone(relay)
+    depots = [{"name": "th-e-o/drones", "url": "https://github.com/th-e-o/drones", "private": True, "branch": "main",
+               "description": "Vols", "pushed": "2026-10-12T10:00:00Z", "archived": False}]
+    assert worker_call(relay, "w_depots", {"depots": depots}).json()["ok"]
+    wpoll(relay, "orch-np", True, [{"id": "np-onyxia", "name": "Onyxia"}], hello=True)
+    r = call(p, "depots").json()
+    assert r["depots"] == depots and r["orchestrateur"] is True
+
+    for bad in [{"nom": "Pas Bon"}, {"nom": "x", "depot_git": "http://github.com/a/b"}, {"nom": "x", "depot_git": "https://u:p@h/a"},
+                {"nom": "np-onyxia"}, {"nom": "x", "branche": "a b"}]:
+        assert call(p, "lancer_pod", bad).status_code == 400, bad
+    t = call(p, "lancer_pod", {"nom": "drones", "depot_git": "https://github.com/th-e-o/drones", "branche": "dev", "cpu": "4"}).json()
+    assert t["kind"] == "service" and t["instruction"] == "🚀 Nouveau pod « drones » : th-e-o/drones (dev)"
+    livrees = [x for x in wpoll(relay, "orch-np", True)["tasks"] if x["id"] == t["id"]]
+    assert livrees[0]["action"] == {"type": "lancer_service", "nom": "drones", "depot_git": "https://github.com/th-e-o/drones",
+                                    "branche": "dev", "cpu": "4", "memoire": "8Gi", "disque": "10Gi", "gpu": False}
+
+    # Bilan : tâches, durée, fichiers distincts, lignes, commits, activité du jour
+    t1 = call(p, "tache", {"instruction": "un", "project": "np-onyxia"}).json()["id"]
+    t2 = call(p, "tache", {"instruction": "deux", "project": "np-onyxia"}).json()["id"]
+    ch = lambda files, a, c: {"files": [{"path": f, "status": "M", "added": a, "removed": 1} for f in files],
+                              "file_count": len(files), "added": a * len(files), "removed": len(files), "commits": [{"sha": "x", "subject": "s"}] * c}
+    worker_call(relay, "w_evenements", {"worker_id": "orch-np", "events": [
+        {"kind": "task", "task_id": t1, "task": {"status": "done", "project": "np-onyxia", "duration_s": 120, "changes": ch(["a.py", "b.py"], 3, 1)}},
+        {"kind": "task", "task_id": t2, "task": {"status": "error", "project": "np-onyxia", "duration_s": 30, "changes": ch(["a.py"], 5, 2)}}]})
+    b = {x["project"]: x for x in call(p, "bilan", jours=7).json()["projects"]}["np-onyxia"]
+    assert (b["tasks"], b["done"], b["error"], b["duration_s"]) == (2, 1, 1, 150)
+    assert (b["file_count"], b["added"], b["removed"], b["commits"]) == (2, 11, 3, 3)
+    assert b["top_files"][0] == {"path": "a.py", "count": 2} and b["days"][-1] == 2 and len(b["days"]) == 7
+    assert [x["id"] for x in b["recent"]] == [t2, t1]
+    assert len(call(p, "bilan", jours=30).json()["projects"][0]["days"]) == 30
+    assert call(p, "bilan", jours=99).json()["days"] == 7

@@ -82,7 +82,8 @@ CREATE TABLE IF NOT EXISTS workers (
 SQL);
     $colonnes = array_column($pdo->query('PRAGMA table_info(taches)')->fetchAll(), 'name');
     // extra : champs fournis par le worker (modifications, worktree) ; action_worktree : demande du téléphone.
-    foreach (['worker_id', 'conversation', 'suite_de', 'session', 'extra', 'parent', 'action_worktree'] as $c) {
+    // action : tâche exécutée directement par le worker, sans agent (lancement d'un pod depuis le téléphone).
+    foreach (['worker_id', 'conversation', 'suite_de', 'session', 'extra', 'parent', 'action_worktree', 'action'] as $c) {
         if (!in_array($c, $colonnes, true)) $pdo->exec("ALTER TABLE taches ADD COLUMN $c TEXT");
     }
     if (!in_array('etat', array_column($pdo->query('PRAGMA table_info(workers)')->fetchAll(), 'name'), true)) {
@@ -315,7 +316,53 @@ function tache_publique(array $t): array {
         'created' => (int)$t['cree_le'], 'updated' => (int)$t['maj_le'], 'conversation' => $t['conversation'] ?? $t['id'],
         'reply_to' => $t['suite_de'] ?? null, 'worker' => $t['worker_id'] ?? null, 'parent' => $t['parent'] ?? null,
         'changes' => $extra['changes'] ?? null, 'worktree' => $extra['worktree'] ?? null,
+        'duration_s' => $extra['duration_s'] ?? null, 'kind' => empty($t['action']) ? null : 'service',
     ];
+}
+
+/** Orchestrateur en ligne (seul pod autorisé à lancer des services), ou null. */
+function orchestrateur_en_ligne(): ?string {
+    $id = q('SELECT id FROM workers WHERE orchestrateur = 1 AND vu_le > ? ORDER BY vu_le DESC LIMIT 1', [time() - WORKER_EN_LIGNE])->fetchColumn();
+    return $id === false ? null : $id;
+}
+
+/** Bilan par projet sur une période : tâches, temps de travail, fichiers touchés, lignes, commits, activité par jour. */
+function bilan(int $jours): array {
+    $debut = strtotime('today') - ($jours - 1) * 86400;
+    $projets = [];
+    foreach (q('SELECT * FROM taches WHERE projet IS NOT NULL AND cree_le >= ? ORDER BY cree_le DESC, rowid DESC', [$debut])->fetchAll() as $t) {
+        $p = &$projets[$t['projet']];
+        $p ??= ['project' => $t['projet'], 'tasks' => 0, 'done' => 0, 'error' => 0, 'active' => 0, 'duration_s' => 0, 'cost' => 0.0,
+                'added' => 0, 'removed' => 0, 'commits' => 0, 'files' => [], 'last' => 0, 'recent' => [], 'days' => array_fill(0, $jours, 0)];
+        $x = json_decode($t['extra'] ?? '', true) ?: [];
+        $p['tasks']++;
+        if ($t['statut'] === 'done') $p['done']++;
+        elseif ($t['statut'] === 'error') $p['error']++;
+        elseif (!in_array($t['statut'], ['cancelled', 'needs_project'], true)) $p['active']++;
+        $p['duration_s'] += (int)($x['duration_s'] ?? 0);
+        $p['cost'] += (float)$t['cout'];
+        $c = $x['changes'] ?? [];
+        $p['added'] += (int)($c['added'] ?? 0);
+        $p['removed'] += (int)($c['removed'] ?? 0);
+        $p['commits'] += count($c['commits'] ?? []);
+        foreach ($c['files'] ?? [] as $f) $p['files'][$f['path']] = ($p['files'][$f['path']] ?? 0) + 1;
+        $p['last'] = max($p['last'], (int)$t['maj_le']);
+        $jour = intdiv((int)$t['cree_le'] - $debut, 86400);
+        if ($jour >= 0 && $jour < $jours) $p['days'][$jour]++;
+        if (count($p['recent']) < 3) $p['recent'][] = ['id' => $t['id'], 'instruction' => mb_substr($t['instruction'], 0, 160),
+                                                       'status' => $t['statut'], 'updated' => (int)$t['maj_le']];
+        unset($p);
+    }
+    foreach ($projets as &$p) {
+        arsort($p['files']);
+        $p['file_count'] = count($p['files']);
+        $p['top_files'] = array_map(fn($k, $v) => ['path' => (string)$k, 'count' => $v], array_keys(array_slice($p['files'], 0, 4, true)), array_slice($p['files'], 0, 4, true));
+        unset($p['files']);
+        $p['cost'] = round($p['cost'], 4);
+    }
+    unset($p);
+    usort($projets, fn($a, $b) => $b['last'] <=> $a['last']);
+    return ['days' => $jours, 'start' => $debut, 'projects' => array_values($projets)];
 }
 
 /** Pods pour le tableau de bord : état envoyé par chaque worker, et activité du jour (tâches, coût). */
@@ -481,6 +528,36 @@ switch ($route) {
                [(string)($_GET['task'] ?? '')])->fetchColumn();
         repondre(['patches' => $d === false ? (object)[] : ((json_decode($d, true)['patches'] ?? null) ?: (object)[])]);
 
+    case 'bilan':
+        exiger_session();
+        $jours = (int)($_GET['jours'] ?? 7);
+        repondre(bilan(in_array($jours, [1, 7, 30], true) ? $jours : 7));
+
+    case 'depots': // dépôts git de l'utilisateur, publiés par l'orchestrateur (formulaire « Nouveau pod »)
+        exiger_session();
+        repondre(['depots' => json_decode(reglage('depots') ?? '[]', true) ?: [], 'maj' => (int)(reglage('depots_maj') ?? 0),
+                  'orchestrateur' => orchestrateur_en_ligne() !== null]);
+
+    case 'lancer_pod': // nouveau pod Onyxia sur un dépôt git : exécuté directement par l'orchestrateur, sans agent
+        exiger_session();
+        $nom = (string)($in['nom'] ?? '');
+        $depot = trim((string)($in['depot_git'] ?? ''));
+        $branche = trim((string)($in['branche'] ?? ''));
+        if (!preg_match('/^[a-z0-9](?:[a-z0-9-]{0,28}[a-z0-9])?$/', $nom)) erreur('nom invalide : minuscules, chiffres et tirets (30 au plus)');
+        if ($depot !== '' && (!preg_match('#^https://[A-Za-z0-9._~/-]+$#', $depot) || str_contains($depot, '..'))) erreur('dépôt invalide : URL https:// sans identifiants');
+        if ($branche !== '' && !preg_match('#^[A-Za-z0-9._/-]{1,100}$#', $branche)) erreur('branche invalide');
+        if (in_array($nom, array_column(projets(), 'id'), true)) erreur("un projet « $nom » existe déjà");
+        $orch = orchestrateur_en_ligne() ?? erreur('orchestrateur hors ligne : lance ./run.sh dans le pod admin', 409);
+        $action = ['type' => 'lancer_service', 'nom' => $nom, 'depot_git' => $depot, 'branche' => $branche,
+                   'cpu' => (string)($in['cpu'] ?? '2'), 'memoire' => (string)($in['memoire'] ?? '8Gi'),
+                   'disque' => (string)($in['disque'] ?? '10Gi'), 'gpu' => !empty($in['gpu'])];
+        $id = bin2hex(random_bytes(5));
+        $source = $depot !== '' ? preg_replace('#^https://(www\.)?github\.com/#', '', $depot) . ($branche !== '' ? " ($branche)" : '') : 'dossier vide';
+        q('INSERT INTO taches(id, instruction, cree_le, maj_le, worker_id, conversation, action) VALUES(?, ?, ?, ?, ?, ?, ?)',
+          [$id, "🚀 Nouveau pod « $nom » : $source", time(), time(), $orch, $id, json_encode($action, JSON_UNESCAPED_UNICODE)]);
+        evenement_tache($id);
+        repondre(tache_publique(q('SELECT * FROM taches WHERE id = ?', [$id])->fetch()));
+
     case 'worktree': // fusionner ou jeter la branche d'une tâche lancée en parallèle
         exiger_session();
         $action = (string)($in['action'] ?? '');
@@ -631,7 +708,8 @@ switch ($route) {
             'tasks' => array_map(fn($t) => ['id' => $t['id'], 'instruction' => $t['instruction'],
                 'project' => $t['projet'], 'new_session' => (bool)$t['nouvelle_session'],
                 'conversation' => $t['conversation'] ?? $t['id'], 'context' => $t['conversation'] ? contexte($t) : [],
-                'resume_session' => $t['conversation'] ? session_conversation($t) : null, 'parent' => $t['parent'] ?? null], $taches),
+                'resume_session' => $t['conversation'] ? session_conversation($t) : null, 'parent' => $t['parent'] ?? null,
+                'action' => empty($t['action']) ? null : json_decode($t['action'], true)], $taches),
             'decisions' => $decisions, 'cancels' => $annulations,
             'choices' => array_map(fn($c) => ['task_id' => $c['id'], 'project' => $c['choix_projet']], $choix),
             'worktree_actions' => array_map(fn($w) => ['task_id' => $w['id'], 'project' => $w['projet'],
@@ -650,6 +728,13 @@ switch ($route) {
         if (!$st->rowCount()) erreur('tâche introuvable ou terminée', 404);
         evenement_tache($id);
         repondre(['ok' => true, 'worker' => $cible]);
+
+    case 'w_depots':
+        exiger_worker();
+        $depots = array_slice(is_array($in['depots'] ?? null) ? $in['depots'] : [], 0, 300);
+        reglage('depots', json_encode($depots, JSON_UNESCAPED_UNICODE));
+        reglage('depots_maj', (string)time());
+        repondre(['ok' => true]);
 
     case 'w_taches': // tâches filles créées par un agent (lancer_en_parallele) : une conversation chacune
         exiger_worker();
@@ -689,7 +774,7 @@ switch ($route) {
                     $t = $evt['task'];
                     $avant = q('SELECT statut FROM taches WHERE id = ?', [$tacheId])->fetchColumn();
                     $extra = json_decode((string)q('SELECT extra FROM taches WHERE id = ?', [$tacheId])->fetchColumn(), true) ?: [];
-                    foreach (['changes', 'worktree'] as $k) if (isset($t[$k])) $extra[$k] = $t[$k];
+                    foreach (['changes', 'worktree', 'duration_s'] as $k) if (isset($t[$k])) $extra[$k] = $t[$k];
                     q('UPDATE taches SET statut = ?, projet = COALESCE(?, projet), raison_routage = ?, resultat = ?, cout = ?, maj_le = ?,
                        session = COALESCE(?, session), extra = ? WHERE id = ?',
                       [$t['status'], $t['project'] ?? null, (string)($t['route_reason'] ?? ''), (string)($t['result'] ?? ''),

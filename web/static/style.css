@@ -237,3 +237,53 @@ section.flash > .task { animation: flash 1.4s ease-out; }
 .wtbox { border: 1px dashed var(--line); border-radius: 10px; padding: 8px 10px; margin-top: 8px; font-size: 13px; }
 .wtmsg { font-size: 12.5px; margin-top: 6px; }
 .wtmsg.ok { color: var(--ok); } .wtmsg.bad { color: var(--bad); }
+
+/* ---------- Bilan par projet */
+.secthead { display: flex; align-items: center; justify-content: space-between; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+.secthead h3 { margin: 0; }
+.seg { display: flex; background: var(--panel2); border: 1px solid var(--line); border-radius: 9px; padding: 2px; gap: 2px; }
+.seg button { border: 0; background: none; border-radius: 7px; padding: 3px 10px; font-size: 12.5px; color: var(--muted); }
+.seg button[aria-pressed="true"] { background: var(--panel); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgb(0 0 0 / .15); }
+.bilans { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: 12px; align-items: start; }
+.bcard { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; display: flex; flex-direction: column; gap: 10px; min-width: 0; }
+.bcard .tag { display: inline-flex; align-items: center; gap: 5px; }
+.bcard .tag .dot { width: 7px; height: 7px; }
+.bstats { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.bstat .v { font-size: 20px; font-weight: 650; line-height: 1.15; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.bstat .l { font-size: 11.5px; color: var(--muted); }
+.bstat .s { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.activity { margin: 0; }
+.activity .bars { display: flex; align-items: stretch; justify-content: space-around; gap: 2px; height: 36px; }
+.activity .col { flex: 1 1 0; max-width: 22px; display: flex; align-items: flex-end; }
+.activity .col i { display: block; width: 100%; border-radius: 4px 4px 0 0; }
+.activity .col i.b { background: var(--accent); }
+.activity .col i.z { height: 2px !important; background: var(--line); border-radius: 1px; }
+.activity .col:hover i.b { background: color-mix(in srgb, var(--accent) 75%, var(--text)); }
+.activity figcaption { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); margin-top: 3px; border-top: 1px solid var(--line); padding-top: 3px; }
+.bsub { font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); margin-bottom: 3px; }
+.tfile { display: flex; gap: 8px; align-items: center; font-size: 12.5px; padding: 1px 0; min-width: 0; }
+.brecents { display: flex; flex-direction: column; border-top: 1px solid var(--line); padding-top: 4px; }
+.brecent { display: flex; align-items: center; gap: 8px; background: none; border: 0; padding: 5px 0; text-align: left; font-size: 13px; min-width: 0; }
+.brecent .rinst { flex: 1; min-width: 0; font-size: 13px; }
+.brecent:hover .rinst { color: var(--accent); }
+
+/* ---------- Nouveau pod */
+#podDlg { width: min(94vw, 560px); }
+.podform { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }
+.podform label { display: flex; flex-direction: column; gap: 2px; font-size: 12.5px; color: var(--muted); min-width: 0; }
+dialog .podform input { margin: 0; }
+.podform select { width: 100%; padding: 9px; font: inherit; font-size: 16px; background: var(--panel2); color: var(--text); border: 1px solid var(--line); border-radius: 8px; }
+.row2, .row3 { display: grid; gap: 8px; }
+.row2 { grid-template-columns: 1fr 1fr; }
+.row3 { grid-template-columns: repeat(3, 1fr); }
+.podform label.check { flex-direction: row; align-items: center; gap: 8px; font-size: 14px; color: var(--text); }
+dialog .podform .check input { width: auto; }
+.repolist { display: flex; flex-direction: column; max-height: 38dvh; overflow-y: auto; border: 1px solid var(--line); border-radius: 10px; }
+dialog form .repo { width: 100%; text-align: left; background: none; color: var(--text); border: 0; border-bottom: 1px solid var(--line); border-radius: 0;
+  padding: 8px 10px; font-weight: 400; display: grid; grid-template-columns: 1fr auto; gap: 0 8px; }
+dialog form .repo:last-child { border-bottom: 0; }
+dialog form .repo[aria-selected="true"] { background: color-mix(in srgb, var(--accent) 14%, var(--panel)); }
+.repo .rn { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repo .rp { font-size: 11.5px; color: var(--muted); white-space: nowrap; }
+.repo .rd { grid-column: 1 / -1; font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.repolist .hint { padding: 8px 10px; margin: 0; }
