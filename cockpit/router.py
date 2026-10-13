@@ -111,9 +111,10 @@ L'utilisateur écrit son code avec Opus : c'est la règle, les autres modèles s
 - "standard" (Sonnet) : tâche courante SANS écriture de code applicatif : lancer les tests et rapporter le résultat,
   mettre à jour une documentation ou un README, petite configuration, commit, push ou pull request d'un travail déjà
   fait, expliquer un morceau de code précis.
-- "rapide" (Haiku) : simple question ou lecture : état d'un projet, lister des fichiers, des services ou des pods,
-  résumer, retrouver une information, lancer ou arrêter un service, répondre « oui » à une question de confirmation
-  sans autre travail.
+- "rapide" (Haiku) : simple question ou lecture : état ou avancement d'un projet, lister des fichiers, des services
+  ou des pods, résumer, retrouver une information, lancer ou arrêter un service, transmettre à un autre projet une
+  consigne déjà claire (le travail sera fait là-bas), répondre « oui » à une question de confirmation sans autre
+  travail.
 
 Une réponse courte (« oui », « vas-y », « continue ») reprend la nature du travail en cours dans la conversation.
 Réponds UNIQUEMENT par un objet JSON sur une ligne :

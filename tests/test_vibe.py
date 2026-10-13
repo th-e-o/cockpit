@@ -316,3 +316,36 @@ def test_choix_automatique_du_modele(tmp_path, monkeypatch):
     manual = Task(id="m", instruction="lis le README", model="standard")
     asyncio.run(r.choose_model(manual, proj))
     assert manual.model == "standard" and manual.model_auto is None and len(seen) == 4
+
+
+def test_tokens_et_part_de_session(repo, tmp_path, fake, monkeypatch):
+    """Tokens cumulés sur les tours d'une tâche, et part de la session de 5 h relue juste après."""
+    store = Store(tmp_path / "data")
+    r = Runner(store, POLICY)
+    usage = iter([0.40, 0.43])
+    r.session_usage = lambda: 0.40
+
+    async def refresh():
+        next(usage)
+        return next(usage)
+
+    r.refresh_usage = refresh
+    orig = FakeClient.receive_response
+
+    async def with_usage(self):
+        async for m in orig(self):
+            m.usage = {"input_tokens": 1200, "output_tokens": 800, "cache_read_input_tokens": 40000, "cache_creation_input_tokens": 3000}
+            yield m
+
+    monkeypatch.setattr(FakeClient, "receive_response", with_usage)
+    t = Task(id="t", instruction="fais", conversation="t")
+    store.tasks["t"] = t
+    fake.gates.setdefault("fais", asyncio.Event()).set()
+
+    async def scenario():
+        await r.run(t, Project(id="p", name="P", cwd=str(repo)))
+        await asyncio.gather(*list(r._background))
+
+    asyncio.run(scenario())
+    assert t.tokens == {"input": 1200, "output": 800, "cache_read": 40000, "cache_write": 3000, "total": 45000}
+    assert t.session_delta == pytest.approx(0.03)

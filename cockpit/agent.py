@@ -467,6 +467,8 @@ class Runner:
         self.trust: dict[str, float] = {}  # mode confiance : conversation -> fin (activé depuis le téléphone)
         self.on_rate_limit = None  # RateLimitInfo -> None (barre d'usage), fourni par le worker
         self.project_status = None  # async (projet) -> état vu du relais (outil etat_projet), fourni par le worker
+        self.session_usage = None  # () -> utilisation de la session de 5 h (0-1) ou None, fourni par le worker
+        self.refresh_usage = None  # async () -> utilisation relue juste après une tâche, fourni par le worker
         self._background: set[asyncio.Task] = set()
 
     @staticmethod
@@ -685,7 +687,8 @@ class Runner:
             before = await self._snapshot(cwd)
             edited: set[str] = set()
             final: dict = {}
-            duration = 0
+            duration, tokens = 0, {}
+            session_before = self.session_usage() if self.session_usage else None
             try:
                 async with ClaudeSDKClient(self._options(task, project, cwd, session, edited)) as client:
                     self.clients[task.id] = client
@@ -697,6 +700,8 @@ class Runner:
                         async for msg in client.receive_response():
                             if r := self._relay(task, msg):
                                 duration += r.pop("duration_s", 0)
+                                for k, v in r.pop("tokens", {}).items():  # plusieurs tours (recadrage) : cumul
+                                    tokens[k] = tokens.get(k, 0) + v
                                 final = r
                         # Message de l'utilisateur pendant le travail : l'agent a été interrompu, il reprend avec.
                         pending = self.steers.pop(task.id, None)
@@ -712,6 +717,8 @@ class Runner:
                 if late := self.steers.pop(task.id, None):  # arrivé après la dernière réponse de l'agent
                     self.store.publish("message", {"task_id": task.id, "type": "steer_late", "text": "\n".join(late)})
             final["duration_s"] = duration
+            if tokens:
+                final["tokens"] = {**tokens, "total": sum(tokens.values())}
             changes = await self._changes(task, cwd, before, edited)
             if task.status == "cancelled":
                 final = {k: v for k, v in final.items() if k != "status"}
@@ -727,6 +734,18 @@ class Runner:
                              files=(changes or {}).get("file_count", 0))
             if changes and changes.get("commits") and changes.get("upstream") and not changes.get("ahead"):
                 self._spawn(self._watch_ci(task, cwd))
+            if self.refresh_usage and session_before is not None:
+                self._spawn(self._session_delta(task, session_before))
+
+    async def _session_delta(self, task: Task, before: float) -> None:
+        """Part de la session de 5 h consommée par la tâche : usage relu juste après (approximatif si plusieurs
+        tâches tournent en même temps ; nulle si la session a été réinitialisée entre-temps)."""
+        try:
+            after = await self.refresh_usage()
+        except Exception:
+            return
+        if after is not None:
+            self.store.task_update(task, session_delta=round(max(0.0, after - before), 4))
 
     def trusted(self, task: Task) -> bool:
         """La conversation de la tâche est-elle en mode confiance (activé depuis le téléphone, non expiré) ?"""
@@ -846,9 +865,13 @@ class Runner:
             self.store.save_session(task.project, msg.session_id)
             if task.conversation and msg.session_id:
                 self.store.conversations[f"{task.conversation}:{task.project}"] = msg.session_id
+            u = msg.usage or {}
+            tokens = {"input": int(u.get("input_tokens") or 0), "output": int(u.get("output_tokens") or 0),
+                      "cache_read": int(u.get("cache_read_input_tokens") or 0),
+                      "cache_write": int(u.get("cache_creation_input_tokens") or 0)}
             return {"status": "error" if msg.is_error else "done", "result": msg.result or "",
                     "session_id": msg.session_id, "cost_usd": msg.total_cost_usd or 0.0,
-                    "duration_s": round((msg.duration_ms or 0) / 1000)}
+                    "duration_s": round((msg.duration_ms or 0) / 1000), "tokens": tokens}
         return None
 
     async def worktree_action(self, task: Task, project: Project, action: str) -> str:

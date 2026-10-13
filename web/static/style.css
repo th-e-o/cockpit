@@ -432,3 +432,11 @@ body.pip.flash { animation: pipflash 1.6s ease-out 2; }
 .pipwhere { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .pipcard .approval, .pipcard form.question { margin: 0; }
 .pipcard .approval pre { max-height: 120px; }
+
+/* ---------- Consommation de tokens */
+.pill.cost { color: var(--muted); }
+.pill.cost.heavy { color: var(--warn); border-color: var(--warn); }
+.costtip { display: flex; align-items: center; gap: 8px; font-size: 12.5px; color: var(--text); padding: 6px 10px; margin-bottom: 6px;
+  border-radius: 10px; background: color-mix(in srgb, var(--ok) 10%, var(--panel)); border: 1px solid color-mix(in srgb, var(--ok) 35%, var(--line)); }
+.costtip span { flex: 1; }
+.costtip .btn { flex: none; }

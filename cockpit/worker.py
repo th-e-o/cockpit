@@ -107,6 +107,8 @@ class Worker:
         self._repos_dirty = False  # dépôt créé : liste à republier
         self.runner.upload_image = self.relay.image
         self.runner.project_status = self.relay.projet_etat
+        self.runner.session_usage = self.session_usage
+        self.runner.refresh_usage = self.refresh_usage
         self._memory: dict[str, str] = {}  # projet -> empreinte du CLAUDE.md publié
         self.usage = usage.Usage()
         self.vscode: dict | None = None  # {"url", "password"} : bouton « Ouvrir VSCode » du tableau de bord
@@ -152,6 +154,19 @@ class Worker:
         }
         self._state_ts = time.monotonic()
         return self._state
+
+    def session_usage(self) -> float | None:
+        lim = self.usage.limits.get("five_hour")
+        return lim.get("utilization") if lim else None
+
+    async def refresh_usage(self) -> float | None:
+        """Relit l'usage (en-têtes de l'API) après une tâche, pour la part de session qu'elle a consommée."""
+        if not self.usage.limits:
+            return None
+        limits, _ = await usage.probe()
+        self.usage.update(limits, "api")
+        self._state = None
+        return self.session_usage()
 
     def rate_limit(self, info) -> None:
         """Événement d'usage émis pendant une tâche : la barre d'usage est mise à jour au prochain poll."""

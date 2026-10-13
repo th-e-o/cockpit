@@ -128,6 +128,12 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
   Onyxia) et *🔑 Mot de passe*, qui le copie sans l'afficher. Le mot de passe transite par le relais avec l'état du
   pod (`COCKPIT_VSCODE_PASSWORD=0` pour ne pas le publier). Les pods lancés par le cockpit ont désormais un
   ingress VSCode avec un mot de passe aléatoire.
+- **Économiser les tokens** : chaque carte affiche sa consommation (« ≈ 45 k tokens · +2 % session », en orange
+  au-delà de 5 % de la session de 5 h) ; le tableau de bord montre les tokens du jour, les tâches les plus
+  gourmandes et les tokens par projet. Sous la saisie, un conseil quand il s'applique : avancement visible
+  gratuitement dans le tableau de bord, puce du projet plutôt qu'Auto, « Modèle auto » plutôt qu'Opus pour une
+  courte question, nouvelle conversation quand la conversation suivie est longue ou que le cache a expiré.
+  Le sélecteur de modèle envoie le suivi d'avancement et la transmission de consignes sur Haiku.
 - **Usage de Claude** : barre fine sous l'en-tête (session de 5 h, orange au-delà de 80 %) et détail dans le tableau
   de bord (session, semaine, heure de réinitialisation). Le jeton de `claude setup-token` n'a pas accès à
   l'interface d'usage du compte : le worker lit donc toutes les 10 min les en-têtes d'usage de l'API

@@ -330,6 +330,7 @@ function taskHtml(e) {
       ${t.worktree ? `<span class="pill wt" title="Claude en parallèle, dans son propre worktree git">🌿 ${esc(t.worktree.branch)}</span>` : ''}
       ${t.parent ? `<span class="pill" title="lancée par un autre Claude (lancer_en_parallele)">🔀 sous-tâche</span>` : ''}
       ${modelPill(t)}
+      ${costPill(t)}
       ${t.group ? `<span class="pill var" title="variantes de la même demande, à comparer">🧬 Variante ${variantIndex(t)}</span>` : ''}
       ${ACTIVE.has(t.status) ? `<button class="btn ghost" data-cancel="${esc(t.id)}">Arrêter</button>`
         : t.id !== state.replyTo && t.kind !== 'service' ? `<button class="btn ghost" data-reply="${esc(t.id)}">Répondre</button>` : ''}
@@ -503,6 +504,57 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.target.closest?.('form.question')) e.target.closest('form.question').requestSubmit();
 });
 
+// ---------- consommation de tokens : visible, et conseils pour l'économiser
+const fmtTokens = (n) => (n >= 1e6 ? `${(n / 1e6).toLocaleString('fr-FR', { maximumFractionDigits: 1 })} M`
+  : n >= 1000 ? `${Math.round(n / 1000)} k` : String(n || 0));
+const SESSION_LOURDE = 0.05;  // une tâche qui prend plus de 5 % de la session de 5 h est signalée
+
+function costPill(t) {
+  if (!t.tokens?.total) return '';
+  const cached = t.tokens.total ? Math.round(100 * (t.tokens.cache_read || 0) / t.tokens.total) : 0;
+  const d = t.session_delta;
+  const heavy = d != null && d >= SESSION_LOURDE;
+  return `<span class="pill cost${heavy ? ' heavy' : ''}" title="tokens : ${t.tokens.total.toLocaleString('fr-FR')} (dont ${cached} % relus depuis le cache, bien moins coûteux)${d != null ? ` · environ ${Math.round(d * 100)} % de ta session de 5 h` : ''}">`
+    + `≈ ${fmtTokens(t.tokens.total)} tokens${d != null ? ` · ${d < 0.005 ? '<1' : `+${Math.round(d * 100)}`} % session` : ''}</span>`;
+}
+
+const conversationTasks = (id) => state.order.filter((x) => conversationOf(x) === conversationOf(id)).map((x) => state.tasks.get(x).task);
+const STATUS_RX = /\b(où en est|ou en est|avancement|état d(u|e|es)|statut|ça avance|ca avance|tu en es où|progr[eè]s)\b/i;
+
+/** Conseil affiché sous la saisie, le plus utile d'abord (ou rien). */
+function costTip(text) {
+  const cur = state.replyTo && state.tasks.get(state.replyTo)?.task;
+  if (STATUS_RX.test(text)) return { text: '💡 L\'avancement des projets est visible gratuitement dans le tableau de bord (tâches, modifications, tests, PR).', action: 'Voir', act: 'view-dash' };
+  if (!cur && !state.selected) {
+    const proj = state.projects.find((p) => p.name.length > 3 && new RegExp(`\\b${p.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text));
+    if (proj) return { text: `💡 Ta demande concerne « ${proj.name} » : choisis sa puce pour l'envoyer directement, sans passer par l'orchestrateur.`, action: `Choisir ${proj.name}`, act: `project:${proj.id}` };
+  }
+  if (state.model === 'approfondi' && text.trim().length > 0 && text.trim().length < 60 && !cur) {
+    return { text: '💡 Opus pour une demande courte : « Modèle auto » choisirait un modèle plus léger si c\'est une simple question.', action: 'Modèle auto', act: 'model-auto' };
+  }
+  if (cur && !ACTIVE.has(cur.status)) {
+    const conv = conversationTasks(cur.id);
+    const relu = conv.reduce((n, t) => Math.max(n, (t.tokens?.cache_read || 0) + (t.tokens?.input || 0)), 0);
+    const pause = Date.now() / 1000 - (cur.updated || cur.created) > 300;
+    if (conv.length >= 8 || relu > 300000) {
+      return { text: `💡 Conversation longue (${conv.length} échanges) : chaque message relit tout l'historique${pause ? ', et le cache a expiré après la pause' : ''}. Pour un nouveau sujet, une nouvelle conversation coûte bien moins.`, action: 'Nouvelle conversation', act: 'new-conv' };
+    }
+    if (pause && relu > 100000) {
+      return { text: '💡 Pause de plus de 5 min : le cache de Claude a expiré, ce message relira l\'historique de la conversation à plein tarif.', action: 'Nouvelle conversation', act: 'new-conv' };
+    }
+  }
+  return null;
+}
+
+function renderCostTip() {
+  const tip = costTip(input.value);
+  const el = $('#costTip');
+  el.classList.toggle('hidden', !tip);
+  if (!tip) return;
+  const html = `<span>${esc(tip.text)}</span><button type="button" class="btn ghost" data-tip="${esc(tip.act)}">${esc(tip.action)}</button>`;
+  if (el.dataset.html !== html) { el.innerHTML = html; el.dataset.html = html; }
+}
+
 // ---------- nouveau pod demandé dans la conversation d'un projet
 const wantsNewPod = (text) => /\b(nouveau|nouvel|nouvelle|autre|propre)\s+(pod|projet|repo|dépôt|depot|service)\b|\bdans un (nouveau|autre) pod\b|\b(crée|créer|creer|lance|lancer|ouvre|ouvrir)\s+(un|le)\s+(pod|projet)\b/i.test(text);
 const isOrchestratorProject = (pid) => state.workers.some((w) => w.orchestrator && (w.projects || []).includes(pid));
@@ -558,6 +610,7 @@ function updateComposer() {
   }
   $('#variantSel').classList.toggle('hidden', !!state.replyTo);
   updateTrust();
+  renderCostTip();
   renderQuick();
 }
 
@@ -868,7 +921,7 @@ function podCard(w) {
     ${meters ? `<div class="meters">${meters}</div>` : ''}
     ${projects ? `<div class="projs">${projects}</div>` : ''}
     ${wts ? `<div class="wts"><div class="sub">Branches parallèles</div>${wts}</div>` : ''}
-    <div class="podfoot">Aujourd'hui : ${plural(w.tasks_today, 'tâche')} · ${fmtCost(w.cost_today)}</div></article>`;
+    <div class="podfoot">Aujourd'hui : ${plural(w.tasks_today, 'tâche')}</div></article>`;
 }
 
 /** Variantes d'une même demande, côte à côte : modifications, tests, capture ; « Garder » fusionne et jette les autres. */
@@ -967,7 +1020,7 @@ function bilanCard(b, p) {
     ${git ? `<div class="pgit">${git}</div>` : ''}
     <div class="bstats">
       ${stat(p.tasks, plural(p.tasks, 'tâche').replace(/^\d+ /, ''), statuts)}
-      ${stat(p.duration_s ? dureeLongue(p.duration_s) : '—', 'de travail')}
+      ${stat(p.tokens ? fmtTokens(p.tokens) : '—', 'tokens', p.duration_s ? dureeLongue(p.duration_s) : '')}
       ${stat(p.file_count, plural(p.file_count, 'fichier').replace(/^\d+ /, ''), p.added || p.removed ? `<span class="add">+${p.added}</span> <span class="del">−${p.removed}</span>` : '')}
       ${stat(p.commits, plural(p.commits, 'commit').replace(/^\d+ /, ''))}
     </div>
@@ -1128,7 +1181,10 @@ function renderDash() {
   const online = state.workers.filter((w) => w.online);
   const capacity = online.reduce((n, w) => n + (w.state?.max_agents || 0), 0);
   const today = state.workers.reduce((n, w) => n + (w.tasks_today || 0), 0);
-  const cost = state.workers.reduce((n, w) => n + (w.cost_today || 0), 0);
+  const debutJour = new Date().setHours(0, 0, 0, 0) / 1000;
+  const duJour = tasks.filter((e) => e.task.created >= debutJour && e.task.tokens?.total);
+  const tokensJour = duJour.reduce((n, e) => n + e.task.tokens.total, 0);
+  const gourmandes = duJour.sort((a, b) => b.task.tokens.total - a.task.tokens.total).slice(0, 3);
   const recent = tasks.filter((e) => !ACTIVE.has(e.task.status) && e.task.instruction)
     .sort((a, b) => (b.task.updated || b.task.created) - (a.task.updated || a.task.created)).slice(0, 8);
 
@@ -1140,11 +1196,15 @@ function renderDash() {
       ${kpi(`${working}<small>/${capacity || '—'}</small>`, 'Claude au travail', '', 'agents actifs / capacité des pods en ligne')}
       ${kpi(pending ? `⚠ ${pending}` : '0', 'Validation(s) en attente', pending ? 'warn' : '')}
       ${kpi(today, 'Tâches aujourd\'hui')}
-      ${kpi(fmtCost(cost), 'Coût du jour')}
+      ${kpi(fmtTokens(tokensJour), 'Tokens aujourd\'hui', '', 'tokens consommés par les tâches du jour (cache compris)')}
     </div>
     <section class="sect"><h3>En cours</h3>${active.length
       ? `<div class="lives">${active.map(liveCard).join('')}</div>`
       : '<div class="emptyd">Aucun Claude ne travaille. Envoie une instruction ; pour en lancer plusieurs, ouvre une nouvelle conversation par tâche.</div>'}</section>
+    ${gourmandes.length ? `<section class="sect"><h3>Tâches les plus gourmandes aujourd'hui</h3><div class="recents">${gourmandes.map((e) =>
+      `<button class="recent" data-jump="${esc(e.task.id)}"><span class="ri">🔥</span><span class="rbody"><span class="rinst">${esc(shownInstruction(e.task.instruction))}</span>
+        <span class="rmeta">${esc(state.projects.find((p) => p.id === e.task.project)?.name || '')} · ≈ ${fmtTokens(e.task.tokens.total)} tokens${e.task.session_delta != null ? ` · +${Math.round(e.task.session_delta * 100)} % session` : ''}${e.task.model_used ? ` · ${esc(modelName(e.task.model_used))}` : ''}</span></span></button>`).join('')}</div>
+      <p class="hint">Pour économiser : une conversation par sujet, la puce du projet plutôt qu'Auto, le tableau de bord pour l'avancement, « Modèle auto ».</p></section>` : ''}
     ${variantsHtml(tasks)}
     ${followHtml(tasks.filter(pendingSteps).sort((a, b) => (b.task.updated || b.task.created) - (a.task.updated || a.task.created)).slice(0, 6))}
     ${bilanHtml()}
@@ -1457,6 +1517,13 @@ async function onClick(ev) {
         b.textContent = '✓ Copié';
         setTimeout(() => { b.textContent = '🔑 Mot de passe'; }, 2000);
       }
+    } else if (b.dataset.tip) {
+      const act = b.dataset.tip;
+      if (act === 'view-dash') setView('dash');
+      else if (act === 'new-conv') { setReplyTo(null); input.focus(); }
+      else if (act === 'model-auto') { state.model = ''; $('#modelSel').value = ''; try { localStorage.setItem('cockpit_model', ''); } catch { /* sans importance */ } }
+      else if (act.startsWith('project:')) { state.selected = act.slice(8); renderProjects(); }
+      renderCostTip();
     } else if (b.dataset.nextEdit || b.dataset.nextRun) {
       if (b.dataset.nextRun) b.disabled = true;
       await runNextStep(b.dataset.nextEdit || b.dataset.nextRun, Number(b.dataset.i), !!b.dataset.nextRun);
@@ -1569,7 +1636,7 @@ async function openDevices() {
 
 // ---------- saisie
 const input = $('#input');
-input.addEventListener('input', () => { input.style.height = 'auto'; input.style.height = `${input.scrollHeight}px`; });
+input.addEventListener('input', () => { input.style.height = 'auto'; input.style.height = `${input.scrollHeight}px`; renderCostTip(); });
 input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey && !matchMedia('(pointer: coarse)').matches) { e.preventDefault(); $('#composer').requestSubmit(); }
 });
@@ -1611,6 +1678,7 @@ $('#composer').addEventListener('submit', async (ev) => {
 
 $('#modelSel').addEventListener('change', () => {
   state.model = $('#modelSel').value;
+  renderCostTip();
   try { localStorage.setItem('cockpit_model', state.model); } catch { /* sans importance */ }
 });
 $('#variantSel').addEventListener('change', () => { state.variants = Number($('#variantSel').value); });

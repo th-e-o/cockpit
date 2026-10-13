@@ -359,6 +359,7 @@ function tache_publique(array $t): array {
         'waiting_project' => !empty($t['attente_projet']),
         'model_used' => $extra['model_used'] ?? null, 'models' => $extra['models'] ?? [], 'model_auto' => $extra['model_auto'] ?? null,
         'question' => $extra['question'] ?? null,
+        'tokens' => $extra['tokens'] ?? null, 'session_delta' => $extra['session_delta'] ?? null,
     ];
 }
 
@@ -382,6 +383,7 @@ function bilan(int $jours): array {
         elseif ($t['statut'] === 'error') $p['error']++;
         elseif (!in_array($t['statut'], ['cancelled', 'needs_project'], true)) $p['active']++;
         $p['duration_s'] += (int)($x['duration_s'] ?? 0);
+        $p['tokens'] = ($p['tokens'] ?? 0) + (int)($x['tokens']['total'] ?? 0);
         $p['cost'] += (float)$t['cout'];
         $c = $x['changes'] ?? [];
         $p['added'] += (int)($c['added'] ?? 0);
@@ -1049,7 +1051,7 @@ switch ($route) {
                     $t = $evt['task'];
                     $avant = q('SELECT statut FROM taches WHERE id = ?', [$tacheId])->fetchColumn();
                     $extra = json_decode((string)q('SELECT extra FROM taches WHERE id = ?', [$tacheId])->fetchColumn(), true) ?: [];
-                    foreach (['changes', 'worktree', 'duration_s', 'next_steps', 'tests', 'model_used', 'models', 'model_auto', 'question'] as $k) if (isset($t[$k])) $extra[$k] = $t[$k];
+                    foreach (['changes', 'worktree', 'duration_s', 'next_steps', 'tests', 'model_used', 'models', 'model_auto', 'question', 'tokens', 'session_delta'] as $k) if (isset($t[$k])) $extra[$k] = $t[$k];
                     q('UPDATE taches SET statut = ?, projet = COALESCE(?, projet), raison_routage = ?, resultat = ?, cout = ?, maj_le = ?,
                        session = COALESCE(?, session), extra = ? WHERE id = ?',
                       [$t['status'], $t['project'] ?? null, (string)($t['route_reason'] ?? ''), (string)($t['result'] ?? ''),

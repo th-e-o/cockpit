@@ -168,7 +168,8 @@ def seed_dashboard(relay, p):
                "commits": [{"sha": "9f1e2d3", "subject": "Tableau de bord des pods"}]}
     ev("orch-ui", msg(t1, type="tool_use", tool="Edit", text="{}", label="✏️ Modifie app.js"),
        msg(t1, type="changes", changes=changes, patches={"web/static/app.js": "@@ -10,3 +10,4 @@\n const a = 1;\n-const b = 2;\n+const b = 3;\n+const c = 4;"}),
-       task(t1, status="done", project="ui-cockpit", cost_usd=0.84, changes=changes, duration_s=640,
+       task(t1, status="done", project="ui-cockpit", cost_usd=0.84, changes=changes, duration_s=640, session_delta=0.07,
+            tokens={"input": 9000, "output": 21000, "cache_read": 300000, "cache_write": 20000, "total": 350000},
             next_steps=[{"titre": "Fusionner la branche", "instruction": "Fusionne la branche dans main"}],
             worktree={"branch": "cockpit/" + t1, "path": "/w", "state": "active"},
             result="**Fait**\n- tableau de bord avec jauges CPU, mémoire, disque\n- résumé des modifications\n**Choix** — onglets sur téléphone, vue côte à côte sur ordinateur\n**À faire** — fusionner la branche"))
@@ -695,5 +696,49 @@ def test_questions_de_claude(relay):
         assert page.locator("#feed form.question").count() == 0 and "❓" not in page.inner_text("#pendingBtn")
         suites = {e["task"]["instruction"]: e["task"]["reply_to"] for e in call(p, "etat").json()["events"] if e["kind"] == "task"}
         assert suites["Anki .apkg"] == q["id"] and suites["CSV avec point-virgule"] == q2["id"]
+        assert not errors, errors
+        browser.close()
+
+
+
+def test_inciter_a_economiser(relay):
+    """Consommation visible (carte, tableau de bord) et conseils sous la saisie pour économiser les tokens."""
+    from test_relay import call, paired_phone, wpoll
+
+    p = paired_phone(relay)
+    t1 = seed_dashboard(relay, p)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        page, errors = browser_page(p, browser, relay, viewport={"width": 1440, "height": 900})
+        page.wait_for_selector(f"#t-{t1} .pill.cost.heavy")
+        assert page.inner_text(f"#t-{t1} .pill.cost") == "≈ 350 k tokens · +7 % session"
+        assert "86 % relus depuis le cache" in page.get_attribute(f"#t-{t1} .pill.cost", "title")
+        import re
+        assert re.search(r"\d+ k\nTokens aujourd'hui", page.inner_text(".kpis"))  # données créées par plusieurs tests
+        page.wait_for_selector(".sect >> text=Tâches les plus gourmandes aujourd'hui")
+        # Conseils sous la saisie
+        page.click("#newConv")
+        page.fill("#input", "où en est le projet drones ?")
+        page.wait_for_selector("#costTip:not(.hidden) >> text=visible gratuitement dans le tableau de bord")
+        page.fill("#input", "ajoute un export CSV au projet drones")
+        page.wait_for_selector("#costTip >> text=choisis sa puce")
+        page.click("#costTip [data-tip]")
+        assert page.get_attribute(".chip[data-project='ui-drones']", "aria-checked") == "true"
+        page.fill("#input", "")
+        page.select_option("#modelSel", "approfondi")
+        page.fill("#input", "liste les fichiers")
+        page.wait_for_selector("#costTip >> text=Modèle auto")
+        page.click("#costTip [data-tip]")
+        assert page.input_value("#modelSel") == ""
+        # Conversation longue : proposer d'en ouvrir une nouvelle
+        page.evaluate(f"""(() => {{ const conv = state.tasks.get('{t1}').task.conversation || '{t1}';
+          for (let i = 0; i < 8; i++) onEvent({{kind: 'task', task_id: 'long' + i, task: {{id: 'long' + i, status: 'done', instruction: 'x',
+            conversation: conv, created: Date.now() / 1000, updated: Date.now() / 1000}}}});
+          setReplyTo('long7'); }})()""")
+        page.fill("#input", "et maintenant ?")
+        page.wait_for_selector("#costTip >> text=Conversation longue")
+        page.locator("#costTip").screenshot(path=SHOTS / "19-conseil.png")
+        page.click("#costTip [data-tip]")
+        page.wait_for_selector("#thread.hidden", state="attached")
         assert not errors, errors
         browser.close()
