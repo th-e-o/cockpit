@@ -162,3 +162,37 @@ async def chercher(requete: str, limite: int = 10) -> list[dict]:
                     "private": repo.get("private"), "branch": "", "description": (repo.get("description") or "")[:140],
                     "pushed": ""}, f"code : {item.get('path')}")
     return sorted(found.values(), key=lambda x: x.get("pushed") or "", reverse=True)[:limite]
+
+
+_PR_URL = re.compile(r"^https://github\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+)/pull/(\d+)/?$")
+
+
+def parse_pr(url: str) -> tuple[str, str, int] | None:
+    m = _PR_URL.match(url.strip())
+    return (m.group(1), m.group(2), int(m.group(3))) if m else None
+
+
+async def fusionner_pr(url: str, methode: str = "merge") -> dict:
+    """Fusionne une pull request (demandé depuis le téléphone) ; renvoie {"merged", "sha", "message"}."""
+    target = parse_pr(url)
+    if not target:
+        raise GitHubError("adresse de pull request invalide")
+    owner, repo, number = target
+    async with _client() as http:
+        r = await http.get(f"/repos/{owner}/{repo}/pulls/{number}")
+        if r.status_code >= 400:
+            raise GitHubError(f"pull request introuvable (HTTP {r.status_code})")
+        pr = r.json()
+        if pr.get("merged"):
+            return {"merged": True, "sha": pr.get("merge_commit_sha"), "message": "déjà fusionnée"}
+        if pr.get("state") != "open":
+            raise GitHubError("la pull request est fermée")
+        r = await http.put(f"/repos/{owner}/{repo}/pulls/{number}/merge", json={"merge_method": methode})
+    if r.status_code == 405:
+        raise GitHubError(f"fusion impossible : {r.json().get('message', 'conditions non remplies')} (CI, revue ou conflits)")
+    if r.status_code == 409:
+        raise GitHubError("conflit : la branche a changé ou doit être mise à jour avant la fusion")
+    if r.status_code >= 400:
+        raise GitHubError(f"GitHub : HTTP {r.status_code} {r.text[:200]}")
+    x = r.json()
+    return {"merged": bool(x.get("merged")), "sha": x.get("sha"), "message": x.get("message", "")}

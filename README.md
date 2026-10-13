@@ -128,6 +128,14 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
   Onyxia) et *🔑 Mot de passe*, qui le copie sans l'afficher. Le mot de passe transite par le relais avec l'état du
   pod (`COCKPIT_VSCODE_PASSWORD=0` pour ne pas le publier). Les pods lancés par le cockpit ont désormais un
   ingress VSCode avec un mot de passe aléatoire.
+- **« Toujours autoriser »** : troisième bouton de chaque validation ; il approuve et crée une règle ciblée (une
+  commande comme « docker build … », un dossier, un outil) appliquée par tous les pods. ☰ → *Règles d'autorisation*
+  pour les voir et les supprimer. Jamais pour un refus définitif, une commande masquée (`$(…)`) ni `.git`.
+- **Pull requests** : encadré sur la carte (titre, branches, *Voir sur GitHub*, *Fusionner*), section *Pull requests
+  à valider* du tableau de bord, bouton *Voir la PR* dans la notification. *Fusionner* demande au pod du projet de
+  fusionner la PR avec son token GitHub (refus clair si la CI, une revue ou un conflit l'empêche).
+- **Affichage** : thème 🌓 auto, ☀️ clair ou 🌙 sombre (☰) ; sur ordinateur, la séparation entre le fil et le tableau
+  de bord se règle en la faisant glisser (double-clic : par défaut), et ⇥ (ou Alt+D) masque le tableau de bord.
 - **Économiser les tokens** : chaque carte affiche sa consommation (« ≈ 45 k tokens · +2 % session », en orange
   au-delà de 5 % de la session de 5 h) ; le tableau de bord montre les tokens du jour, les tâches les plus
   gourmandes et les tokens par projet. Sous la saisie, un conseil quand il s'applique : avancement visible

@@ -349,3 +349,23 @@ def test_tokens_et_part_de_session(repo, tmp_path, fake, monkeypatch):
     asyncio.run(scenario())
     assert t.tokens == {"input": 1200, "output": 800, "cache_read": 40000, "cache_write": 3000, "total": 45000}
     assert t.session_delta == pytest.approx(0.03)
+
+
+def test_fusion_d_une_pull_request(monkeypatch):
+    calls = []
+
+    def handler(req):
+        calls.append((req.method, req.url.path))
+        if req.method == "GET":
+            return httpx.Response(200, json={"state": "open", "merged": False})
+        if "/pulls/4/" in req.url.path:
+            return httpx.Response(405, json={"message": "Required status check is failing"})
+        return httpx.Response(200, json={"merged": True, "sha": "abc1234", "message": "Pull Request successfully merged"})
+
+    mock_github(monkeypatch, handler)
+    r = asyncio.run(github.fusionner_pr("https://github.com/a/b/pull/3"))
+    assert r["merged"] and calls[-1] == ("PUT", "/repos/a/b/pulls/3/merge")
+    with pytest.raises(github.GitHubError, match="CI, revue ou conflits"):
+        asyncio.run(github.fusionner_pr("https://github.com/a/b/pull/4"))
+    with pytest.raises(github.GitHubError, match="invalide"):
+        asyncio.run(github.fusionner_pr("https://evil.com/a/b/pull/3"))

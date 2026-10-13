@@ -1,6 +1,6 @@
 // Service worker : interface disponible hors ligne et notifications push (sans contenu : on relit l'état).
 const CACHE = 'cockpit-__VERSION__';
-const SHELL = ['./', 'static/style.css?v=__VERSION__', 'static/app.js?v=__VERSION__', 'static/icon.svg', 'static/manifest.json?v=__VERSION__'];
+const SHELL = ['./', 'static/style.css?v=__VERSION__', 'static/theme.js?v=__VERSION__', 'static/app.js?v=__VERSION__', 'static/icon.svg', 'static/manifest.json?v=__VERSION__'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).catch(() => {}));
@@ -75,11 +75,13 @@ function notifications(s) {
     }
     const steps = t.status === 'done' && !t.next_steps_dismissed ? (t.next_steps || []) : [];
     const suite = steps.length ? `\n💡 ${steps.map((x) => x.titre).join(' · ')}` : '';
+    const pr = (String(t.result || '').match(/https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/) || [])[0] || null;
     out.push({ key: `t-${t.id}-${t.status}`, tag: `tache-${t.id}`,
       title: { done: '✅ Tâche terminée', error: '❌ Tâche en erreur', needs_project: '❓ Quel projet ?' }[t.status] || 'Cockpit',
       body: (resumeModifs(t.changes) + (t.result || t.instruction || '').replace(/\*\*|`/g, '')).slice(0, 180) + suite,
-      actions: steps.slice(0, 2).map((x, i) => ({ action: `next-${i}`, title: `▶ ${x.titre}`.slice(0, 40) })),
-      data: { task: t.id, steps } });
+      actions: [...(pr ? [{ action: 'pr', title: '🔀 Voir la PR' }] : []),
+        ...steps.slice(0, pr ? 1 : 2).map((x, i) => ({ action: `next-${i}`, title: `▶ ${x.titre}`.slice(0, 40) }))],
+      data: { task: t.id, steps, pr } });
   }
   return out;
 }
@@ -132,6 +134,10 @@ self.addEventListener('notificationclick', (e) => {
     try {
       if ((e.action === 'approve' || e.action === 'deny') && d.approval) {
         await appel('decider', { approval_id: d.approval, decision: e.action });
+        return;
+      }
+      if (e.action === 'pr' && d.pr) {
+        await self.clients.openWindow(d.pr);
         return;
       }
       if (e.action === 'ci-fix' && d.task && d.fix) {

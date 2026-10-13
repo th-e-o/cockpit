@@ -650,3 +650,19 @@ def test_etat_d_un_projet_pour_les_agents(relay):
     assert x["question"] == "Quelle offre OVH ?"
     assert "et-russe" in [p["id"] for p in worker_call(relay, "w_projet_etat", {}).json()["projects"]]
     assert worker_call(relay, "w_projet_etat", {"project": "inconnu"}).json()["known"] is False
+
+
+def test_regles_d_autorisation(relay):
+    p = paired_phone(relay)
+    for bad in [{"tool": "Bash", "pattern": "", "label": "tout"}, {"tool": "x y", "pattern": "a", "label": "l"},
+                {"tool": "Bash", "pattern": "(", "label": "l"}, {"tool": "files", "pattern": "", "label": "l"}]:
+        assert call(p, "regle_ajouter", bad).status_code == 400, bad
+    assert call(p, "regle_ajouter", {"tool": "Bash", "pattern": r"^docker\s+build\b", "label": "les commandes « docker build … »",
+                                     "example": "docker build -t x ."}).json()["ok"]
+    call(p, "regle_ajouter", {"tool": "Bash", "pattern": r"^docker\s+build\b", "label": "doublon"})  # ignoré
+    rules = call(p, "regles").json()
+    assert len([r for r in rules if r["pattern"] == r"^docker\s+build\b"]) == 1
+    wpoll(relay, "pod-rg", False, [{"id": "rg", "name": "rg"}], hello=True)
+    assert {"tool": "Bash", "pattern": r"^docker\s+build\b"} in wpoll(relay, "pod-rg", False)["rules"]
+    call(p, "regle_supprimer", {"id": rules[0]["id"]})
+    assert {"tool": "Bash", "pattern": r"^docker\s+build\b"} not in wpoll(relay, "pod-rg", False)["rules"]

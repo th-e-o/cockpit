@@ -526,6 +526,10 @@ class Runner:
                 ok = True
             elif d.action == DENY:
                 ok = False
+            elif rule := self.policy.user_allowed(tool, tool_input, cwd):
+                # Règle « Toujours autoriser » créée depuis le téléphone
+                ok, d.action, d.reason = True, "rule", f"règle « {rule} » : {d.reason}"
+                self.store.publish("message", {"task_id": task.id, "type": "trusted", "tool": tool, "text": d.reason})
             elif ((self.policy.trust_default or self.trusted(task))
                   and self.policy.trusted(tool, tool_input, cwd, extended=self.trusted(task))):
                 # Validation de routine auto-approuvée (journalisée et signalée sur la carte) : par défaut, ou mode 🛡

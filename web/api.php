@@ -31,6 +31,11 @@ const COMMANDES_MAX = 20;               // commandes rapides par liste
 const ACTIFS = ['pending', 'routing', 'queued', 'running', 'waiting_approval'];
 const CONFIANCE_DUREES = [0, 15, 30, 60, 120];  // minutes (0 : désactivé)
 
+/** Règles « Toujours autoriser » pour les workers : [{tool, pattern}]. */
+function regles(): array {
+    return array_map(fn($r) => ['tool' => $r['outil'], 'pattern' => $r['motif']], q('SELECT outil, motif FROM regles ORDER BY id')->fetchAll());
+}
+
 /** Conversations en mode confiance : {conversation: fin (horodatage)}. */
 function confiances(): array {
     q('DELETE FROM confiances WHERE jusqua <= ?', [time()]);
@@ -94,6 +99,9 @@ CREATE TABLE IF NOT EXISTS workers (
     orchestrateur INTEGER NOT NULL DEFAULT 1, vu_le INTEGER NOT NULL DEFAULT 0);
 -- Mode confiance : validations de routine auto-approuvées pour une conversation jusqu'à « jusqua »
 CREATE TABLE IF NOT EXISTS confiances (conversation TEXT PRIMARY KEY, jusqua INTEGER NOT NULL);
+-- Règles « Toujours autoriser » créées depuis le téléphone, appliquées par tous les pods
+CREATE TABLE IF NOT EXISTS regles (id INTEGER PRIMARY KEY AUTOINCREMENT, outil TEXT NOT NULL, motif TEXT NOT NULL DEFAULT '',
+    libelle TEXT NOT NULL, exemple TEXT NOT NULL DEFAULT '', cree_le INTEGER NOT NULL, UNIQUE(outil, motif));
 SQL);
     $colonnes = array_column($pdo->query('PRAGMA table_info(taches)')->fetchAll(), 'name');
     // extra : champs fournis par le worker (modifications, worktree) ; action_worktree : demande du téléphone.
@@ -114,6 +122,13 @@ SQL);
     if (!in_array('apparu_le', $colonnesW, true)) $pdo->exec('ALTER TABLE workers ADD COLUMN apparu_le INTEGER NOT NULL DEFAULT 0');
     return $pdo;
 }
+
+/** Transactions d'écriture : BEGIN IMMEDIATE prend le verrou d'écriture d'emblée. Une transaction DEFERRED qui passe de
+ * la lecture à l'écriture échoue aussitôt (« database is locked ») si un autre processus a écrit entre-temps, sans
+ * attendre busy_timeout : c'est ce qui arrive quand plusieurs pods interrogent le relais en même temps. */
+function debut(): void { db()->exec('BEGIN IMMEDIATE'); }
+function valider(): void { db()->exec('COMMIT'); }
+function annuler(): void { db()->exec('ROLLBACK'); }
 
 function q(string $sql, array $params = []): PDOStatement {
     $st = db()->prepare($sql);
@@ -619,6 +634,46 @@ switch ($route) {
         evenement_tache($id);
         repondre(tache_publique(q('SELECT * FROM taches WHERE id = ?', [$id])->fetch()));
 
+    case 'fusionner_pr': // fusion d'une pull request, par le pod du projet (token GitHub du pod)
+        exiger_session();
+        $url = trim((string)($in['url'] ?? ''));
+        if (!preg_match('#^https://github\.com/[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+/pull/(\d+)/?$#', $url, $m)) erreur('adresse de pull request invalide');
+        $t = q('SELECT * FROM taches WHERE id = ?', [(string)($in['task_id'] ?? '')])->fetch() ?: erreur('tâche introuvable', 404);
+        $wk = $t['worker_id'] ?: orchestrateur_en_ligne();
+        if (!$wk) erreur('aucun pod en ligne pour fusionner', 409);
+        $id = bin2hex(random_bytes(5));
+        $depot = preg_replace('#^https://github\.com/|/pull/\d+/?$#', '', $url);
+        q('INSERT INTO taches(id, instruction, projet, cree_le, maj_le, worker_id, conversation, parent, action) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)',
+          [$id, "🔀 Fusionner la pull request #{$m[1]} ($depot)", $t['projet'], time(), time(), $wk, $id, $t['id'],
+           json_encode(['type' => 'fusionner_pr', 'url' => $url], JSON_UNESCAPED_UNICODE)]);
+        evenement_tache($id);
+        repondre(tache_publique(q('SELECT * FROM taches WHERE id = ?', [$id])->fetch()));
+
+    case 'regles': // règles « Toujours autoriser »
+        exiger_session();
+        repondre(array_map(fn($r) => ['id' => (int)$r['id'], 'tool' => $r['outil'], 'pattern' => $r['motif'], 'label' => $r['libelle'],
+            'example' => $r['exemple'], 'created' => (int)$r['cree_le']], q('SELECT * FROM regles ORDER BY id DESC')->fetchAll()));
+
+    case 'regle_ajouter':
+        exiger_session();
+        $outil = (string)($in['tool'] ?? '');
+        $motif = (string)($in['pattern'] ?? '');
+        $libelle = trim((string)($in['label'] ?? ''));
+        if (!preg_match('/^[A-Za-z][A-Za-z0-9_]{0,79}$/', $outil)) erreur('outil invalide');
+        if (mb_strlen($motif) > 200 || $libelle === '' || mb_strlen($libelle) > 120) erreur('règle invalide');
+        if ($motif !== '' && @preg_match('/' . str_replace('/', '\\/', $motif) . '/', '') === false) erreur('motif invalide');
+        if (in_array($outil, ['Bash', 'files'], true) && $motif === '') erreur('une règle de commande ou de fichier doit être précise');
+        q('INSERT OR IGNORE INTO regles(outil, motif, libelle, exemple, cree_le) VALUES(?, ?, ?, ?, ?)',
+          [$outil, $motif, $libelle, mb_substr((string)($in['example'] ?? ''), 0, 300), time()]);
+        q('INSERT INTO audit(donnees, ts) VALUES(?, ?)', [json_encode(['ts' => date('Y-m-d\\TH:i:s'), 'event' => 'rule_add',
+            'tool' => $outil, 'pattern' => $motif, 'label' => $libelle], JSON_UNESCAPED_UNICODE), time()]);
+        repondre(['ok' => true]);
+
+    case 'regle_supprimer':
+        exiger_session();
+        q('DELETE FROM regles WHERE id = ?', [(int)($in['id'] ?? 0)]);
+        repondre(['ok' => true]);
+
     case 'confiance': // mode confiance d'une conversation, pour une durée limitée (0 : désactivé)
         exiger_session();
         $minutes = (int)($in['minutes'] ?? -1);
@@ -780,7 +835,7 @@ switch ($route) {
         // Variantes : une conversation chacune, toutes dans un worktree dédié, à comparer puis garder ou jeter.
         $ids = [$id];
         for ($k = 2; $k <= $variantes; $k++) $ids[] = bin2hex(random_bytes(5));
-        db()->beginTransaction();
+        debut();
         foreach ($ids as $k => $tid) {
             $texte = $variantes > 1 ? $instruction . "\n\n(Variante " . ($k + 1) . "/$variantes : d'autres agents Claude traitent la même "
                 . "demande en parallèle, chacun dans sa branche. Prends une approche qui te soit propre, va au bout et commite ; "
@@ -791,7 +846,7 @@ switch ($route) {
                $k ? $tid : $conversation, $k ? null : $suite, $modele, $variantes > 1 ? 1 : null, $variantes > 1 ? $id : null]);
             evenement_tache($tid);
         }
-        db()->commit();
+        valider();
         repondre(tache_publique(q('SELECT * FROM taches WHERE id = ?', [$id])->fetch()) + ['variants' => $ids]);
 
     case 'annuler':
@@ -888,9 +943,9 @@ switch ($route) {
         $mienne = $orchestrateur ? '(worker_id = ? OR (worker_id IS NULL AND attente_projet IS NULL))' : 'worker_id = ?';
         $fin = microtime(true) + ($in['wait'] ?? LONG_POLL);
         do {
-            db()->beginTransaction();
+            debut();
             if (q('SELECT instance FROM workers WHERE id = ?', [$wid])->fetchColumn() !== $instance) {
-                db()->rollBack();
+                annuler();
                 repondre(['superseded' => true]);
             }
             q('UPDATE workers SET vu_le = ? WHERE id = ?', [time(), $wid]);
@@ -917,7 +972,7 @@ switch ($route) {
                     q('DELETE FROM reglages WHERE cle = ?', ['memoire_edit:' . $p['id']]);
                 }
             }
-            db()->commit();
+            valider();
             if ($taches || $decisions || $annulations || $choix || $worktrees || $recadrages || $memoires) break;
             usleep(500000);
         } while (microtime(true) < $fin && !connection_aborted());
@@ -929,7 +984,7 @@ switch ($route) {
                 'action' => empty($t['action']) ? null : json_decode($t['action'], true),
                 'model' => $t['modele'] ?? null, 'isolate' => !empty($t['isoler']), 'group' => $t['groupe'] ?? null,
                 'reply_to' => $t['suite_de'] ?? null], $taches),
-            'steers' => $recadrages, 'memory_edits' => $memoires, 'trust' => (object)confiances(),
+            'steers' => $recadrages, 'memory_edits' => $memoires, 'trust' => (object)confiances(), 'rules' => regles(),
             'decisions' => $decisions, 'cancels' => $annulations,
             'choices' => array_map(fn($c) => ['task_id' => $c['id'], 'project' => $c['choix_projet']], $choix),
             'worktree_actions' => array_map(fn($w) => ['task_id' => $w['id'], 'project' => $w['projet'],
@@ -1021,7 +1076,7 @@ switch ($route) {
                 erreur('projet inconnu : ' . ($f['project'] ?? '?'));
         }
         $ids = [];
-        db()->beginTransaction();
+        debut();
         foreach ($liste as $f) {
             $id = bin2hex(random_bytes(5));
             // « orchestrateur » : tâche sans projet, routée par l'orchestrateur (nouveau projet, nouveau pod…)
@@ -1033,14 +1088,14 @@ switch ($route) {
             evenement_tache($id);
             $ids[] = $id;
         }
-        db()->commit();
+        valider();
         repondre(['ids' => $ids]);
 
     case 'w_evenements':
         exiger_worker();
         $notifier = false;
         $wid = (string)($in['worker_id'] ?? 'principal');
-        db()->beginTransaction();
+        debut();
         foreach ($in['events'] ?? [] as $evt) {
             $tacheId = (string)($evt['task_id'] ?? '');
             $proprio = q('SELECT worker_id FROM taches WHERE id = ?', [$tacheId])->fetch();
@@ -1094,7 +1149,7 @@ switch ($route) {
         foreach ($in['audit'] ?? [] as $ligne) {
             q('INSERT INTO audit(donnees, ts) VALUES(?, ?)', [json_encode($ligne, JSON_UNESCAPED_UNICODE), time()]);
         }
-        db()->commit();
+        valider();
         if ($notifier) notifier();
         repondre(['ok' => true]);
 

@@ -95,6 +95,7 @@ bash:
 trust:
   default: true
   tools: [NotebookEdit, WebFetch, mcp__services__lancer_service, mcp__cockpit__creer_depot, mcp__cockpit__lancer_en_parallele]
+  scratch_paths: ['^/tmp/']                  # hors du projet mais sans risque : fichiers temporaires
   extended:
     outside_paths: ['^/home/onyxia/work/']   # écritures hors du projet, dans l'espace de travail du pod
   paths_never: ['/\.git/', '\.github/workflows/']   # historique git, CI (exécutée avec les secrets du dépôt)

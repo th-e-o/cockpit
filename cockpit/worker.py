@@ -324,6 +324,16 @@ class Worker:
     async def run_action(self, task: Task, action: dict) -> None:
         """Action directe demandée depuis le téléphone (sans agent) : lancement d'un pod sur un dépôt git."""
         self.store.task_update(task, status="running")
+        if action.get("type") == "fusionner_pr":
+            try:
+                r = await github.fusionner_pr(action.get("url", ""))
+                text, status = f"✅ Pull request fusionnée ({r['message'] or (r['sha'] or '')[:7]}) : {action.get('url')}", "done"
+                self.store.publish("message", {"task_id": task.id, "type": "pr_merged", "url": action.get("url")})
+            except Exception as e:
+                text, status = f"Fusion impossible : {e}", "error"
+            self.store.audit("pr_merge", task=task.id, url=action.get("url"), result=text)
+            self.store.task_update(task, status=status, result=text)
+            return
         try:
             if action.get("type") != "lancer_service":
                 raise svc.ServiceError(f"action inconnue : {action.get('type')}")
@@ -418,6 +428,8 @@ class Worker:
         for task_id in msg.get("cancels", []):
             if task := self.store.tasks.get(task_id):
                 self.spawn(self.runner.cancel(task))
+        if "rules" in msg:
+            self.runner.policy.set_user_rules(msg["rules"] or [])
         if "trust" in msg:
             self.runner.trust = {str(k): float(v) for k, v in (msg["trust"] or {}).items()}
         for s in msg.get("steers", []):

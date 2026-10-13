@@ -3,9 +3,14 @@
   --text: #e6e8ec; --muted: #8b93a3; --accent: #d97757; --ok: #3fb27f;
   --warn: #e0a43a; --bad: #e5534b; --radius: 14px;
 }
+/* Thème : sombre par défaut, clair si le système l'est ; « Clair » ou « Sombre » choisis dans le menu l'emportent */
 @media (prefers-color-scheme: light) {
-  :root { --bg: #f6f6f4; --panel: #fff; --panel2: #f0efeb; --line: #e2e0da; --text: #1d1d1b; --muted: #6b6a66; }
+  :root:not([data-theme="dark"]) { --bg: #f6f6f4; --panel: #fff; --panel2: #f0efeb; --line: #e2e0da; --text: #1d1d1b; --muted: #6b6a66; }
 }
+:root[data-theme="light"] { --bg: #f6f6f4; --panel: #fff; --panel2: #f0efeb; --line: #e2e0da; --text: #1d1d1b; --muted: #6b6a66; }
+:root { color-scheme: dark; }
+:root[data-theme="light"] { color-scheme: light; }
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) { color-scheme: light; } }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
 body {
@@ -128,11 +133,24 @@ body.view-dash #dash { display: block; }
 .tabs button { border: 0; background: none; border-radius: 8px; padding: 4px 10px; font-size: 13px; color: var(--muted); white-space: nowrap; }
 .tabs button[aria-selected="true"] { background: var(--panel); color: var(--text); font-weight: 600; box-shadow: 0 1px 2px rgb(0 0 0 / .15); }
 .tabcount { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 99px; background: var(--accent); color: #fff; font-size: 11px; font-weight: 700; text-align: center; }
+#splitter { display: none; flex: none; width: 7px; cursor: col-resize; background: var(--line); border: 0; padding: 0; position: relative;
+  touch-action: none; }
+#splitter::after { content: ''; position: absolute; top: 50%; left: 2px; width: 3px; height: 36px; margin-top: -18px; border-radius: 3px; background: var(--muted); opacity: .5; }
+#splitter:hover, #splitter:focus-visible, body.resizing #splitter { background: var(--accent); }
+body.resizing { cursor: col-resize; user-select: none; }
+#dashToggle { display: none; }
 @media (min-width: 1100px) {
   .tabs { display: none; }
-  #chat { flex: 0 0 clamp(440px, 42%, 680px); border-right: 1px solid var(--line); }
+  /* Largeur du fil : réglable avec la barre de séparation (--chat-w), mémorisée */
+  #chat { flex: 0 0 var(--chat-w, clamp(440px, 42%, 680px)); max-width: calc(100% - 320px); }
+  #splitter { display: block; }
   #dash, body.view-dash #dash { display: block; padding: 20px 24px; }
   body.view-dash #chat { display: flex; }
+  #dashToggle { display: inline-block; }
+  /* Tableau de bord masqué : tout l'espace pour le fil, centré et lisible */
+  body.dash-hidden #dash, body.dash-hidden #splitter { display: none; }
+  body.dash-hidden #chat { flex: 1 1 auto; max-width: none; }
+  body.dash-hidden #feed, body.dash-hidden footer { padding-left: max(16px, calc((100% - 980px) / 2)); padding-right: max(16px, calc((100% - 980px) / 2)); }
 }
 section.flash > .task { animation: flash 1.4s ease-out; }
 @keyframes flash { from { box-shadow: 0 0 0 3px var(--accent); } to { box-shadow: 0 0 0 3px transparent; } }
@@ -440,3 +458,16 @@ body.pip.flash { animation: pipflash 1.6s ease-out 2; }
   border-radius: 10px; background: color-mix(in srgb, var(--ok) 10%, var(--panel)); border: 1px solid color-mix(in srgb, var(--ok) 35%, var(--line)); }
 .costtip span { flex: 1; }
 .costtip .btn { flex: none; }
+.btn.always { font-size: 12.5px; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---------- Pull requests */
+.prbox { margin-top: 8px; border: 1.5px solid color-mix(in srgb, var(--ok) 50%, var(--line)); border-radius: 12px; padding: 8px 12px;
+  background: color-mix(in srgb, var(--ok) 6%, var(--panel)); display: flex; flex-direction: column; gap: 2px; }
+.prbox.compact { margin-top: 0; }
+.prbox.merged { border-color: var(--line); background: var(--panel); }
+.prtitle { font-weight: 600; font-size: 14px; }
+.prmeta { font-size: 12px; }
+.prbox a.btn { text-decoration: none; color: var(--text); }
+.themesel { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.themesel .btn { text-align: center; }
+.themesel .btn[aria-pressed="true"] { border-color: var(--accent); color: var(--accent); font-weight: 600; }

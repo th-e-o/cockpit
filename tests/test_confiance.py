@@ -30,7 +30,8 @@ CWD = "/home/onyxia/work/projet"
     ("Bash", {"command": "git reset --hard HEAD~3"}, False),
     ("Bash", {"command": "mc rm -r s3/bucket"}, False),
     ("Bash", {"command": "rm -rf ~"}, False),                        # refus (deny) : jamais
-    ("Write", {"file_path": "/tmp/x"}, False),                       # hors du projet
+    ("Write", {"file_path": "/opt/x"}, False),                       # hors du projet
+    ("Write", {"file_path": "/tmp/clone/x"}, True),                  # fichiers temporaires : sans risque
     ("Write", {"file_path": CWD + "/.github/workflows/ci.yml"}, False),
     ("Edit", {"file_path": CWD + "/.git/config"}, False),
     ("mcp__services__lancer_service", {"nom": "x"}, True),           # lancer un pod : routine
@@ -50,7 +51,7 @@ def test_mode_confiance_etendu():
     autre = {"file_path": "/home/onyxia/work/autre-projet/a.py"}
     assert POLICY.trusted("Write", autre, CWD) is False
     assert POLICY.trusted("Write", autre, CWD, extended=True) is True
-    assert POLICY.trusted("Write", {"file_path": "/tmp/x"}, CWD, extended=True) is False
+    assert POLICY.trusted("Write", {"file_path": "/opt/x"}, CWD, extended=True) is False
     assert POLICY.trusted("Write", {"file_path": "/home/onyxia/work/autre/.git/config"}, CWD, extended=True) is False
     assert POLICY.trusted("Bash", {"command": "git push origin main"}, CWD, extended=True) is False
 
@@ -110,3 +111,38 @@ def test_routine_automatique_par_defaut(tmp_path):
     call = lambda cmd: asyncio.run(pre({"tool_name": "Bash", "tool_input": {"command": cmd}, "tool_use_id": cmd}, cmd, None))
     assert call("pip install rich")["hookSpecificOutput"]["permissionDecision"] == "allow" and asked == []
     assert call("helm upgrade x y")["hookSpecificOutput"]["permissionDecision"] == "deny" and asked == ["helm upgrade x y"]
+
+
+def test_regles_toujours_autoriser():
+    """Règles créées depuis le téléphone : ciblées ; jamais un refus, une commande masquée ou .git."""
+    p = Policy.load(ROOT / "config" / "policy.yaml")
+    p.set_user_rules([{"tool": "Bash", "pattern": r"^helm\s+upgrade\b"}, {"tool": "files", "pattern": "^/home/onyxia/work/autre/"},
+                      {"tool": "mcp__services__arreter_service", "pattern": ""}, {"tool": "Bash", "pattern": "(invalide"}])
+    assert p.user_allowed("Bash", {"command": "helm upgrade x y"}, CWD) == r"^helm\s+upgrade\b"
+    assert p.user_allowed("Bash", {"command": "helm upgrade x y && helm uninstall z"}, CWD) is None  # chaque segment
+    assert p.user_allowed("Bash", {"command": "echo $(helm upgrade x y)"}, CWD) is None
+    assert p.user_allowed("Bash", {"command": "rm -rf ~"}, CWD) is None
+    assert p.user_allowed("Write", {"file_path": "/home/onyxia/work/autre/a.py"}, CWD) == "^/home/onyxia/work/autre/"
+    assert p.user_allowed("Write", {"file_path": "/home/onyxia/work/autre/.git/config"}, CWD) is None
+    assert p.user_allowed("mcp__services__arreter_service", {"nom": "x"}, CWD) == "mcp__services__arreter_service"
+    assert Policy.load(ROOT / "config" / "policy.yaml").user_allowed("Bash", {"command": "helm upgrade x"}, CWD) is None
+    assert p.trusted("Write", {"file_path": "/tmp/clone/README.md"}, CWD)  # /tmp : sans validation
+
+
+def test_regle_appliquee_par_l_agent(tmp_path):
+    store = Store(tmp_path / "data")
+    runner = Runner(store, Policy.load(ROOT / "config" / "policy.yaml"))
+    runner.policy.set_user_rules([{"tool": "Bash", "pattern": r"^helm\s+upgrade\b"}])
+    asked = []
+
+    async def request_approval(task, project, tool, tool_input, reason):
+        asked.append(tool_input.get("command"))
+        return False
+
+    runner.request_approval = request_approval
+    task = Task(id="t", instruction="x", conversation="c")
+    store.tasks["t"] = task
+    pre = hook(runner, task, str(tmp_path))
+    out = asyncio.run(pre({"tool_name": "Bash", "tool_input": {"command": "helm upgrade x y"}, "tool_use_id": "1"}, "1", None))
+    assert out["hookSpecificOutput"]["permissionDecision"] == "allow" and asked == []
+    assert "règle" in task.events[-1]["text"] and '"policy": "rule"' in (tmp_path / "data" / "audit.jsonl").read_text()

@@ -13,6 +13,7 @@
   <link rel="icon" href="static/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="static/icon-180.png">
   <link rel="stylesheet" href="static/style.css?v=__VERSION__">
+  <script src="static/theme.js?v=__VERSION__"></script>
 </head>
 <body>
   <header>
@@ -22,6 +23,7 @@
       <button type="button" role="tab" id="tabChat" data-view="chat" aria-selected="true">💬 Fil</button>
       <button type="button" role="tab" id="tabDash" data-view="dash" aria-selected="false">📊 Pods <span id="tabCount" class="tabcount hidden"></span></button>
     </nav>
+    <button id="dashToggle" class="icon" aria-label="masquer le tableau de bord" title="Masquer ou afficher le tableau de bord (Alt+D)">⇥</button>
     <button id="pipBtn" class="icon hidden" aria-label="mini-fenêtre" title="Mini-fenêtre toujours visible, par-dessus tes autres fenêtres (Alt+P)">🪟</button>
     <button id="pendingBtn" class="badge hidden" aria-label="validations en attente">0</button>
     <button id="menuBtn" class="icon" aria-label="menu">☰</button>
@@ -67,6 +69,9 @@
   </footer>
   </div>
 
+  <!-- Séparation réglable entre le fil et le tableau de bord (ordinateur) : glisser, flèches, double-clic = défaut -->
+  <button type="button" id="splitter" role="separator" aria-orientation="vertical" aria-label="largeur du fil de discussion"
+          title="Glisser pour régler la largeur du fil · double-clic : largeur par défaut"></button>
   <!-- Tableau de bord : Claude actifs, pods (ressources, projets, branches parallèles), dernières modifications -->
   <aside id="dash" aria-label="Tableau de bord"></aside>
   </div>
@@ -97,6 +102,12 @@
       <button class="btn hidden" id="mInstall">📲 Installer l'application</button>
       <button class="btn hidden" id="mPip">🪟 Mini-fenêtre toujours visible (Alt+P)</button>
       <button class="btn" id="mPod">🚀 Nouveau pod sur un dépôt git</button>
+      <div class="themesel" role="group" aria-label="thème">
+        <button type="button" class="btn" data-theme-set="auto">🌓 Auto</button>
+        <button type="button" class="btn" data-theme-set="light">☀️ Clair</button>
+        <button type="button" class="btn" data-theme-set="dark">🌙 Sombre</button>
+      </div>
+      <button class="btn" id="mRules">🔓 Règles d'autorisation</button>
       <button class="btn" id="mAudit">📜 Journal d'audit</button>
       <button class="btn" id="mNotif">🔔 Activer les notifications</button>
       <button class="btn" id="mDevices">🔑 Passkeys et appareils</button>

@@ -54,6 +54,8 @@ class Policy:
         self.trust_paths_never = [re.compile(p, re.I) for p in trust.get("paths_never", [])]
         self.trust_default = bool(trust.get("default", False))  # validations de routine automatiques partout
         self.trust_outside = [re.compile(p) for p in trust.get("extended", {}).get("outside_paths", [])]
+        self.trust_scratch = [re.compile(p) for p in trust.get("scratch_paths", [])]  # hors projet, mais sans risque
+        self.user_rules: list[tuple[str, re.Pattern | None]] = []  # règles « Toujours autoriser » du téléphone
         self.trust_unknown = bool(trust.get("unknown_commands", False))
         self.trust_opaque = bool(trust.get("opaque", False))
 
@@ -130,6 +132,8 @@ class Policy:
                 return False
             if resolved == root or resolved.startswith(root + "/"):
                 return True
+            if any(rx.search(resolved) for rx in self.trust_scratch):
+                return True
             return extended and any(rx.search(resolved) for rx in self.trust_outside)
         if tool != "Bash":
             if tool.endswith("creer_depot") and tool_input.get("prive") is False:
@@ -149,6 +153,39 @@ class Policy:
             elif not self.trust_unknown:
                 return False
         return True
+
+    def set_user_rules(self, rules: list[dict]) -> None:
+        """Règles « Toujours autoriser » créées depuis le téléphone : [{tool, pattern}] (pattern : regex ou vide)."""
+        out = []
+        for r in rules or []:
+            try:
+                out.append((str(r["tool"]), re.compile(r["pattern"]) if r.get("pattern") else None))
+            except (KeyError, re.error):
+                continue
+        self.user_rules = out
+
+    def user_allowed(self, tool: str, tool_input: dict, cwd: str) -> str | None:
+        """Règle « Toujours autoriser » qui couvre cette demande (son motif), ou None.
+
+        Jamais pour un refus (deny), une commande opaque ($(…), eval…) ni une écriture dans paths_never.
+        """
+        if not self.user_rules or self.evaluate(tool, tool_input, cwd).action == DENY:
+            return None
+        if tool == "Bash":
+            cmd = tool_input.get("command", "").strip()
+            if _OPAQUE.search(cmd):
+                return None
+            rules = [rx for t, rx in self.user_rules if t == "Bash" and rx]
+            segs = [s.strip() for s in _SPLIT.split(cmd) if s.strip() and self._segment(s.strip()).action != ALLOW]
+            hits = [next((rx for rx in rules if rx.search(re.sub(r"^(\w+=\S*\s+)+", "", s))), None) for s in segs]
+            return hits[0].pattern if segs and all(hits) else None
+        if tool in FILE_TOOLS:
+            path = tool_input.get("file_path") or tool_input.get("notebook_path") or ""
+            resolved = str(Path(path).expanduser().resolve()) if path else ""
+            if not resolved or any(rx.search(resolved) for rx in self.trust_paths_never):
+                return None
+            return next((rx.pattern for t, rx in self.user_rules if t == "files" and rx and rx.search(resolved)), None)
+        return next((tool for t, rx in self.user_rules if t == tool and rx is None), None)
 
     def _segment(self, seg: str) -> Decision:
         for rx in self.bash_deny:

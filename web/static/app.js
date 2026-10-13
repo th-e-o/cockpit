@@ -228,6 +228,44 @@ function serviceInput(a) {
     `Ressources : ${i.cpu || 2} CPU · ${i.memoire || '8Gi'} · ${i.disque || '10Gi'} de disque${i.gpu ? ' · 1 GPU' : ' · sans GPU'}`].join('\n');
 }
 
+// ---------- règles « Toujours autoriser » (créées depuis une validation, appliquées par tous les pods)
+const MULTI = new Set(['git', 'npm', 'pnpm', 'yarn', 'docker', 'kubectl', 'helm', 'gh', 'uv', 'pip', 'cargo', 'go', 'mc', 'aws',
+  'gcloud', 'terraform', 'poetry', 'conda', 'make', 'bun', 'npx', 'python', 'python3', 'node', 'Rscript']);
+const reEsc = (s) => s.replace(/[.*+?^${}()|[\]\\/]/g, '\\$&');
+
+/** Règle ciblée proposée pour une validation : commande (1 ou 2 premiers mots), dossier, ou outil. */
+function ruleFor(a) {
+  const i = a.tool_input || {};
+  if (a.tool === 'Bash') {
+    const seg = (a.reason.match(/(?:commande non répertoriée|opération sensible) : (.+)$/) || [])[1];
+    if (!seg || /`|\$\(/.test(i.command || '')) return null;
+    const words = seg.replace(/^(\w+=\S*\s+)+/, '').trim().split(/\s+/);
+    const n = MULTI.has(words[0]) && words[1] && !words[1].startsWith('-') ? 2 : 1;
+    const prefix = words.slice(0, n);
+    return { tool: 'Bash', pattern: `^${prefix.map(reEsc).join('\\s+')}\\b`, short: `${prefix.join(' ')} …`,
+      label: `les commandes « ${prefix.join(' ')} … »`, example: i.command };
+  }
+  const path = i.file_path || i.notebook_path;
+  if (path) {
+    const dir = path.replace(/\/[^/]*$/, '');
+    if (!dir || /\/\.git(\/|$)|\.github\/workflows/.test(dir)) return null;
+    return { tool: 'files', pattern: `^${reEsc(dir)}/`, short: `${dir}/`, label: `les écritures dans ${dir}/`, example: path };
+  }
+  if (/lancer_service|arreter_service|creer_depot|lancer_en_parallele|WebFetch|NotebookEdit/.test(a.tool)) {
+    const short = a.tool.replace(/^mcp__\w+__/, '');
+    return { tool: a.tool, pattern: '', short, label: `l'outil ${short}`, example: '' };
+  }
+  return null;
+}
+
+async function openRules() {
+  const rules = await api('regles');
+  showList('Règles d\'autorisation', `<p class="hint">Créées avec « Toujours autoriser » : ces demandes ne te sont plus posées, dans tous les pods.
+    Les refus définitifs et les commandes masquées (\$(…)) restent toujours bloqués.</p>${rules.map((r) => `<div class="dev"><div>${esc(r.label)}
+    <small>${r.example ? `ex. ${esc(r.example.slice(0, 80))} · ` : ''}créée ${ago(r.created)}</small></div>
+    <button class="btn ghost" data-del-rule="${r.id}">Supprimer</button></div>`).join('') || '<p class="hint">Aucune règle pour l\'instant.</p>'}`);
+}
+
 function approvalHtml(a) {
   const service = SERVICE_TOOLS[a.tool.replace(/^mcp__(services|cockpit)__/, '')];
   const input = a.tool.endsWith('lancer_en_parallele')
@@ -243,6 +281,7 @@ function approvalHtml(a) {
     : `<div class="actions">
          <button class="btn ok" data-approve="${esc(a.id)}">Approuver</button>
          <button class="btn bad" data-deny="${esc(a.id)}">Refuser</button>
+         ${ruleFor(a) ? `<button class="btn ghost always" data-always="${esc(a.id)}" title="approuve et ne demande plus pour : ${esc(ruleFor(a).label)}">Toujours autoriser « ${esc(ruleFor(a).short)} »</button>` : ''}
        </div><div class="timer" data-expires="${Number(a.expires)}"></div>`;
   return `<div class="approval ${a.decision ? 'resolved' : ''}">
     <div class="why">${service ? esc(service) : `⚠️ ${esc(a.tool)}`} — ${esc(a.reason)}</div>
@@ -719,16 +758,49 @@ function ciPrHtml(e) {
     html += `<div class="ci ${esc(ci.state)}">${lab} · <code>${esc(ci.sha)}</code>${failed.length ? ` · ${esc(failed.join(', '))}` : ''}
       ${ci.url ? `· <a href="${esc(ci.url)}" target="_blank" rel="noopener">détails</a>` : ''}</div>`;
   }
-  const prs = e.events.filter((x) => x.type === 'pr');
-  html += prs.map((x) => `<div class="prlink">🔀 <a href="${esc(x.url)}" target="_blank" rel="noopener">Pull request #${esc(x.number)}</a> · ${esc(x.title)}
-    <span class="muted">(${esc(x.head)} → ${esc(x.base)})</span></div>`).join('');
+  html += prsOf(e).map((pr) => prBox(pr, t.id)).join('');
   const { c } = changesOf(e);
   const conv = state.order.filter((id) => conversationOf(id) === conversationOf(t.id));
-  const hasPr = conv.some((id) => state.tasks.get(id).events.some((x) => x.type === 'pr'));
+  const hasPr = conv.some((id) => prsOf(state.tasks.get(id)).length);
   if (t.status === 'done' && c?.branch && !['main', 'master', 'HEAD'].includes(c.branch) && !hasPr && lastOfConversation(t.id) === t.id) {
     html += `<div class="actions"><button class="btn" data-open-pr="${esc(t.id)}">🔀 Ouvrir une pull request</button></div>`;
   }
   return html;
+}
+
+// ---------- pull requests : lien direct et fusion depuis le cockpit
+const PR_RX = /https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/pull\/\d+/g;
+
+/** PR d'une tâche : ouvertes avec ouvrir_pr (titre, branches), ou citées dans la réponse de Claude. */
+function prsOf(e) {
+  const out = new Map();
+  for (const x of e.events) if (x.type === 'pr' && x.url) out.set(x.url, x);
+  for (const url of String(e.task.result || '').match(PR_RX) || []) {
+    if (!out.has(url)) out.set(url, { url, number: url.split('/').pop(), title: '' });
+  }
+  return [...out.values()];
+}
+
+const mergedPrs = () => new Set([...state.tasks.values()].flatMap((e) => e.events.filter((x) => x.type === 'pr_merged').map((x) => x.url)));
+
+function prBox(pr, taskId, compact = false) {
+  const merged = mergedPrs().has(pr.url);
+  const repo = pr.url.replace(/^https:\/\/github\.com\/|\/pull\/\d+$/g, '');
+  return `<div class="prbox${merged ? ' merged' : ''}${compact ? ' compact' : ''}">
+    <div class="prtitle">🔀 Pull request #${esc(pr.number)}${pr.title ? ` · ${esc(pr.title)}` : ''}</div>
+    <div class="muted prmeta">${esc(repo)}${pr.head ? ` · ${esc(pr.head)} → ${esc(pr.base)}` : ''}${merged ? ' · <b class="okt">✅ fusionnée</b>' : ''}</div>
+    <div class="actions"><a class="btn" href="${esc(pr.url)}" target="_blank" rel="noopener">Voir sur GitHub</a>
+      ${merged ? '' : `<button class="btn ok" data-merge-url="${esc(pr.url)}" data-task-id="${esc(taskId)}">Fusionner</button>`}</div></div>`;
+}
+
+function prsSection(tasks) {
+  const merged = mergedPrs();
+  const seen = new Map();
+  for (const e of tasks) for (const pr of prsOf(e)) if (!merged.has(pr.url) && !seen.has(pr.url)) seen.set(pr.url, { pr, e });
+  if (!seen.size) return '';
+  return `<section class="sect"><h3>🔀 Pull requests à valider · ${seen.size}</h3><div class="follows">${[...seen.values()].map(({ pr, e }) =>
+    `<article class="follow"><div class="fhead"><b>${esc(state.projects.find((p) => p.id === e.task.project)?.name || e.task.project || '')}</b>
+      <button class="btn ghost" data-jump="${esc(e.task.id)}">Voir la tâche</button></div>${prBox(pr, e.task.id, true)}</article>`).join('')}</div></section>`;
 }
 
 /** Numéros de ligne d'un diff (nouvelle version ; « −n » pour une ligne supprimée), pour les commentaires de revue. */
@@ -1192,6 +1264,7 @@ function renderDash() {
   const html = `<div class="dashwrap">
     ${usageHtml(latestUsage())}
     ${questionsSection(tasks)}
+    ${prsSection(tasks)}
     <div class="kpis">
       ${kpi(`${working}<small>/${capacity || '—'}</small>`, 'Claude au travail', '', 'agents actifs / capacité des pods en ligne')}
       ${kpi(pending ? `⚠ ${pending}` : '0', 'Validation(s) en attente', pending ? 'warn' : '')}
@@ -1373,6 +1446,7 @@ async function openPip() {
   link.href = document.querySelector('link[rel="stylesheet"]').href;
   doc.head.append(link);
   doc.body.className = 'pip';
+  if (document.documentElement.dataset.theme) doc.documentElement.dataset.theme = document.documentElement.dataset.theme;
   doc.addEventListener('click', onClick);
   doc.addEventListener('submit', onQuestionSubmit);
   pip.addEventListener('pagehide', () => { pip = null; state.pipHtml = ''; state.pipAttention = 0; });
@@ -1390,7 +1464,9 @@ async function poll() {
     const s = await api('etat', undefined, `&since=${state.lastId}`);
     state.replay = state.lastId === 0;
     const touched = new Set();
-    for (const evt of s.events) { onEvent(evt); touched.add(evt.task_id); }
+    let prMerged = false;
+    for (const evt of s.events) { onEvent(evt); touched.add(evt.task_id); prMerged ||= evt.type === 'pr_merged'; }
+    if (prMerged) state.order.forEach((id) => touched.add(id));  // la PR peut être affichée sur une autre conversation
     // Une conversation qui avance redessine ses cartes précédentes (question répondue, étapes proposées…)
     if (!state.replay) {
       const convs = new Set([...touched].map(conversationOf));
@@ -1517,6 +1593,25 @@ async function onClick(ev) {
         b.textContent = '✓ Copié';
         setTimeout(() => { b.textContent = '🔑 Mot de passe'; }, 2000);
       }
+    } else if (b.dataset.mergeUrl) {
+      const n = b.dataset.mergeUrl.split('/').pop();
+      if (!confirm(`Fusionner la pull request #${n} ? Elle sera intégrée à la branche de base (ce qui peut déclencher un déploiement).`)) return;
+      b.disabled = true;
+      const t = await api('fusionner_pr', { task_id: b.dataset.taskId, url: b.dataset.mergeUrl });
+      onEvent({ kind: 'task', task_id: t.id, task: t });
+      await poll();
+    } else if (b.dataset.always) {
+      const a = [...state.tasks.values()].flatMap((e) => [...e.approvals.values()]).find((x) => x.id === b.dataset.always);
+      const r = a && ruleFor(a);
+      if (!r || !confirm(`Approuver, et ne plus jamais demander pour ${r.label} (dans tous les pods) ?\nTu pourras supprimer cette règle dans ☰ → Règles d'autorisation.`)) return;
+      b.parentElement.querySelectorAll('button').forEach((x) => (x.disabled = true));
+      await api('regle_ajouter', { tool: r.tool, pattern: r.pattern, label: r.label, example: r.example });
+      await api('decider', { approval_id: a.id, decision: 'approve' });
+      poll();
+    } else if (b.id === 'mRules') {
+      await openRules();
+    } else if (b.dataset.delRule) {
+      if (confirm('Supprimer cette règle ? La validation te sera de nouveau demandée.')) { await api('regle_supprimer', { id: Number(b.dataset.delRule) }); await openRules(); }
     } else if (b.dataset.tip) {
       const act = b.dataset.tip;
       if (act === 'view-dash') setView('dash');
@@ -1536,6 +1631,10 @@ async function onClick(ev) {
       state.bilanJours = Number(b.dataset.bilan);
       try { localStorage.setItem('cockpit_bilan', b.dataset.bilan); } catch { /* sans importance */ }
       renderDash();
+    } else if (b.dataset.themeSet) {
+      setTheme(b.dataset.themeSet);
+    } else if (b.id === 'dashToggle') {
+      setDashHidden(!document.body.classList.contains('dash-hidden'));
     } else if (b.id === 'mPip' || b.id === 'pipBtn') {
       $('#menuDlg').close();
       await openPip();
@@ -1683,6 +1782,61 @@ $('#modelSel').addEventListener('change', () => {
 });
 $('#variantSel').addEventListener('change', () => { state.variants = Number($('#variantSel').value); });
 
+// ---------- thème (auto, clair, sombre) et répartition fil / tableau de bord sur ordinateur
+function setTheme(theme) {
+  if (theme === 'auto') delete document.documentElement.dataset.theme;
+  else document.documentElement.dataset.theme = theme;
+  try { localStorage.setItem('cockpit_theme', theme); } catch { /* sans importance */ }
+  if (pip) { if (theme === 'auto') delete pip.document.documentElement.dataset.theme; else pip.document.documentElement.dataset.theme = theme; }
+  document.querySelectorAll('[data-theme-set]').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.themeSet === theme)));
+  // Couleur de la barre du navigateur / de l'app installée
+  requestAnimationFrame(() => document.querySelector('meta[name="theme-color"]')
+    ?.setAttribute('content', getComputedStyle(document.body).getPropertyValue('--panel').trim() || '#0f1115'));
+}
+const currentTheme = () => document.documentElement.dataset.theme || 'auto';
+
+const CHAT_MIN = 360;
+function setChatWidth(px, save = true) {
+  const layout = $('#layout');
+  if (px == null) { layout.style.removeProperty('--chat-w'); } else {
+    const w = Math.round(Math.max(CHAT_MIN, Math.min(px, layout.clientWidth - 320)));
+    layout.style.setProperty('--chat-w', `${w}px`);
+    $('#splitter').setAttribute('aria-valuenow', String(w));
+  }
+  if (save) try { localStorage.setItem('cockpit_chat_w', px == null ? '' : String(px)); } catch { /* sans importance */ }
+  renderDash();
+}
+
+function setDashHidden(hidden) {
+  document.body.classList.toggle('dash-hidden', hidden);
+  $('#dashToggle').textContent = hidden ? '⇤' : '⇥';
+  $('#dashToggle').setAttribute('aria-label', hidden ? 'afficher le tableau de bord' : 'masquer le tableau de bord');
+  try { localStorage.setItem('cockpit_dash_hidden', hidden ? '1' : ''); } catch { /* sans importance */ }
+  renderDash();
+}
+
+$('#splitter').addEventListener('pointerdown', (ev) => {
+  ev.preventDefault();
+  const sp = $('#splitter');
+  sp.setPointerCapture(ev.pointerId);
+  document.body.classList.add('resizing');
+  const left = $('#layout').getBoundingClientRect().left;
+  const move = (e) => setChatWidth(e.clientX - left, false);
+  const up = (e) => {
+    sp.removeEventListener('pointermove', move);
+    document.body.classList.remove('resizing');
+    setChatWidth(e.clientX - left);
+  };
+  sp.addEventListener('pointermove', move);
+  sp.addEventListener('pointerup', up, { once: true });
+});
+$('#splitter').addEventListener('dblclick', () => setChatWidth(null));
+$('#splitter').addEventListener('keydown', (e) => {
+  if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+  e.preventDefault();
+  setChatWidth($('#chat').getBoundingClientRect().width + (e.key === 'ArrowRight' ? 40 : -40));
+});
+
 // ---------- application installée (Android, PC) : invite d'installation, raccourcis de l'icône, clavier
 let installPrompt = null;
 addEventListener('beforeinstallprompt', (ev) => {
@@ -1712,6 +1866,9 @@ document.addEventListener('keydown', (e) => {
     input.focus();
   } else if (e.key === 'Escape' && document.activeElement === input) {
     input.blur();
+  } else if (e.altKey && e.key.toLowerCase() === 'd') {
+    e.preventDefault();
+    setDashHidden(!document.body.classList.contains('dash-hidden'));
   } else if (e.altKey && e.key.toLowerCase() === 'p') {
     e.preventDefault();
     openPip();
@@ -1736,6 +1893,12 @@ async function start() {
 }
 
 if (pipSupported() && !matchMedia('(pointer: coarse)').matches) { $('#mPip').classList.remove('hidden'); $('#pipBtn').classList.remove('hidden'); }
+try {
+  setTheme(localStorage.getItem('cockpit_theme') || 'auto');
+  if (localStorage.getItem('cockpit_dash_hidden')) setDashHidden(true);
+  const w = Number(localStorage.getItem('cockpit_chat_w'));
+  if (w) setChatWidth(w, false);
+} catch { /* navigation privée */ }
 try {
   state.model = localStorage.getItem('cockpit_model') || '';
   $('#modelSel').value = state.model;

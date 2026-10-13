@@ -742,3 +742,121 @@ def test_inciter_a_economiser(relay):
         page.wait_for_selector("#thread.hidden", state="attached")
         assert not errors, errors
         browser.close()
+
+
+
+def test_toujours_autoriser(relay):
+    """« Toujours autoriser » : approuve et crée une règle ciblée ; règles visibles et supprimables dans le menu."""
+    from test_relay import call, paired_phone, wpoll
+
+    p = paired_phone(relay)
+    wpoll(relay, "pod-ta", False, [{"id": "ta", "name": "TA"}], hello=True)
+    t = call(p, "tache", {"instruction": "construis l'image", "project": "ta"}).json()
+    wpoll(relay, "pod-ta", False)
+    worker_call(relay, "w_evenements", {"worker_id": "pod-ta", "events": [
+        {"kind": "task", "task_id": t["id"], "task": {"status": "waiting_approval", "project": "ta"}},
+        {"kind": "approval", "task_id": t["id"], "approval": {"id": "ap-ta", "task_id": t["id"], "tool": "Bash",
+         "tool_input": {"command": "docker build -t app ."}, "reason": "opération sensible : docker build -t app .",
+         "expires": time.time() + 600}}]})
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        page, errors = browser_page(p, browser, relay, viewport={"width": 1280, "height": 900})
+        page.on("dialog", lambda d: d.accept())
+        btn = page.locator("[data-always='ap-ta']")
+        btn.wait_for()
+        assert btn.inner_text() == "Toujours autoriser « docker build … »"
+        btn.click()
+        msg = {}
+        for _ in range(30):  # approbation transmise au worker, avec la nouvelle règle
+            msg = wpoll(relay, "pod-ta", False)
+            if msg["decisions"]:
+                break
+            page.wait_for_timeout(100)
+        assert msg["decisions"] == [{"id": "ap-ta", "decision": "approve"}]
+        assert {"tool": "Bash", "pattern": r"^docker\s+build\b"} in msg["rules"]
+        page.click("#menuBtn")
+        page.click("#mRules")
+        page.wait_for_selector("#listDlg >> text=les commandes « docker build … »")
+        page.click("#listDlg [data-del-rule]")
+        page.wait_for_selector("#listDlg >> text=Aucune règle")
+        assert not errors, errors
+        browser.close()
+
+
+def test_pull_requests(relay):
+    """PR : encadré avec lien et fusion sur la carte, section du tableau de bord, fusion confiée au pod du projet."""
+    from test_relay import call, paired_phone, wpoll
+
+    p = paired_phone(relay)
+    wpoll(relay, "pod-pr", False, [{"id": "prj", "name": "Russe"}], hello=True)
+    t = call(p, "tache", {"instruction": "ouvre la PR du déploiement", "project": "prj"}).json()
+    wpoll(relay, "pod-pr", False)
+    url = "https://github.com/th-e-o/russe-telegram-cartes/pull/3"
+    worker_call(relay, "w_evenements", {"worker_id": "pod-pr", "events": [
+        {"kind": "message", "task_id": t["id"], "type": "pr", "url": url, "number": 3, "title": "Déploiement OVH",
+         "head": "feat/deploy", "base": "main", "ts": time.time()},
+        {"kind": "task", "task_id": t["id"], "task": {"status": "done", "project": "prj", "result": f"PR ouverte : {url}"}}]})
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        page, errors = browser_page(p, browser, relay, viewport={"width": 1440, "height": 900})
+        page.on("dialog", lambda d: d.accept())
+        box = page.locator(f"#t-{t['id']} .prbox")
+        box.wait_for()
+        assert box.count() == 1  # le lien cité dans la réponse n'est pas dupliqué
+        assert "Pull request #3 · Déploiement OVH" in box.inner_text() and "feat/deploy → main" in box.inner_text()
+        assert box.locator("a", has_text="Voir sur GitHub").get_attribute("href") == url
+        page.wait_for_selector(".sect >> text=Pull requests à valider")
+        box.screenshot(path=SHOTS / "20-pull-request.png")
+        box.locator("[data-merge-url]").click()
+        page.wait_for_selector("section .user >> text=Fusionner la pull request #3 (th-e-o/russe-telegram-cartes)")
+        act = [x for x in wpoll(relay, "pod-pr", False)["tasks"] if x.get("action")]
+        assert act and act[0]["action"] == {"type": "fusionner_pr", "url": url}  # au pod du projet
+        worker_call(relay, "w_evenements", {"worker_id": "pod-pr", "events": [
+            {"kind": "message", "task_id": act[0]["id"], "type": "pr_merged", "url": url, "ts": time.time()},
+            {"kind": "task", "task_id": act[0]["id"], "task": {"status": "done", "result": "✅ Pull request fusionnée"}}]})
+        page.wait_for_selector(f"#t-{t['id']} .prbox.merged >> text=✅ fusionnée")
+        assert page.locator(".sect >> text=Pull requests à valider").count() == 0
+        assert not errors, errors
+        browser.close()
+
+
+def test_theme_et_repartition(relay):
+    """Thème clair / sombre choisi dans le menu (mémorisé) ; largeur du fil réglable ; tableau de bord masquable."""
+    from test_relay import paired_phone
+
+    p = paired_phone(relay)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        page, errors = browser_page(p, browser, relay, viewport={"width": 1440, "height": 900}, color_scheme="light")
+        page.wait_for_selector("#splitter")
+        bg = lambda: page.evaluate("getComputedStyle(document.body).backgroundColor")  # noqa: E731
+        assert bg() == "rgb(246, 246, 244)"  # auto : suit le système (clair)
+        page.click("#menuBtn")
+        page.click("[data-theme-set='dark']")
+        assert bg() == "rgb(15, 17, 21)" and page.get_attribute("html", "data-theme") == "dark"
+        assert page.get_attribute("[data-theme-set='dark']", "aria-pressed") == "true"
+        page.click("#menuDlg [data-close]")
+        # Largeur du fil : glisser la séparation
+        box = page.locator("#splitter").bounding_box()
+        page.mouse.move(box["x"] + 3, box["y"] + 200)
+        page.mouse.down()
+        page.mouse.move(900, box["y"] + 200, steps=5)
+        page.mouse.up()
+        assert abs(page.locator("#chat").bounding_box()["width"] - 900) < 12
+        page.screenshot(path=SHOTS / "21-sombre-large.png")
+        page.reload()
+        page.wait_for_selector("#splitter")
+        assert bg() == "rgb(15, 17, 21)"  # thème mémorisé, appliqué avant l'affichage
+        assert abs(page.locator("#chat").bounding_box()["width"] - 900) < 12  # largeur mémorisée
+        page.dblclick("#splitter")
+        assert page.locator("#chat").bounding_box()["width"] < 700  # largeur par défaut
+        # Tableau de bord masqué : tout l'espace pour le fil
+        page.click("#dashToggle")
+        assert page.is_hidden("#dash") and page.locator("#chat").bounding_box()["width"] > 1400
+        page.keyboard.press("Alt+d")
+        assert page.is_visible("#dash")
+        page.click("#menuBtn")
+        page.click("[data-theme-set='light']")
+        assert bg() == "rgb(246, 246, 244)"
+        assert not errors, errors
+        browser.close()
