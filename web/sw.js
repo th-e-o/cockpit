@@ -63,10 +63,12 @@ function notifications(s) {
   }
   for (const t of s.finished || []) {
     if (t.status === 'done' && t.question?.text) {
-      // Claude attend une réponse : la question d'abord, ses choix en boutons
-      const options = (t.question.options || []).slice(0, 2);
+      // Claude attend une réponse : la question d'abord, ses choix en boutons (questionnaire : réponse dans l'app)
+      const items = t.question.items || [];
+      const options = items.length ? [] : (t.question.options || []).slice(0, 2);
+      const body = items.length ? `${items.length} questions : ${items.map((x, i) => `${i + 1}. ${x.question}`).join(' ')}` : t.question.text;
       out.push({ key: `q-${t.id}`, tag: `tache-${t.id}`, urgent: true, title: '❓ Claude attend ta réponse',
-        body: t.question.text.replace(/\*\*|`/g, '').slice(0, 220),
+        body: body.replace(/\*\*|`/g, '').slice(0, 220),
         actions: options.map((o, i) => ({ action: `answer-${i}`, title: o.slice(0, 40) })),
         data: { task: t.id, options } });
       continue;

@@ -390,7 +390,7 @@ class Worker:
             task = Task(id=t["id"], instruction=t["instruction"], project=t.get("project"),
                         conversation=t.get("conversation"), context=t.get("context") or [],
                         resume_session=t.get("resume_session"), parent=t.get("parent"), model=t.get("model"),
-                        isolate=bool(t.get("isolate")), group=t.get("group"))
+                        isolate=bool(t.get("isolate")), group=t.get("group"), reply_to_task=t.get("reply_to"))
             self.store.tasks[task.id] = task
             if t.get("action"):
                 self.spawn(self.run_action(task, t["action"]))

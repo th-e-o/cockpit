@@ -22,6 +22,7 @@
       <button type="button" role="tab" id="tabChat" data-view="chat" aria-selected="true">💬 Fil</button>
       <button type="button" role="tab" id="tabDash" data-view="dash" aria-selected="false">📊 Pods <span id="tabCount" class="tabcount hidden"></span></button>
     </nav>
+    <button id="pipBtn" class="icon hidden" aria-label="mini-fenêtre" title="Mini-fenêtre toujours visible, par-dessus tes autres fenêtres (Alt+P)">🪟</button>
     <button id="pendingBtn" class="badge hidden" aria-label="validations en attente">0</button>
     <button id="menuBtn" class="icon" aria-label="menu">☰</button>
   </header>
@@ -40,7 +41,7 @@
     <div id="thread" class="thread hidden">
       <span id="threadText"></span>
       <select id="trustSel" class="mini trust" aria-label="mode confiance"
-              title="Mode confiance : les validations de routine de cette conversation passent sans toi (jamais : cluster, services, push sur main, sudo…)">
+              title="Mode confiance : Claude peut aussi écrire hors de son projet, dans ~/work (jamais : cluster, arrêt de services, push sur main, sudo…)">
         <option value="0">🛡 Confiance</option><option value="15">🛡 15 min</option><option value="30">🛡 30 min</option>
         <option value="60">🛡 1 h</option><option value="120">🛡 2 h</option>
       </select>
@@ -92,6 +93,7 @@
     <div class="dlghead"><h2>Menu</h2><button class="icon" data-close>✕</button></div>
     <div class="menu">
       <button class="btn hidden" id="mInstall">📲 Installer l'application</button>
+      <button class="btn hidden" id="mPip">🪟 Mini-fenêtre toujours visible (Alt+P)</button>
       <button class="btn" id="mPod">🚀 Nouveau pod sur un dépôt git</button>
       <button class="btn" id="mAudit">📜 Journal d'audit</button>
       <button class="btn" id="mNotif">🔔 Activer les notifications</button>

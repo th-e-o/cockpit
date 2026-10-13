@@ -104,11 +104,19 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
     les compare (modifications, tests, capture) et *Garder* fusionne la choisie et jette les autres.
   - *Revue* : toucher une ligne d'un diff pour la commenter, puis *Envoyer la revue à Claude*. *Ouvrir une pull
     request* demande à Claude de la rédiger (`ouvrir_pr`, jamais depuis main/master).
-  - *Mode confiance* (🛡 dans la barre de conversation : 15 min à 2 h) : les validations de routine de cette
-    conversation passent sans toi (installations, suppressions dans le projet, commandes non répertoriées,
-    fichiers sensibles du projet). Restent toujours demandés : refus (`deny`), écritures hors du projet, `.git/`
-    et workflows de CI, services, dépôts GitHub, agents en parallèle, cluster, push sur main ou forcé, `sudo`
-    (section `trust` de `config/policy.yaml`). Chaque auto-approbation est journalisée et signalée sur la carte.
+  - *Validations automatiques* (par défaut, `trust.default` de `config/policy.yaml`) : installations, suppressions
+    et copies dans le projet, commandes non répertoriées, fichiers sensibles du projet, `WebFetch`, lancement d'un
+    pod, dépôt GitHub privé, agents en parallèle. Restent toujours demandés : refus (`deny`), écritures hors du
+    projet, `.git/` et workflows de CI, arrêt d'un service, dépôt public, cluster, push sur main ou forcé, `sudo`,
+    S3, `vault`. Chaque auto-approbation est journalisée et signalée sur la carte (« 🛡 N validations passées
+    automatiquement »). Le *mode confiance* (🛡 dans la barre de conversation, 15 min à 2 h) permet en plus
+    d'écrire hors du projet, dans `~/work`.
+  - *Questions avant le travail* : au premier message d'une conversation importante, Claude pose d'abord, en une
+    fois, les questions essentielles (`poser_question`, un choix par question + précisions) puis travaille ou
+    transmet un cahier des charges complet.
+  - *Mini-fenêtre toujours visible* (🪟 ou Alt+P, Chrome et Edge sur ordinateur) : par-dessus les autres fenêtres,
+    validations à approuver, questions de Claude, tâches en cours et terminées ; elle clignote quand quelque chose
+    t'attend.
   - *Commandes rapides* (puces au-dessus de la saisie, ✎ pour les modifier, communes ou par projet) et *mémoire du
     projet* (🧠 : le `CLAUDE.md`, lu par Claude au début de chaque tâche, modifiable depuis le téléphone).
 - **Pods de projet** : leur agent transmet à l'orchestrateur ce qui sort de son projet (nouveau projet, nouveau

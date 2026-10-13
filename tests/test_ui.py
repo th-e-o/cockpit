@@ -188,7 +188,9 @@ def seed_dashboard(relay, p):
         "tool_input": {"command": "helm upgrade mlflow inseefrlab/mlflow"}, "reason": "opération sensible : helm upgrade",
         "expires": time.time() + 800}})
 
-    t4 = call(p, "tache", {"instruction": "Corrige le calcul des altitudes", "project": "ui-drones"}).json()["id"]
+    r4 = call(p, "tache", {"instruction": "Corrige le calcul des altitudes", "project": "ui-drones"})
+    assert r4.status_code == 200, r4.text
+    t4 = r4.json()["id"]
     c4 = {"files": [{"path": "src/altitude.py", "status": "M", "added": 6, "removed": 4}], "file_count": 1, "added": 6,
           "removed": 4, "branch": "feat/carte", "upstream": "origin/feat/carte", "ahead": 0, "commits": [{"sha": "c0ffee1", "subject": "Altitude : corrige l'unité"}]}
     ev("pod-drones", msg(t4, type="changes", changes=c4, patches={}), task(t4, status="done", project="ui-drones", cost_usd=0.21, changes=c4, duration_s=180, next_steps=[
@@ -556,7 +558,7 @@ def test_vibe_coding_ui(relay):
         assert conv in wpoll(relay, "pod-vibe", False)["trust"]
         worker_call(relay, "w_evenements", {"worker_id": "pod-vibe", "events": [{"kind": "message", "task_id": r,
             "type": "trusted", "tool": "Bash", "text": "opération sensible : pip install rich", "ts": time.time()}]})
-        page.wait_for_selector(f"#t-{r} details.trusted >> text=1 validation passée en mode confiance")
+        page.wait_for_selector(f"#t-{r} details.trusted >> text=1 validation passée automatiquement")
         page.locator("#thread").screenshot(path=SHOTS / "14-confiance.png")
 
         # Modèle choisi pour une nouvelle conversation, commandes rapides
@@ -639,18 +641,45 @@ def test_questions_de_claude(relay):
     wpoll(relay, "pod-qu", False, [{"id": "qu", "name": "Russe"}], hello=True)
     q = call(p, "tache", {"instruction": "Crée le bot de cartes de russe", "project": "qu"}).json()
     q2 = call(p, "tache", {"instruction": "Ajoute l'export", "project": "qu"}).json()
+    q3 = call(p, "tache", {"instruction": "Nouveau projet de bot", "project": "qu"}).json()
     worker_call(relay, "w_evenements", {"worker_id": "pod-qu", "events": [
         {"kind": "task", "task_id": q["id"], "task": {"status": "done", "project": "qu", "result": "Plan prêt.",
          "question": {"text": "Quel format pour les cartes ?", "options": ["Anki .apkg", "CSV"]}}},
         {"kind": "task", "task_id": q2["id"], "task": {"status": "done", "project": "qu", "result": "Quel format d'export ?",
-         "question": {"text": "Quel format d'export ?", "options": [], "detected": True}}}]})
+         "question": {"text": "Quel format d'export ?", "options": [], "detected": True}}},
+        {"kind": "task", "task_id": q3["id"], "task": {"status": "done", "project": "qu", "result": "Questions posées.",
+         "question": {"text": "Avant de commencer :", "options": [], "items": [
+             {"question": "Où héberger le bot ?", "options": ["Pod Onyxia", "Serveur OVH"]},
+             {"question": "Format des cartes ?", "options": ["Anki .apkg", "CSV"]}]}}}]})
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
         page, errors = browser_page(p, browser, relay, **pw.devices["iPhone 13"])
         page.wait_for_selector(f"#t-{q['id']} form.question >> text=Quel format pour les cartes ?")
-        assert "❓" in page.inner_text("#pendingBtn") and "2" in page.inner_text("#pendingBtn")
+        assert "❓" in page.inner_text("#pendingBtn") and "3" in page.inner_text("#pendingBtn")
         page.locator(f"#t-{q['id']} form.question").scroll_into_view_if_needed()
         page.screenshot(path=SHOTS / "16-question.png")
+        # Mini-fenêtre toujours visible : ce qui attend une réponse d'abord (contenu calculé par pipHtml)
+        mini = page.evaluate("pipHtml()")
+        assert mini["attention"] >= 3 and mini["html"].count("form class=\"question") == 3
+        assert mini["html"].index("Quel format pour les cartes") < mini["html"].index("<div class=\"pipcard done")
+        page.set_content(f"<link rel=stylesheet href='{relay['app']}static/style.css'><body class='pip'><div class='pipwrap'>{mini['html']}</div></body>")
+        page.set_viewport_size({"width": 380, "height": 520})
+        page.screenshot(path=SHOTS / "18-mini-fenetre.png")
+        page.goto(relay["app"])
+        page.wait_for_selector(f"#t-{q['id']} form.question")
+        # Questionnaire : un choix par question (modifiable), précisions, une seule réponse
+        form = page.locator(f"#t-{q3['id']} form.question")
+        form.locator("[data-pick='Serveur OVH']").click()
+        form.locator("[data-pick='Pod Onyxia']").click()  # change d'avis : un seul choix par question
+        form.locator("[data-pick='CSV']").click()
+        assert form.locator("[aria-pressed='true']").count() == 2
+        form.locator("textarea").fill("bot en français")
+        form.scroll_into_view_if_needed()
+        page.screenshot(path=SHOTS / "17-questionnaire.png")
+        form.locator("[type=submit]").click()
+        page.wait_for_selector("section.suite .user >> text=Où héberger le bot ? → Pod Onyxia")
+        sent = [e["task"]["instruction"] for e in call(p, "etat").json()["events"] if e["kind"] == "task" and e["task"].get("reply_to") == q3["id"]][-1]
+        assert sent == "- Où héberger le bot ? → Pod Onyxia\n- Format des cartes ? → CSV\n\nPrécisions : bot en français"
         # Réponse libre : le texte tapé survit à un nouveau rendu du fil
         box = page.locator(f"#t-{q2['id']} form.question textarea")
         box.fill("CSV avec point-virgule")

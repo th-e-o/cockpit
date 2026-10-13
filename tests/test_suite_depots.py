@@ -186,3 +186,37 @@ def test_poser_question(tmp_path):
     assert q == {"text": "Quel format veux-tu pour les cartes ? Faut-il un dépôt privé ?", "options": [], "detected": True}
     assert detect_question("Tout est fait, voir https://x.fr/a?b=1.") is None
     assert detect_question("```\nif x?\n```\nTerminé.") is None
+
+
+def test_questionnaire(tmp_path):
+    """Plusieurs questions en un appel (un choix par question) ; une seule question garde la forme simple."""
+    asked = []
+    created = {}
+    real = agent_mod.create_sdk_mcp_server
+    agent_mod.create_sdk_mcp_server = lambda name, tools: created.update({t.name: t.handler for t in tools}) or {}
+    try:
+        agent_mod.cockpit_server(str(tmp_path), [].extend, on_question=asked.append)
+    finally:
+        agent_mod.create_sdk_mcp_server = real
+    asyncio.run(created["poser_question"]({"question": "Avant de créer le bot :", "questions": [
+        {"question": "Où héberger le bot ?", "choix": ["Pod Onyxia", "Serveur OVH"]},
+        {"question": "Format des cartes ?", "choix": ["Anki .apkg", "CSV"]}, {"question": " "}]}))
+    assert asked[0] == {"text": "Avant de créer le bot :", "options": [], "items": [
+        {"question": "Où héberger le bot ?", "options": ["Pod Onyxia", "Serveur OVH"]},
+        {"question": "Format des cartes ?", "options": ["Anki .apkg", "CSV"]}]}
+    asyncio.run(created["poser_question"]({"questions": [{"question": "Nom du bot ?", "choix": ["russe-bot"]}]}))
+    assert asked[1] == {"text": "Nom du bot ?", "options": ["russe-bot"]}
+
+
+def test_questions_avant_le_premier_travail(tmp_path):
+    """Premier message d'une conversation : consigne de poser d'abord les questions essentielles ; pas sur une suite."""
+    from cockpit.agent import Runner
+    from cockpit.router import Project
+    from cockpit.store import Store, Task
+
+    r = Runner(Store(tmp_path / "s"), Policy.load(ROOT / "config" / "policy.yaml"))
+    proj = Project(id="p", name="P", cwd=str(tmp_path))
+    prompt = lambda t: r._options(t, proj, str(tmp_path), None, set()).system_prompt["append"]  # noqa: E731
+    assert "premier message de cette conversation" in prompt(Task(id="a", instruction="nouveau projet"))
+    assert "premier message" not in prompt(Task(id="b", instruction="oui", reply_to_task="a", context=[{"instruction": "x"}]))
+    assert "premier message" not in prompt(Task(id="c", instruction="cahier des charges", parent="a"))  # déjà cadré

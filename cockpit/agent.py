@@ -79,8 +79,11 @@ Si l'utilisateur parle d'un de ses dépôts ou de son code GitHub qui n'est pas 
 avec chercher_depots (plusieurs requêtes si besoin : synonymes, sigles), puis lance un service dessus avec
 lancer_service (depot_git = son URL) pour qu'il devienne un projet ; dis à l'utilisateur ce que tu as trouvé.
 Pour suivre un projet confié à un autre pod (avancement, PR, erreurs), utilise etat_projet.
-Pour un NOUVEAU projet : crée son dépôt GitHub avec creer_depot(nom, relier=false), lance un service dessus
-(lancer_service, depot_git = URL du dépôt créé), puis confie-lui la demande avec confier_au_projet.
+Pour un NOUVEAU projet : assure-toi d'abord d'avoir l'essentiel pour en écrire le cahier des charges (sinon
+poser_question, toutes les questions en une fois, et attends les réponses) ; puis crée son dépôt GitHub avec
+creer_depot(nom, relier=false), lance un service dessus (lancer_service, depot_git = URL du dépôt créé) et confie-lui
+un cahier des charges complet (objectif, fonctionnalités, choix techniques, réponses de l'utilisateur, déploiement)
+avec confier_au_projet.
 Tu ne peux pas lire le code d'un autre pod depuis ici : après avoir lancé un service pour travailler sur un dépôt,
 transmets la demande de l'utilisateur au nouveau projet avec confier_au_projet (projet = nom du service) ; elle
 partira toute seule dès que son pod sera prêt. Ne propose pas de cloner le dépôt ici.
@@ -94,6 +97,16 @@ Si la demande se découpe en sous-tâches indépendantes et longues (modules dis
 séparément), tu peux les confier à d'autres agents Claude avec l'outil lancer_en_parallele : chacune tourne
 dans son propre worktree git (branche dédiée), partie du dernier commit — commite d'abord ce dont elles ont besoin.
 Ne l'utilise pas pour des tâches courtes ou très liées : fais-les toi-même.
+"""
+
+FIRST_APPEND = """
+C'est le premier message de cette conversation. Si la demande est importante (nouveau projet, fonctionnalité
+conséquente, travail à confier à un autre pod) et qu'il te manque des informations essentielles pour bien la mener
+(objectif et usage, fonctionnalités attendues, technologies imposées, données ou API externes, hébergement et
+déploiement, accès et secrets, contraintes), NE commence PAS le travail : pose d'abord toutes tes questions en une
+fois avec poser_question (une question par sujet, avec des choix courts), et arrête-toi là. Quand l'utilisateur aura
+répondu, fais le travail (ou transmets un cahier des charges complet, réponses comprises). Si la demande est claire ou
+simple, avance directement sans poser de question.
 """
 
 PROJECT_APPEND = """
@@ -343,21 +356,35 @@ def cockpit_server(cwd: str, on_next, spawn=None, pub=None, upload=None, delegat
                                  for x in found], ensure_ascii=False))
 
     @tool("poser_question",
-          "Pose une question à l'utilisateur quand tu as besoin de sa réponse pour continuer. Elle s'affiche en évidence "
-          "sur son téléphone (et dans la notification), avec les choix proposés en boutons et un champ libre. "
-          "question : claire et autonome ; choix : 2 à 4 réponses courtes possibles (facultatif). À appeler une fois, "
-          "juste avant ta réponse finale ; sa réponse arrivera comme suite de la conversation.",
-          {"type": "object", "properties": {"question": {"type": "string"},
-                                            "choix": {"type": "array", "items": {"type": "string"}, "maxItems": 4}},
-           "required": ["question"]})
+          "Pose une ou plusieurs questions à l'utilisateur quand tu as besoin de ses réponses pour bien faire le travail. "
+          "Elles s'affichent en évidence sur son téléphone (et dans la notification) : un choix par question en "
+          "boutons, plus un champ libre ; il répond en une fois. question : introduction ou question unique ; "
+          "questions : 1 à 6 questions {question, choix (2 à 4 réponses courtes, facultatif)}. Regroupe TOUTES tes "
+          "questions dans un seul appel, juste avant ta réponse finale ; les réponses arrivent comme suite.",
+          {"type": "object", "properties": {
+              "question": {"type": "string"},
+              "choix": {"type": "array", "items": {"type": "string"}, "maxItems": 4},
+              "questions": {"type": "array", "maxItems": 6, "items": {"type": "object", "properties": {
+                  "question": {"type": "string"}, "choix": {"type": "array", "items": {"type": "string"}, "maxItems": 4}},
+                  "required": ["question"]}}}})
     async def poser_question(args: dict) -> dict:
-        text = " ".join(str(args.get("question", "")).split())[:1000]
-        if not text:
+        clean = lambda s, n: " ".join(str(s or "").split())[:n]  # noqa: E731
+        opts = lambda c: [clean(o, 80) for o in (c or []) if str(o).strip()][:4]  # noqa: E731
+        items = [{"question": clean(q.get("question"), 400), "options": opts(q.get("choix"))}
+                 for q in (args.get("questions") or []) if isinstance(q, dict) and clean(q.get("question"), 400)][:6]
+        text = clean(args.get("question"), 1000)
+        if len(items) == 1 and not text:  # une seule question : forme simple
+            text, options, items = items[0]["question"], items[0]["options"], []
+        else:
+            options = opts(args.get("choix"))
+        if not text and not items:
             return _text("question vide", error=True)
-        options = [" ".join(str(c).split())[:80] for c in (args.get("choix") or []) if str(c).strip()][:4]
         if on_question:
-            on_question({"text": text, "options": options})
-        return _text("Question transmise à l'utilisateur. Termine par ta réponse finale (sans répéter la question en détail).")
+            on_question({"text": text or "Quelques questions avant de commencer :", "options": [] if items else options,
+                         **({"items": items} if items else {})})
+        n = len(items) or 1
+        return _text(f"{n} question(s) transmise(s) à l'utilisateur. Termine par ta réponse finale, courte, sans les "
+                     "répéter : tu reprendras quand il aura répondu.")
 
     tools = [proposer_suite, creer_depot, capturer_ecran, ouvrir_pr, chercher_depots, poser_question]
     if status:
@@ -497,8 +524,9 @@ class Runner:
                 ok = True
             elif d.action == DENY:
                 ok = False
-            elif self.trusted(task) and self.policy.trusted(tool, tool_input, cwd):
-                # Mode confiance : validation de routine auto-approuvée (journalisée et signalée sur la carte)
+            elif ((self.policy.trust_default or self.trusted(task))
+                  and self.policy.trusted(tool, tool_input, cwd, extended=self.trusted(task))):
+                # Validation de routine auto-approuvée (journalisée et signalée sur la carte) : par défaut, ou mode 🛡
                 ok, d.action = True, "trust"
                 self.store.publish("message", {"task_id": task.id, "type": "trusted", "tool": tool, "text": d.reason})
             else:
@@ -542,6 +570,8 @@ class Runner:
             append += PREVIEW_APPEND.format(**self.preview)
         if not self.services and delegate:
             append += PROJECT_APPEND.format(project=project.id)
+        if not task.context and not task.parent and not task.reply_to_task:  # première demande d'une conversation
+            append += FIRST_APPEND
         if task.worktree:
             append += WORKTREE_APPEND.format(cwd=cwd, branch=task.worktree["branch"])
         return ClaudeAgentOptions(

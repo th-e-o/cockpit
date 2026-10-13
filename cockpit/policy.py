@@ -52,6 +52,8 @@ class Policy:
         self.trust_bash = [re.compile(p, re.I) for p in trust.get("bash", [])]
         self.trust_never = [re.compile(p, re.I) for p in trust.get("never", [])]
         self.trust_paths_never = [re.compile(p, re.I) for p in trust.get("paths_never", [])]
+        self.trust_default = bool(trust.get("default", False))  # validations de routine automatiques partout
+        self.trust_outside = [re.compile(p) for p in trust.get("extended", {}).get("outside_paths", [])]
         self.trust_unknown = bool(trust.get("unknown_commands", False))
         self.trust_opaque = bool(trust.get("opaque", False))
 
@@ -110,12 +112,12 @@ class Policy:
                 worst = d
         return worst
 
-    def trusted(self, tool: str, tool_input: dict, cwd: str) -> bool:
-        """Mode confiance : une demande de validation (ask) peut-elle passer sans l'utilisateur ?
+    def trusted(self, tool: str, tool_input: dict, cwd: str, extended: bool = False) -> bool:
+        """Validation de routine : une demande (ask) peut-elle passer sans l'utilisateur ?
 
-        Jamais pour : un refus (deny) ; une écriture hors du projet ou dans trust.paths_never
-        (.git, workflows de CI) ; un outil hors de trust.tools (services, dépôts, agents en
-        parallèle…) ; une commande qui touche à trust.never (cluster, push sur main…).
+        Jamais pour : un refus (deny) ; une écriture dans trust.paths_never (.git, workflows de CI) ou hors du
+        projet (sauf extended : mode confiance 🛡, dans trust.extended.outside_paths) ; un outil hors de
+        trust.tools ; un dépôt GitHub public ; une commande qui touche à trust.never (cluster, push sur main…).
         """
         d = self.evaluate(tool, tool_input, cwd)
         if d.action != ASK:
@@ -126,8 +128,12 @@ class Policy:
             resolved = str(Path(path).expanduser().resolve()) if path else ""
             if any(rx.search(resolved) for rx in self.trust_paths_never):
                 return False
-            return resolved == root or resolved.startswith(root + "/")
+            if resolved == root or resolved.startswith(root + "/"):
+                return True
+            return extended and any(rx.search(resolved) for rx in self.trust_outside)
         if tool != "Bash":
+            if tool.endswith("creer_depot") and tool_input.get("prive") is False:
+                return False  # un dépôt public reste toujours validé
             return tool in self.trust_tools
         cmd = tool_input.get("command", "").strip()
         if any(rx.search(cmd) for rx in self.trust_never):

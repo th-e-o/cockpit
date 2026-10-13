@@ -307,7 +307,7 @@ function taskHtml(e) {
   if (limited && active) body += `<div class="blocked">⏳ Limite d'usage de Claude atteinte${limited.resets_at ? ` · ${esc(resetLabel(limited.resets_at))}` : ''}</div>`;
   const auto = e.events.filter((x) => x.type === 'trusted');
   if (auto.length) {
-    body += `<details class="trusted" data-k="trusted"><summary>🛡 ${auto.length} validation${auto.length > 1 ? 's' : ''} passée${auto.length > 1 ? 's' : ''} en mode confiance</summary>
+    body += `<details class="trusted" data-k="trusted"><summary>🛡 ${auto.length} validation${auto.length > 1 ? 's' : ''} passée${auto.length > 1 ? 's' : ''} automatiquement</summary>
       ${auto.map((x) => `<div class="step">${esc(x.tool)} : ${esc(x.text)}</div>`).join('')}</details>`;
   }
   body += blocked.map((x) => `<div class="blocked">⛔ ${esc(x.tool)} : ${esc(x.text)}</div>`).join('');
@@ -454,12 +454,28 @@ const openQuestion = (e) => !!(e.task.question?.text && e.task.status === 'done'
 
 function questionHtml(t, compact = false) {
   const q = t.question;
+  // Plusieurs questions : un choix par question (modifiable) + précisions, envoyés ensemble
+  const items = (q.items || []).map((it, i) => `<div class="qitem" data-q="${esc(it.question)}">
+      <div class="qnum">${i + 1}. ${md(it.question)}</div>
+      ${it.options?.length ? `<div class="qopts">${it.options.map((o) => `<button type="button" class="btn" data-pick="${esc(o)}" aria-pressed="false">${esc(o)}</button>`).join('')}</div>` : ''}
+    </div>`).join('');
   return `<form class="question${compact ? ' compact' : ''}" data-question="${esc(t.id)}">
     <div class="qhead">❓ Claude attend ta réponse</div>
-    <div class="qtext">${md(q.text)}</div>
-    ${q.options?.length ? `<div class="qopts">${q.options.map((o) => `<button type="button" class="btn" data-answer="${esc(t.id)}" data-text="${esc(o)}">${esc(o)}</button>`).join('')}</div>` : ''}
-    <div class="qrow"><textarea rows="2" placeholder="Ta réponse…" aria-label="ta réponse"></textarea>
+    <div class="qtext">${md(q.text)}</div>${items}
+    ${!items && q.options?.length ? `<div class="qopts">${q.options.map((o) => `<button type="button" class="btn" data-answer="${esc(t.id)}" data-text="${esc(o)}">${esc(o)}</button>`).join('')}</div>` : ''}
+    <div class="qrow"><textarea rows="2" placeholder="${items ? 'Précisions ou réponses libres (facultatif)…' : 'Ta réponse…'}" aria-label="ta réponse"></textarea>
       <button type="submit" class="btn ok">Répondre</button></div></form>`;
+}
+
+/** Réponse d'un questionnaire : « - question → choix » pour chaque choix fait, puis les précisions. */
+function composeAnswer(form) {
+  const lines = [...form.querySelectorAll('.qitem')].map((it) => {
+    const pick = it.querySelector('[data-pick][aria-pressed="true"]');
+    return pick ? `- ${it.dataset.q} → ${pick.dataset.pick}` : '';
+  }).filter(Boolean);
+  const free = form.querySelector('textarea').value.trim();
+  if (!lines.length) return free;
+  return `${lines.join('\n')}${free ? `\n\nPrécisions : ${free}` : ''}`;
 }
 
 async function answerQuestion(id, text) {
@@ -472,14 +488,17 @@ async function answerQuestion(id, text) {
   await poll();
 }
 
-document.addEventListener('submit', async (ev) => {
+async function onQuestionSubmit(ev) {
   const form = ev.target.closest?.('form.question');
   if (!form) return;
   ev.preventDefault();
   const btn = form.querySelector('[type=submit]');
   btn.disabled = true;
-  try { await answerQuestion(form.dataset.question, form.querySelector('textarea').value); } catch (e) { alert(e.message); btn.disabled = false; }
-});
+  const text = composeAnswer(form);
+  if (!text) { btn.disabled = false; form.querySelector('textarea').focus(); return; }
+  try { await answerQuestion(form.dataset.question, text); } catch (e) { alert(e.message); btn.disabled = false; }
+}
+document.addEventListener('submit', onQuestionSubmit);
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && (e.ctrlKey || e.metaKey) && e.target.closest?.('form.question')) e.target.closest('form.question').requestSubmit();
 });
@@ -503,9 +522,9 @@ function updateTrust() {
 $('#trustSel').addEventListener('change', async () => {
   const minutes = Number($('#trustSel').value);
   if (!state.replyTo) return;
-  if (minutes && !confirm(`Mode confiance pendant ${minutes >= 60 ? `${minutes / 60} h` : `${minutes} min`} : les validations de routine `
-    + 'de cette conversation (installations, suppressions dans le projet, commandes inconnues…) passeront sans toi. '
-    + 'Restent toujours demandés : cluster, services, dépôts, push sur main, sudo, .git et workflows de CI.')) {
+  if (minutes && !confirm(`Mode confiance pendant ${minutes >= 60 ? `${minutes / 60} h` : `${minutes} min`} : en plus des validations `
+    + 'de routine (déjà automatiques), Claude pourra écrire hors de son projet, dans ~/work. '
+    + 'Restent toujours demandés : cluster, arrêt de services, dépôt public, push sur main, sudo, .git et workflows de CI.')) {
     updateTrust();
     return;
   }
@@ -1210,19 +1229,24 @@ function renderProjects() {
 }
 
 function tick() {
+  if (pip) tickIn(pip.document);
+  tickIn(document);
+}
+function tickIn(doc) {
+  const $ = (sel) => doc.querySelector(sel) || document.createElement('span');
   const tl = $('#trustLeft');
   if (tl.dataset.until) {
     const s = Number(tl.dataset.until) - Date.now() / 1000;
     tl.textContent = s > 0 ? `actif · ${Math.ceil(s / 60)} min` : '';
     if (s <= 0) { tl.dataset.until = ''; updateTrust(); }
   }
-  document.querySelectorAll('[data-uptime]').forEach((el) => { el.textContent = dureeLongue(Date.now() / 1000 - Number(el.dataset.uptime)); });
-  document.querySelectorAll('[data-expires]').forEach((el) => {
+  doc.querySelectorAll('[data-uptime]').forEach((el) => { el.textContent = dureeLongue(Date.now() / 1000 - Number(el.dataset.uptime)); });
+  doc.querySelectorAll('[data-expires]').forEach((el) => {
     const s = Math.max(0, Math.round(el.dataset.expires - Date.now() / 1000));
     el.textContent = `refus automatique dans ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
   });
-  document.querySelectorAll('[data-ago]').forEach((el) => { el.textContent = ago(Number(el.dataset.ago)); });
-  document.querySelectorAll('[data-since]').forEach((el) => {
+  doc.querySelectorAll('[data-ago]').forEach((el) => { el.textContent = ago(Number(el.dataset.ago)); });
+  doc.querySelectorAll('[data-since]').forEach((el) => {
     el.textContent = ` · ${duree(Date.now() / 1000 - Number(el.dataset.since))}`;
   });
 }
@@ -1230,6 +1254,72 @@ setInterval(tick, 1000);
 
 // ---------- synchronisation (interrogation du relais)
 let pollTimer = null;
+
+// ---------- mini-fenêtre toujours visible (Document Picture-in-Picture : Chrome, Edge sur ordinateur)
+let pip = null;
+const pipSupported = () => 'documentPictureInPicture' in window;
+
+/** Contenu de la mini-fenêtre : ce qui attend une réponse d'abord, puis le travail en cours et ce qui vient de finir. */
+function pipHtml() {
+  const tasks = [...state.tasks.values()];
+  const approvals = tasks.flatMap((e) => [...e.approvals.values()].filter((a) => !a.decision).map((a) => ({ e, a })));
+  const questions = tasks.filter(openQuestion);
+  const active = tasks.filter((e) => ACTIVE.has(e.task.status));
+  const now = Date.now() / 1000;
+  const finished = tasks.filter((e) => !ACTIVE.has(e.task.status) && e.task.instruction && !openQuestion(e)
+    && now - (e.task.updated || e.task.created) < 1800).sort((a, b) => (b.task.updated || 0) - (a.task.updated || 0)).slice(0, 3);
+  const u = latestUsage();
+  const l = u?.limits.find((x) => x.type === 'five_hour' && x.utilization != null);
+  const where = (e) => `${esc(state.projects.find((p) => p.id === e.task.project)?.name || e.task.project || '')} · ${esc(shownInstruction(e.task.instruction).slice(0, 70))}`;
+  let html = `<div class="piphead"><b>Cockpit</b><span>${active.length} en cours</span>${l ? `<span>Session ${Math.round(l.utilization * 100)} %</span>` : ''}
+    <button class="btn ghost" data-pip-focus title="revenir au cockpit">↗</button></div>`;
+  html += approvals.map(({ e, a }) => `<div class="pipcard alert"><div class="pipwhere">${where(e)}</div>${approvalHtml(a)}</div>`).join('');
+  html += questions.map((e) => `<div class="pipcard alert"><div class="pipwhere">${where(e)}</div>${questionHtml(e.task, true)}</div>`).join('');
+  html += active.map((e) => `<div class="pipcard"><div class="pipwhere">${where(e)}</div>
+    <div class="lstep">${e.task.status === 'running' ? '<span class="spin"></span>' : ''}<span>${esc(currentStep(e))}</span></div></div>`).join('');
+  html += finished.map((e) => {
+    const { c } = changesOf(e);
+    const icon = { done: '✅', error: '❌', cancelled: '⏹', needs_project: '❓' }[e.task.status] || '•';
+    return `<div class="pipcard done">${icon} ${where(e)}${c && (c.file_count || c.commits?.length) ? `<div class="rmeta">${changesLine(c)}</div>` : ''}</div>`;
+  }).join('');
+  if (!approvals.length && !questions.length && !active.length && !finished.length) html += '<div class="emptyd">Rien à faire pour l\'instant 👌</div>';
+  return { html, attention: approvals.length + questions.length };
+}
+
+function renderPip() {
+  if (!pip) return;
+  const { html, attention } = pipHtml();
+  if (html === state.pipHtml) return;
+  const doc = pip.document;
+  const drafts = new Map([...doc.querySelectorAll('form.question')].map((f) => [f.dataset.question, f.querySelector('textarea').value]));
+  doc.body.innerHTML = `<div class="pipwrap">${html}</div>`;
+  doc.querySelectorAll('form.question').forEach((f) => { if (drafts.get(f.dataset.question)) f.querySelector('textarea').value = drafts.get(f.dataset.question); });
+  sizes(doc.body);
+  // Une nouvelle validation ou question : la mini-fenêtre clignote pour attirer l'œil
+  if (attention > (state.pipAttention || 0)) { doc.body.classList.remove('flash'); void doc.body.offsetWidth; doc.body.classList.add('flash'); }
+  state.pipAttention = attention;
+  state.pipHtml = html;
+  tick();
+}
+
+async function openPip() {
+  if (!pipSupported()) { alert('Mini-fenêtre indisponible ici : utilise Chrome ou Edge sur ordinateur.'); return; }
+  if (pip) { pip.focus(); return; }
+  pip = await documentPictureInPicture.requestWindow({ width: 380, height: 520 });
+  const doc = pip.document;
+  doc.title = 'Cockpit';
+  const link = doc.createElement('link');
+  link.rel = 'stylesheet';
+  link.href = document.querySelector('link[rel="stylesheet"]').href;
+  doc.head.append(link);
+  doc.body.className = 'pip';
+  doc.addEventListener('click', onClick);
+  doc.addEventListener('submit', onQuestionSubmit);
+  pip.addEventListener('pagehide', () => { pip = null; state.pipHtml = ''; state.pipAttention = 0; });
+  state.pipHtml = '';
+  renderPip();
+  poll();
+}
 let polling = false;
 
 async function poll() {
@@ -1265,6 +1355,7 @@ async function poll() {
     state.workers = s.workers || [];
     state.trust = s.trust || {};
     renderUsageBar();
+    renderPip();
     updateTrust();
     renderDash();
     state.replay = false;
@@ -1273,7 +1364,7 @@ async function poll() {
     if (e instanceof AuthError) { polling = false; return start(); }
   }
   polling = false;
-  if (!document.hidden) pollTimer = setTimeout(poll, 2000);
+  if (!document.hidden || pip) pollTimer = setTimeout(poll, 2000);  // la mini-fenêtre reste à jour
 }
 
 document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
@@ -1301,7 +1392,7 @@ async function refreshPushSubscription() {
 }
 
 // ---------- actions
-document.addEventListener('click', async (ev) => {
+async function onClick(ev) {
   const b = ev.target.closest('button');
   if (!b) return;
   try {
@@ -1378,6 +1469,11 @@ document.addEventListener('click', async (ev) => {
       state.bilanJours = Number(b.dataset.bilan);
       try { localStorage.setItem('cockpit_bilan', b.dataset.bilan); } catch { /* sans importance */ }
       renderDash();
+    } else if (b.id === 'mPip' || b.id === 'pipBtn') {
+      $('#menuDlg').close();
+      await openPip();
+    } else if ('pipFocus' in b.dataset) {
+      window.focus();
     } else if (b.id === 'mInstall') {
       $('#menuDlg').close();
       await installPrompt?.prompt();
@@ -1410,6 +1506,11 @@ document.addEventListener('click', async (ev) => {
       if (state.view === 'dash' && !matchMedia('(min-width: 1100px)').matches) setView('chat');
       (document.querySelector('#feed .approval:not(.resolved)') || document.querySelector('#feed form.question'))
         ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } else if (b.dataset.pick !== undefined) {
+      // Un choix par question : le choix touché remplace le précédent (et se retire s'il est touché à nouveau)
+      const on = b.getAttribute('aria-pressed') !== 'true';
+      b.closest('.qitem').querySelectorAll('[data-pick]').forEach((x) => x.setAttribute('aria-pressed', 'false'));
+      b.setAttribute('aria-pressed', String(on));
     } else if (b.dataset.answer) {
       b.disabled = true;
       await answerQuestion(b.dataset.answer, b.dataset.text);
@@ -1438,7 +1539,8 @@ document.addEventListener('click', async (ev) => {
     if (e instanceof AuthError) return start();
     if (e.name !== 'NotAllowedError') alert(e.message);
   }
-});
+}
+document.addEventListener('click', onClick);
 
 function showList(title, html) {
   $('#menuDlg').close();
@@ -1542,6 +1644,9 @@ document.addEventListener('keydown', (e) => {
     input.focus();
   } else if (e.key === 'Escape' && document.activeElement === input) {
     input.blur();
+  } else if (e.altKey && e.key.toLowerCase() === 'p') {
+    e.preventDefault();
+    openPip();
   } else if (e.altKey && (e.key === '1' || e.key === '2')) {
     e.preventDefault();
     setView(e.key === '1' ? 'chat' : 'dash');
@@ -1562,6 +1667,7 @@ async function start() {
   }
 }
 
+if (pipSupported() && !matchMedia('(pointer: coarse)').matches) { $('#mPip').classList.remove('hidden'); $('#pipBtn').classList.remove('hidden'); }
 try {
   state.model = localStorage.getItem('cockpit_model') || '';
   $('#modelSel').value = state.model;
