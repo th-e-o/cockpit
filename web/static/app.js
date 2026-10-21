@@ -397,6 +397,7 @@ function render(ids) {
     const typed = draft?.value;
     const focused = draft && document.activeElement === draft;
     box.innerHTML = taskHtml(e);
+    restoreQuestions(box);
     const again = box.querySelector('form.question textarea');
     if (again && typed) again.value = typed;
     if (again && focused) again.focus();
@@ -507,6 +508,29 @@ function questionHtml(t, compact = false) {
       <button type="submit" class="btn ok">Répondre</button></div></form>`;
 }
 
+/** Choix et texte en cours par question (clé : id de la tâche). Les cartes sont réécrites à chaque événement
+ *  (fil, tableau de bord, mini-fenêtre) : sans cette mémoire, un choix fait disparaît au prochain rafraîchissement. */
+const qdraft = new Map();
+const qdraftOf = (id) => { if (!qdraft.has(id)) qdraft.set(id, { picks: {}, text: '' }); return qdraft.get(id); };
+
+/** Remet dans les formulaires de `root` les choix et le texte mémorisés (après un innerHTML). */
+function restoreQuestions(root) {
+  root.querySelectorAll('form.question').forEach((f) => {
+    const d = qdraft.get(f.dataset.question);
+    if (!d) return;
+    f.querySelectorAll('.qitem').forEach((it) => {
+      const want = d.picks[it.dataset.q];
+      it.querySelectorAll('[data-pick]').forEach((b) => b.setAttribute('aria-pressed', String(want !== undefined && b.dataset.pick === want)));
+    });
+    const ta = f.querySelector('textarea');
+    if (ta && d.text && !ta.value) ta.value = d.text;
+  });
+}
+document.addEventListener('input', (ev) => {
+  const ta = ev.target.closest?.('form.question textarea');
+  if (ta) qdraftOf(ta.closest('form.question').dataset.question).text = ta.value;
+});
+
 /** Réponse d'un questionnaire : « - question → choix » pour chaque choix fait, puis les précisions. */
 function composeAnswer(form) {
   const lines = [...form.querySelectorAll('.qitem')].map((it) => {
@@ -521,6 +545,7 @@ function composeAnswer(form) {
 async function answerQuestion(id, text) {
   if (!text?.trim()) return;
   const n = await api('tache', { instruction: text.trim(), reply_to: id });
+  qdraft.delete(id);
   onEvent({ kind: 'task', task_id: n.id, task: n });
   setReplyTo(n.id);
   // Réponse donnée depuis le tableau de bord sur téléphone : on suit la conversation qui reprend
@@ -1287,7 +1312,7 @@ function renderDash() {
     ${recent.length ? `<section class="sect"><h3>Terminées récemment</h3><div class="recents">${recent.map(recentRow).join('')}</div></section>` : ''}
   </div>`;
   // Reconstruit seulement si le contenu change (survol, focus et clics préservés) ; les durées vivent dans tick().
-  if (html !== state.dashHtml) { $('#dash').innerHTML = html; state.dashHtml = html; sizes($('#dash')); tick(); }
+  if (html !== state.dashHtml) { $('#dash').innerHTML = html; state.dashHtml = html; restoreQuestions($('#dash')); sizes($('#dash')); tick(); }
   loadBilan();
 }
 
@@ -1427,6 +1452,7 @@ function renderPip() {
   const drafts = new Map([...doc.querySelectorAll('form.question')].map((f) => [f.dataset.question, f.querySelector('textarea').value]));
   doc.body.innerHTML = `<div class="pipwrap">${html}</div>`;
   doc.querySelectorAll('form.question').forEach((f) => { if (drafts.get(f.dataset.question)) f.querySelector('textarea').value = drafts.get(f.dataset.question); });
+  restoreQuestions(doc.body);
   sizes(doc.body);
   // Une nouvelle validation ou question : la mini-fenêtre clignote pour attirer l'œil
   if (attention > (state.pipAttention || 0)) { doc.body.classList.remove('flash'); void doc.body.offsetWidth; doc.body.classList.add('flash'); }
@@ -1449,6 +1475,10 @@ async function openPip() {
   if (document.documentElement.dataset.theme) doc.documentElement.dataset.theme = document.documentElement.dataset.theme;
   doc.addEventListener('click', onClick);
   doc.addEventListener('submit', onQuestionSubmit);
+  doc.addEventListener('input', (ev) => {
+    const ta = ev.target.closest?.('form.question textarea');
+    if (ta) qdraftOf(ta.closest('form.question').dataset.question).text = ta.value;
+  });
   pip.addEventListener('pagehide', () => { pip = null; state.pipHtml = ''; state.pipAttention = 0; });
   state.pipHtml = '';
   renderPip();
@@ -1677,6 +1707,9 @@ async function onClick(ev) {
       const on = b.getAttribute('aria-pressed') !== 'true';
       b.closest('.qitem').querySelectorAll('[data-pick]').forEach((x) => x.setAttribute('aria-pressed', 'false'));
       b.setAttribute('aria-pressed', String(on));
+      const picks = qdraftOf(b.closest('form.question').dataset.question).picks;
+      const q = b.closest('.qitem').dataset.q;
+      if (on) picks[q] = b.dataset.pick; else delete picks[q];
     } else if (b.dataset.answer) {
       b.disabled = true;
       await answerQuestion(b.dataset.answer, b.dataset.text);

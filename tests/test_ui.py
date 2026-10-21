@@ -674,6 +674,10 @@ def test_questions_de_claude(relay):
         form.locator("[data-pick='Pod Onyxia']").click()  # change d'avis : un seul choix par question
         form.locator("[data-pick='CSV']").click()
         assert form.locator("[aria-pressed='true']").count() == 2
+        # Un nouveau rendu du fil (événement, poll) ne doit pas effacer les choix déjà faits
+        page.evaluate("render(state.order)")
+        assert form.locator("[aria-pressed='true']").count() == 2
+        assert form.locator("[data-pick='CSV']").get_attribute("aria-pressed") == "true"
         form.locator("textarea").fill("bot en français")
         form.scroll_into_view_if_needed()
         page.screenshot(path=SHOTS / "17-questionnaire.png")
