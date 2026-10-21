@@ -806,20 +806,23 @@ function prsOf(e) {
   return [...out.values()];
 }
 
-const mergedPrs = () => new Set([...state.tasks.values()].flatMap((e) => e.events.filter((x) => x.type === 'pr_merged').map((x) => x.url)));
+/** PR réglées (fusionnées, ou fermées sans fusion) : adresse -> « merged » | « closed ». */
+const donePrs = () => new Map([...state.tasks.values()].flatMap((e) => e.events
+  .filter((x) => x.type === 'pr_merged' || x.type === 'pr_closed').map((x) => [x.url, x.type === 'pr_merged' ? 'merged' : 'closed'])));
 
 function prBox(pr, taskId, compact = false) {
-  const merged = mergedPrs().has(pr.url);
+  const done = donePrs().get(pr.url);
+  const merged = !!done;
   const repo = pr.url.replace(/^https:\/\/github\.com\/|\/pull\/\d+$/g, '');
-  return `<div class="prbox${merged ? ' merged' : ''}${compact ? ' compact' : ''}">
+  return `<div class="prbox${done === 'merged' ? ' merged' : ''}${done === 'closed' ? ' closed' : ''}${compact ? ' compact' : ''}">
     <div class="prtitle">🔀 Pull request #${esc(pr.number)}${pr.title ? ` · ${esc(pr.title)}` : ''}</div>
-    <div class="muted prmeta">${esc(repo)}${pr.head ? ` · ${esc(pr.head)} → ${esc(pr.base)}` : ''}${merged ? ' · <b class="okt">✅ fusionnée</b>' : ''}</div>
+    <div class="muted prmeta">${esc(repo)}${pr.head ? ` · ${esc(pr.head)} → ${esc(pr.base)}` : ''}${done === 'merged' ? ' · <b class="okt">✅ fusionnée</b>' : done === 'closed' ? ' · <b>fermée</b>' : ''}</div>
     <div class="actions"><a class="btn" href="${esc(pr.url)}" target="_blank" rel="noopener">Voir sur GitHub</a>
       ${merged ? '' : `<button class="btn ok" data-merge-url="${esc(pr.url)}" data-task-id="${esc(taskId)}">Fusionner</button>`}</div></div>`;
 }
 
 function prsSection(tasks) {
-  const merged = mergedPrs();
+  const merged = donePrs();
   const seen = new Map();
   for (const e of tasks) for (const pr of prsOf(e)) if (!merged.has(pr.url) && !seen.has(pr.url)) seen.set(pr.url, { pr, e });
   if (!seen.size) return '';
@@ -1495,7 +1498,7 @@ async function poll() {
     state.replay = state.lastId === 0;
     const touched = new Set();
     let prMerged = false;
-    for (const evt of s.events) { onEvent(evt); touched.add(evt.task_id); prMerged ||= evt.type === 'pr_merged'; }
+    for (const evt of s.events) { onEvent(evt); touched.add(evt.task_id); prMerged ||= evt.type === 'pr_merged' || evt.type === 'pr_closed'; }
     if (prMerged) state.order.forEach((id) => touched.add(id));  // la PR peut être affichée sur une autre conversation
     // Une conversation qui avance redessine ses cartes précédentes (question répondue, étapes proposées…)
     if (!state.replay) {

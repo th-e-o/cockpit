@@ -31,6 +31,8 @@ spec:
               valueFrom: { secretKeyRef: { name: cockpit-secrets, key: worker-key } }
             - name: GIT_TOKEN
               valueFrom: { secretKeyRef: { name: cockpit-secrets, key: git-token, optional: true } }
+            - name: GIT_PERSONAL_ACCESS_TOKEN      # lu par cockpit/github.py (ouvrir / fusionner une pull request)
+              valueFrom: { secretKeyRef: { name: cockpit-secrets, key: git-token, optional: true } }
           resources:
             requests: { cpu: 250m, memory: 1Gi }
             limits: { cpu: "2", memory: 4Gi }

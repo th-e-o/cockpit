@@ -172,6 +172,20 @@ def parse_pr(url: str) -> tuple[str, str, int] | None:
     return (m.group(1), m.group(2), int(m.group(3))) if m else None
 
 
+async def etat_pr(url: str) -> str:
+    """État d'une pull request sur GitHub : "open", "merged" ou "closed" (fermée sans fusion)."""
+    target = parse_pr(url)
+    if not target:
+        raise GitHubError("adresse de pull request invalide")
+    owner, repo, number = target
+    async with _client() as http:
+        r = await http.get(f"/repos/{owner}/{repo}/pulls/{number}")
+    if r.status_code >= 400:
+        raise GitHubError(f"pull request introuvable (HTTP {r.status_code})")
+    pr = r.json()
+    return "merged" if pr.get("merged") else pr.get("state", "open")
+
+
 async def fusionner_pr(url: str, methode: str = "merge") -> dict:
     """Fusionne une pull request (demandé depuis le téléphone) ; renvoie {"merged", "sha", "message"}."""
     target = parse_pr(url)

@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import re
 import secrets
 import subprocess
 import sys
@@ -39,6 +40,8 @@ MEMORY_FILE, MEMORY_MAX = "CLAUDE.md", 50_000
 # Pods de projet (scripts/onyxia-init.sh) : le cockpit se met à jour seul, entre deux tâches
 AUTO_UPDATE = os.environ.get("COCKPIT_AUTO_UPDATE") == "1"
 UPDATE_EVERY = int(os.environ.get("COCKPIT_UPDATE_EVERY", "600"))
+PR_SYNC_EVERY = int(os.environ.get("COCKPIT_PR_SYNC_EVERY", "120"))
+PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
 ACTIVE = {"pending", "routing", "queued", "running", "waiting_approval"}
 KEY_HASH_FILE = CONFIG / "worker_key.sha256"  # versionné : seule l'empreinte est publique
 
@@ -105,6 +108,7 @@ class Worker:
         self._state: dict | None = None
         self._state_ts = 0.0
         self._repos_dirty = False  # dépôt créé : liste à republier
+        self._pr_done: set[str] = set()  # pull requests dont la fusion / fermeture a déjà été publiée
         self.runner.upload_image = self.relay.image
         self.runner.project_status = self.relay.projet_etat
         self.runner.session_usage = self.session_usage
@@ -242,6 +246,54 @@ class Worker:
         proc = await asyncio.create_subprocess_exec(
             "uv", "pip", "install", "-q", "--python", sys.executable, "-r", str(ROOT / "requirements.txt"))
         await proc.wait()
+
+    async def known_prs(self) -> dict[str, str]:
+        """Pull requests des projets de ce pod (adresse -> tâche) : tâches en mémoire, puis dernières tâches vues du relais
+        (la mémoire du worker est vide après un redémarrage)."""
+        found: dict[str, str] = {}
+        for t in self.store.tasks.values():
+            for e in t.events:
+                if e.get("type") == "pr" and e.get("url"):
+                    found[e["url"]] = t.id
+            for url in PR_URL.findall(t.result or ""):
+                found.setdefault(url, t.id)
+        for project in self.projects:
+            try:
+                etat = await self.relay.projet_etat(project)
+            except Exception as e:
+                log.info("pull requests de %s : relais injoignable (%s)", project, e)
+                continue
+            for t in etat.get("tasks", []):
+                for pr in t.get("pull_requests", []):
+                    if pr.get("url"):
+                        found.setdefault(pr["url"], t["id"])
+                for url in PR_URL.findall(t.get("result") or ""):
+                    found.setdefault(url, t["id"])
+        return found
+
+    async def sync_prs_once(self) -> None:
+        """Publie la fusion ou la fermeture des pull requests faites directement sur GitHub : sans cela, elles restent
+        « à valider » dans le tableau de bord (seule la fusion depuis le cockpit le signalait)."""
+        for url, task_id in (await self.known_prs()).items():
+            if url in self._pr_done:
+                continue
+            try:
+                state = await github.etat_pr(url)
+            except github.GitHubError:
+                continue  # dépôt hors de portée du token de ce pod : on ne touche à rien
+            if state == "open":
+                continue
+            self._pr_done.add(url)
+            self.store.publish("message", {"task_id": task_id, "type": "pr_merged" if state == "merged" else "pr_closed",
+                                           "url": url})
+
+    async def sync_prs(self) -> None:
+        while True:
+            await asyncio.sleep(PR_SYNC_EVERY)
+            try:
+                await self.sync_prs_once()
+            except Exception as e:
+                log.warning("état des pull requests : %s", e)
 
     async def auto_update(self) -> None:
         """Met le cockpit à jour (git pull) puis redémarre le worker, seulement quand aucune tâche n'est en cours."""
@@ -458,6 +510,7 @@ class Worker:
             log.warning("dossier du projet : %s", e)
         self.spawn(self.relay.flush_forever())
         self.spawn(self.poll_usage())
+        self.spawn(self.sync_prs())
         if AUTO_UPDATE:
             self.spawn(self.auto_update())
         if ORCHESTRATOR:
