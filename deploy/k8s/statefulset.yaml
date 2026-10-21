@@ -1,0 +1,43 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: cockpit-runner
+  labels: { app: cockpit-runner }
+spec:
+  replicas: 1
+  serviceName: cockpit-runner
+  selector:
+    matchLabels: { app: cockpit-runner }
+  template:
+    metadata:
+      labels: { app: cockpit-runner }
+    spec:
+      securityContext:
+        runAsUser: 1000
+        runAsNonRoot: true
+        fsGroup: 100
+      containers:
+        - name: worker
+          image: docker.io/theossp/cockpit-runner:latest
+          imagePullPolicy: Always
+          env:
+            - { name: PROJECT_ID, value: cockpit }                  # projet par défaut du runner, [a-z0-9-]{1,30}
+            - { name: GIT_REPOSITORY, value: "https://github.com/th-e-o/cockpit.git" }  # vide = dossier vide
+            - name: KUBERNETES_NAMESPACE
+              valueFrom: { fieldRef: { fieldPath: metadata.namespace } }
+            - name: CLAUDE_CODE_OAUTH_TOKEN
+              valueFrom: { secretKeyRef: { name: cockpit-secrets, key: claude-token } }
+            - name: COCKPIT_WORKER_KEY
+              valueFrom: { secretKeyRef: { name: cockpit-secrets, key: worker-key } }
+            - name: GIT_TOKEN
+              valueFrom: { secretKeyRef: { name: cockpit-secrets, key: git-token, optional: true } }
+          resources:
+            requests: { cpu: 250m, memory: 1Gi }
+            limits: { cpu: "2", memory: 4Gi }
+          volumeMounts:
+            - { name: work, mountPath: /home/onyxia/work }
+  volumeClaimTemplates:
+    - metadata: { name: work }
+      spec:
+        accessModes: [ReadWriteOnce]
+        resources: { requests: { storage: 20Gi } }
