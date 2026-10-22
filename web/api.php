@@ -64,7 +64,10 @@ function erreur(string $message, int $code = 400): never {
 
 set_exception_handler(function (Throwable $e) use ($CONFIG) {
     error_log('cockpit: ' . $e);
-    erreur(($CONFIG['debug'] ?? false) ? $e->getMessage() : 'erreur serveur', 500);
+    // Le détail n'est donné qu'à un appelant authentifié par la clé du worker (ou en mode debug) : sans cela, impossible
+    // de diagnostiquer une erreur de l'hébergement depuis le pod.
+    $detail = get_class($e) . ' : ' . $e->getMessage() . ' (' . basename($e->getFile()) . ':' . $e->getLine() . ')';
+    erreur((($CONFIG['debug'] ?? false) || !empty($GLOBALS['worker_authentifie'])) ? $detail : 'erreur serveur', 500);
 });
 
 // ---------------------------------------------------------------- base
@@ -258,6 +261,7 @@ function exiger_worker(): void {
         limiter_echecs();
         echec('clé worker invalide');
     }
+    $GLOBALS['worker_authentifie'] = true;
 }
 
 // ---------------------------------------------------------------- WebAuthn (passkeys)
