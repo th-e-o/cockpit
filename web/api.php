@@ -1414,6 +1414,19 @@ switch ($route) {
         valider();
         repondre(['task_id' => $id, 'titre' => $titre]);
 
+    case 'w_integrite': // diagnostic en lecture seule de la base : contrôle d'intégrité et lisibilité de chaque table
+        exiger_worker();
+        $pdo = db();
+        $res = ['integrity' => [], 'tables' => []];
+        try { $res['integrity'] = array_slice($pdo->query('PRAGMA integrity_check(20)')->fetchAll(PDO::FETCH_COLUMN), 0, 20); }
+        catch (Throwable $e) { $res['integrity'] = ['erreur : ' . $e->getMessage()]; }
+        foreach ($pdo->query("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'")->fetchAll(PDO::FETCH_COLUMN) as $t) {
+            try { $res['tables'][$t] = (int)$pdo->query("SELECT COUNT(*) FROM \"$t\"")->fetchColumn(); $pdo->query("SELECT * FROM \"$t\"")->fetchAll(); }
+            catch (Throwable $e) { $res['tables'][$t] = 'ILLISIBLE : ' . $e->getMessage(); }
+        }
+        $res['fichiers'] = array_map(fn($f) => [basename($f), filesize($f)], glob(__DIR__ . '/data/cockpit.db*') ?: []);
+        repondre($res);
+
     case 'w_alerte': // le worker signale un événement à notifier (réinitialisation des tokens)
         exiger_worker();
         $genre = (string)($in['kind'] ?? '');
