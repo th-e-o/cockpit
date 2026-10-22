@@ -123,8 +123,8 @@ Réponds UNIQUEMENT par un objet JSON sur une ligne :
 MODEL_CHOICES = ("rapide", "standard", "approfondi")
 
 
-async def _ask_haiku(system: str, prompt: str) -> str:
-    options = ClaudeAgentOptions(model="haiku", system_prompt=system, tools=[], max_turns=1, setting_sources=[])
+async def _ask_haiku(system: str, prompt: str, model: str = "haiku") -> str:
+    options = ClaudeAgentOptions(model=model, system_prompt=system, tools=[], max_turns=1, setting_sources=[])
     text = ""
     async for msg in query(prompt=prompt, options=options):
         if isinstance(msg, AssistantMessage):

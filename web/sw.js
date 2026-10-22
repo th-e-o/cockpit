@@ -61,6 +61,9 @@ function notifications(s) {
       body: `${c.instruction}${c.checks?.length ? `\n${c.checks.join(' · ')}` : ''}`,
       actions: [{ action: 'ci-fix', title: '▶ Corriger' }], data: { task: c.task_id, fix } });
   }
+  for (const x of s.alerts || []) {
+    out.push({ key: `a-${x.cle}`, title: x.titre, tag: `alerte-${x.cle}`, body: x.corps, data: {} });
+  }
   for (const t of s.finished || []) {
     if (t.status === 'done' && t.question?.text) {
       // Claude attend une réponse : la question d'abord, ses choix en boutons (questionnaire : réponse dans l'app)

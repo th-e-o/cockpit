@@ -147,6 +147,20 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
   l'interface d'usage du compte : le worker lit donc toutes les 10 min les en-têtes d'usage de l'API
   (`anthropic-ratelimit-unified-5h/7d-*`), par un comptage de tokens gratuit ou, à défaut, une mini-requête Haiku
   d'un token (`COCKPIT_USAGE_SONDE=0` pour la couper). Diagnostic : `./run.sh usage`.
+- **Mémoire, propositions et full auto** (tableau de bord, sections *Mémoire* et *Propositions*) : le relais garde
+  l'état de chaque projet suivi (dernier résultat, activité, tâches en cours, « en pause » après 14 jours) et une liste
+  de propositions de ce qui peut être fait : prochaines étapes des tâches terminées, idées générées par Claude quand la
+  file est vide (toutes les 3 h au plus), ou ajoutées à la main ; ▶ Lancer ou Ignorer. *Armer le full auto* (1 à 14 jours,
+  tâches par jour) fait enchaîner ces propositions à l'orchestrateur, une tâche à la fois, tant que la session reste sous
+  le seuil d'usage (85 %) ; il reprend après chaque réinitialisation et se désarme après 3 erreurs de suite. Même
+  politique que le reste : une validation sans réponse est refusée au bout de 15 min, jamais approuvée d'office.
+- **Mode hard** (☠, tableau de bord) : plus aucune validation n'est demandée, pour une durée choisie (1 h à 14 jours).
+  Tout ce qui demandait ton accord est approuvé (écriture hors du projet, push sur main, cluster, `sudo`…), chaque
+  action reste journalisée (`policy: hard`) et signalée sur la carte. Seuls les outils en `deny` de
+  `config/policy.yaml` restent bloqués ; les validations déjà en attente sont approuvées à l'activation. Avec le full
+  auto, le pod travaille alors sans que personne ne le surveille : à n'activer que sur un pod dont tu acceptes les risques.
+- **Réinitialisation des tokens** : notification « 🔄 Tokens réinitialisés » quand la session de 5 h ou une limite
+  hebdomadaire se renouvelle après avoir dépassé 80 % (`COCKPIT_RESET_NOTIFY_MIN`).
 - **Tes dépôts GitHub** : une demande qui parle d'un dépôt ou d'un code qui n'est pas encore un projet (« reprends
   mon code sur … ») va à l'orchestrateur, qui le cherche (outil `chercher_depots` : nom, description, README,
   code) puis ouvre un pod dessus (validation), et lui confie ta demande (`confier_au_projet`) : elle part toute

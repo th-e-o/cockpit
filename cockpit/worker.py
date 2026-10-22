@@ -21,6 +21,7 @@ from pathlib import Path
 from . import apercu, github, gitstate, usage
 from . import services as svc
 from .agent import Runner
+from .autopilote import Autopilot
 from .podstate import PodState
 from .policy import Policy
 from .relay import Relay, RelayStore
@@ -115,6 +116,7 @@ class Worker:
         self.runner.refresh_usage = self.refresh_usage
         self._memory: dict[str, str] = {}  # projet -> empreinte du CLAUDE.md publié
         self.usage = usage.Usage()
+        self.autopilot = Autopilot(relay, self.usage)
         self.vscode: dict | None = None  # {"url", "password"} : bouton « Ouvrir VSCode » du tableau de bord
         self.runner.on_rate_limit = self.rate_limit
 
@@ -168,15 +170,27 @@ class Worker:
         if not self.usage.limits:
             return None
         limits, _ = await usage.probe()
-        self.usage.update(limits, "api")
+        self.apply_usage(limits, "api")
         self._state = None
         return self.session_usage()
 
     def rate_limit(self, info) -> None:
         """Événement d'usage émis pendant une tâche : la barre d'usage est mise à jour au prochain poll."""
         if lim := usage.from_event(info):
-            self.usage.update({lim["type"]: lim}, "agent")
+            self.apply_usage({lim["type"]: lim}, "agent")
             self._state = None
+
+    def apply_usage(self, limits: dict[str, dict], source: str) -> None:
+        """Met l'usage à jour ; une limite qui vient de se réinitialiser est signalée au téléphone (notification)."""
+        for kind in self.usage.update(limits, source):
+            log.info("limite d'usage réinitialisée : %s", kind)
+            self.spawn(self.notify_reset(kind))
+
+    async def notify_reset(self, kind: str) -> None:
+        try:
+            await self.relay.alerte(kind)
+        except Exception as e:
+            log.warning("réinitialisation non signalée : %s", e)
 
     async def poll_usage(self) -> None:
         """Usage du forfait : interface du compte toutes les 5 min, sinon en-têtes de l'API toutes les 10 min.
@@ -188,7 +202,7 @@ class Worker:
             how = None
             if account:
                 try:
-                    self.usage.update(await usage.fetch(), "compte")
+                    self.apply_usage(await usage.fetch(), "compte")
                     how = "compte"
                 except usage.UsageError as e:
                     account = False  # refus définitif (jeton de « claude setup-token ») : on passe à la sonde
@@ -198,7 +212,7 @@ class Worker:
             if not how:
                 try:
                     limits, how = await usage.probe()
-                    self.usage.update(limits, "api")
+                    self.apply_usage(limits, "api")
                 except usage.UsageError as e:
                     log.info("usage du forfait indisponible (%s) : barre alimentée par les tâches seulement", e)
                     return
@@ -208,7 +222,9 @@ class Worker:
                 reported.add(how)
                 log.info("usage du forfait lu par : %s", how)
             self._state = None
-            await asyncio.sleep(300 if account else 600)
+            # Relecture juste après une réinitialisation prévue, pour la signaler sans attendre le prochain cycle
+            nxt = self.usage.next_reset()
+            await asyncio.sleep(min(300 if account else 600, max(30, nxt - time.time() + 20)) if nxt else (300 if account else 600))
 
     def ensure_project_dirs(self) -> None:
         """Pod de projet : dossier du projet absent (dépôt vide, que le chart n'a pas cloné) -> clone, sinon git init
@@ -480,6 +496,12 @@ class Worker:
         for task_id in msg.get("cancels", []):
             if task := self.store.tasks.get(task_id):
                 self.spawn(self.runner.cancel(task))
+        if "hard" in msg:
+            if bool(msg["hard"]) != self.runner.hard:
+                self.store.audit("mode_hard", enabled=bool(msg["hard"]))
+            self.runner.hard = bool(msg["hard"])
+        if "autopilot" in msg:
+            self.autopilot.config = msg["autopilot"] or {}
         if "rules" in msg:
             self.runner.policy.set_user_rules(msg["rules"] or [])
         if "trust" in msg:
@@ -515,6 +537,7 @@ class Worker:
             self.spawn(self.auto_update())
         if ORCHESTRATOR:
             self.spawn(self.publish_repos())
+            self.spawn(self.autopilot.run())
         try:
             urls = await apercu.pod_urls()
             self.runner.preview = urls["preview"]

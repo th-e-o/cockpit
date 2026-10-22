@@ -464,6 +464,7 @@ class Runner:
         self.upload_image = None  # async (task_id, jpeg_base64, légende) -> id, fourni par le worker
         self.preview: dict | None = None  # URL publique du port utilisateur du pod {url, port}
         self.steers: dict[str, list[str]] = {}  # messages de l'utilisateur pendant une tâche
+        self.hard = False  # mode hard (téléphone) : plus aucune validation, seuls les refus (deny) de la politique restent
         self.trust: dict[str, float] = {}  # mode confiance : conversation -> fin (activé depuis le téléphone)
         self.on_rate_limit = None  # RateLimitInfo -> None (barre d'usage), fourni par le worker
         self.project_status = None  # async (projet) -> état vu du relais (outil etat_projet), fourni par le worker
@@ -526,6 +527,9 @@ class Runner:
                 ok = True
             elif d.action == DENY:
                 ok = False
+            elif self.hard:
+                ok, d.action = True, "hard"
+                self.store.publish("message", {"task_id": task.id, "type": "trusted", "tool": tool, "text": d.reason})
             elif rule := self.policy.user_allowed(tool, tool_input, cwd):
                 # Règle « Toujours autoriser » créée depuis le téléphone
                 ok, d.action, d.reason = True, "rule", f"règle « {rule} » : {d.reason}"

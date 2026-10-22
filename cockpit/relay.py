@@ -71,6 +71,18 @@ class Relay:
         """État d'un projet du cockpit (ou liste des projets si vide), vu du relais."""
         return await self.call("w_projet_etat", {"project": project})
 
+    async def alerte(self, kind: str) -> None:
+        """Signale une réinitialisation de limite d'usage (notification sur le téléphone)."""
+        await self.call("w_alerte", {"kind": kind, "worker_id": self.worker_id})
+
+    async def auto_tache(self) -> dict:
+        """Full auto : le relais lance la prochaine proposition ouverte ({task_id, titre}) ou répond {skipped: raison}."""
+        return await self.call("w_auto_tache", {"worker_id": self.worker_id})
+
+    async def proposer(self, proposals: dict[str, list[dict]]) -> int:
+        """Publie des propositions {projet: [{titre, instruction}]} dans l'état de mémoire ; renvoie le nombre ajouté."""
+        return (await self.call("w_memoire_projets", {"proposals": proposals, "worker_id": self.worker_id}))["added"]
+
     async def depots(self, depots: list[dict]) -> None:
         """Publie la liste des dépôts git de l'utilisateur (formulaire « Nouveau pod » du téléphone)."""
         await self.call("w_depots", {"depots": depots})

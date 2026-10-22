@@ -4,7 +4,7 @@ const $ = (s) => document.querySelector(s);
 // replyTo : tâche dont le prochain message est la suite (undefined tant que l'historique n'est pas chargé)
 const state = { projects: [], selected: null, tasks: new Map(), order: [], lastId: 0, workerOnline: false, replay: false, replyTo: undefined,
   workers: [], diffs: new Map(), view: 'chat', bilan: null, bilanAt: 0, bilanJours: 7, repos: null,
-  commands: {}, review: new Map(), model: '', variants: 1, trust: {} };
+  commands: {}, review: new Map(), model: '', variants: 1, trust: {}, memory: null, autopilot: null, hard: null };
 const MODELES = { rapide: '⚡ Rapide', standard: '● Standard', approfondi: '◆ Approfondi' };
 /** « claude-opus-5-5 » -> « Opus 5.5 » ; « claude-sonnet-4-5-20250929 » -> « Sonnet 4.5 ». */
 function modelName(id) {
@@ -1307,6 +1307,7 @@ function renderDash() {
         <span class="rmeta">${esc(state.projects.find((p) => p.id === e.task.project)?.name || '')} · ≈ ${fmtTokens(e.task.tokens.total)} tokens${e.task.session_delta != null ? ` · +${Math.round(e.task.session_delta * 100)} % session` : ''}${e.task.model_used ? ` · ${esc(modelName(e.task.model_used))}` : ''}</span></span></button>`).join('')}</div>
       <p class="hint">Pour économiser : une conversation par sujet, la puce du projet plutôt qu'Auto, le tableau de bord pour l'avancement, « Modèle auto ».</p></section>` : ''}
     ${variantsHtml(tasks)}
+    ${memoryHtml()}
     ${followHtml(tasks.filter(pendingSteps).sort((a, b) => (b.task.updated || b.task.created) - (a.task.updated || a.task.created)).slice(0, 6))}
     ${bilanHtml()}
     <section class="sect"><div class="secthead"><h3>Pods · ${online.length} en ligne</h3><button type="button" class="btn ghost" id="newPod">＋ Nouveau pod</button></div>${state.workers.length
@@ -1317,6 +1318,67 @@ function renderDash() {
   // Reconstruit seulement si le contenu change (survol, focus et clics préservés) ; les durées vivent dans tick().
   if (html !== state.dashHtml) { $('#dash').innerHTML = html; state.dashHtml = html; restoreQuestions($('#dash')); sizes($('#dash')); tick(); }
   loadBilan();
+}
+
+// ---------- état de mémoire (projets suivis, propositions) et mode full auto
+function memoryHtml() {
+  const m = state.memory, a = state.autopilot;
+  if (!m) return '';
+  const name = (id) => state.projects.find((p) => p.id === id)?.name || m.projects.find((p) => p.id === id)?.name || id || 'Auto';
+  const until = a?.enabled ? new Date(a.until * 1000).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
+  const auto = a?.enabled
+    ? `<div class="hint">🤖 Full auto armé jusqu'à ${esc(until)} · ${a.launched_today}/${a.max_per_day} tâche(s) aujourd'hui · seuil de session ${Math.round(a.threshold * 100)} %</div>
+       <button class="btn ghost" data-auto="off">Désarmer</button>`
+    : `<div class="hint">${a?.stopped ? `Arrêté : ${esc(a.stopped)}. ` : ''}Claude enchaîne les propositions ci-dessous seul, une tâche à la fois, tant que l'usage de la session reste sous le seuil et reprend après chaque réinitialisation. Les validations sans réponse sont refusées.</div>
+       <button class="btn" data-auto="on">🤖 Armer le full auto</button>`;
+  const projects = m.projects.map((p) => `<article class="follow ${p.active ? '' : 'ask'}"><div class="fhead"><b>${esc(p.name || p.id)}</b>
+      <span class="muted" data-ago="${Number(p.updated)}"></span><span>${p.active ? `⚙ ${p.active} en cours` : p.status === 'en_pause' ? '⏸ en pause' : ''}</span></div>
+      ${p.summary ? `<div class="hint">${esc(p.summary)}</div>` : ''}</article>`).join('');
+  const proposals = m.proposals.map((x) => `<article class="follow"><div class="fhead"><b>${esc(x.titre)}</b><span class="muted">${esc(name(x.project))}</span></div>
+      <div class="hint">${esc(x.instruction.replace(/\n\n\(Tâche lancée par le mode full auto[^)]*\)/, '').slice(0, 220))}</div>
+      <div class="fhead"><button class="btn" data-prop="lancer" data-id="${esc(x.id)}">▶ Lancer</button>
+        <button class="btn ghost" data-prop="ignorer" data-id="${esc(x.id)}">Ignorer</button></div></article>`).join('');
+  const hard = state.hard?.enabled
+    ? `<div class="hint">☠ Mode hard actif jusqu'à ${esc(new Date(state.hard.until * 1000).toLocaleString('fr-FR', { weekday: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))} : plus aucune validation n'est demandée.</div>
+       <button class="btn ghost" data-hard="off">Désactiver le mode hard</button>`
+    : `<div class="hint">Mode hard : Claude fait tout sans te demander, y compris écrire hors du projet, pousser sur main ou toucher au cluster. Seuls les refus absolus de la politique restent.</div>
+       <button class="btn ghost" data-hard="on">☠ Activer le mode hard</button>`;
+  return `<section class="sect"><div class="secthead"><h3>Mode hard</h3></div>${hard}</section>
+    <section class="sect"><div class="secthead"><h3>Mémoire · ${m.projects.length} projet(s)</h3></div>
+    <div class="follows">${projects || '<div class="emptyd">Les projets apparaissent ici après leur première tâche terminée.</div>'}</div></section>
+    <section class="sect"><div class="secthead"><h3>Propositions · ${m.proposals.length}</h3><button type="button" class="btn ghost" data-prop="ajouter">＋ Ajouter</button></div>
+    ${auto}<div class="follows">${proposals || '<div class="emptyd">Rien en attente : les prochaines étapes des tâches terminées arrivent ici, et le full auto en génère quand la file est vide.</div>'}</div></section>`;
+}
+
+async function autoToggle(on) {
+  if (!on) { await api('autopilote', { enabled: false }); return poll(); }
+  const days = Number(prompt('Combien de jours le full auto peut-il avancer ? (1 à 14)', '3'));
+  if (!days) return;
+  const max = Number(prompt('Combien de tâches par jour au plus ?', '12'));
+  if (!max) return;
+  await api('autopilote', { enabled: true, days, max_per_day: max });
+  poll();
+}
+
+async function hardToggle(on) {
+  if (!on) { await api('mode_hard', { enabled: false }); return poll(); }
+  const hours = Number(prompt('Mode hard : plus aucune validation. Pendant combien d\'heures ? (1 à 336)', '8'));
+  if (!hours) return;
+  if (!confirm(`Activer le mode hard pendant ${hours} h ?\nClaude pourra tout faire sans te demander : écrire n'importe où dans le pod, pousser sur main, forcer un push, modifier le cluster, utiliser sudo. Les validations en attente sont approuvées. Seuls les outils interdits (deny) restent bloqués.`)) return;
+  await api('mode_hard', { enabled: true, hours });
+  poll();
+}
+
+async function propositionAction(b) {
+  if (b.dataset.prop === 'ajouter') {
+    const titre = prompt('Titre de la proposition'); if (!titre) return;
+    const instruction = prompt('Instruction complète pour Claude'); if (!instruction) return;
+    await api('proposition', { action: 'ajouter', titre, instruction, project: state.selected || null });
+  } else {
+    b.disabled = true;
+    await api('proposition', { action: b.dataset.prop, id: b.dataset.id });
+  }
+  poll();
 }
 
 function setView(v) {
@@ -1523,6 +1585,9 @@ async function poll() {
     if (state.pendingJump && document.getElementById(`t-${state.pendingJump}`)) { jumpTo(state.pendingJump); state.pendingJump = null; }
     state.workers = s.workers || [];
     state.trust = s.trust || {};
+    state.memory = s.memory || null;
+    state.autopilot = s.autopilot || null;
+    state.hard = s.hard || null;
     renderUsageBar();
     renderPip();
     updateTrust();
@@ -1655,6 +1720,12 @@ async function onClick(ev) {
     } else if (b.dataset.nextEdit || b.dataset.nextRun) {
       if (b.dataset.nextRun) b.disabled = true;
       await runNextStep(b.dataset.nextEdit || b.dataset.nextRun, Number(b.dataset.i), !!b.dataset.nextRun);
+    } else if (b.dataset.hard) {
+      await hardToggle(b.dataset.hard === 'on');
+    } else if (b.dataset.auto) {
+      await autoToggle(b.dataset.auto === 'on');
+    } else if (b.dataset.prop) {
+      await propositionAction(b);
     } else if (b.dataset.dismiss) {
       await api('ignorer_suite', { task_id: b.dataset.dismiss });
       poll();

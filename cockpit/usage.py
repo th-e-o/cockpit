@@ -124,6 +124,22 @@ def from_event(info) -> dict | None:
     return limit(kind, getattr(info, "utilization", None), getattr(info, "resets_at", None), getattr(info, "status", None))
 
 
+# Une réinitialisation n'est signalée que si la limite était presque épuisée : sinon la fenêtre de 5 h
+# ferait une notification toutes les quelques heures.
+RESET_NOTIFY_MIN = float(os.environ.get("COCKPIT_RESET_NOTIFY_MIN", "0.8"))
+
+
+def reset_detected(old: dict, new: dict, now: float) -> bool:
+    """La fenêtre de la limite s'est-elle renouvelée entre deux lectures ? (old : lecture précédente, new : brute)"""
+    old_at, old_util = old.get("resets_at"), old.get("utilization")
+    if not old_at or now < old_at - 120:  # fenêtre inconnue ou pas encore écoulée
+        return False
+    if (old_util or 0) < RESET_NOTIFY_MIN and old.get("status") != "rejected":
+        return False
+    new_at, new_util = new.get("resets_at"), new.get("utilization")
+    return bool((new_at and new_at > old_at + 60) or (new_util is not None and old_util is not None and new_util <= old_util - 0.3))
+
+
 class Usage:
     """Dernier état connu des limites, fusionné depuis les deux sources."""
 
@@ -132,13 +148,23 @@ class Usage:
         self.ts = 0.0
         self.source = ""
 
-    def update(self, limits: dict[str, dict], source: str) -> None:
+    def update(self, limits: dict[str, dict], source: str) -> list[str]:
+        """Intègre de nouvelles limites ; renvoie les types de limite qui viennent d'être réinitialisés."""
+        resets, now = [], time.time()
         for kind, new in limits.items():
             old = self.limits.get(kind, {})
+            if reset_detected(old, new, now):
+                resets.append(kind)
             if new.get("utilization") is None:  # un événement sans pourcentage garde le dernier connu
                 new = {**new, "utilization": old.get("utilization")}
             self.limits[kind] = new
         self.ts, self.source = time.time(), source
+        return resets
+
+    def next_reset(self) -> float | None:
+        """Prochaine heure de réinitialisation connue (pour relire l'usage juste après)."""
+        now = time.time()
+        return min((v["resets_at"] for v in self.limits.values() if v.get("resets_at") and v["resets_at"] > now), default=None)
 
     def public(self) -> dict | None:
         if not self.limits:

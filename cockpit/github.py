@@ -201,7 +201,13 @@ async def fusionner_pr(url: str, methode: str = "merge") -> dict:
             return {"merged": True, "sha": pr.get("merge_commit_sha"), "message": "déjà fusionnée"}
         if pr.get("state") != "open":
             raise GitHubError("la pull request est fermée")
-        r = await http.put(f"/repos/{owner}/{repo}/pulls/{number}/merge", json={"merge_method": methode})
+        # Le dépôt peut n'autoriser que squash ou rebase : GitHub répond alors 405 « … not allowed » pour la méthode demandée
+        for method in [methode, *(m for m in ("squash", "rebase", "merge") if m != methode)]:
+            r = await http.put(f"/repos/{owner}/{repo}/pulls/{number}/merge", json={"merge_method": method})
+            if r.status_code != 405 or "not allowed" not in r.text.lower():
+                break
+    if r.status_code == 403:
+        raise GitHubError("refusé par GitHub : le token git du pod n'a pas le droit de fusionner (Pull requests et Contents : écriture)")
     if r.status_code == 405:
         raise GitHubError(f"fusion impossible : {r.json().get('message', 'conditions non remplies')} (CI, revue ou conflits)")
     if r.status_code == 409:

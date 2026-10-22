@@ -666,3 +666,62 @@ def test_regles_d_autorisation(relay):
     assert {"tool": "Bash", "pattern": r"^docker\s+build\b"} in wpoll(relay, "pod-rg", False)["rules"]
     call(p, "regle_supprimer", {"id": rules[0]["id"]})
     assert {"tool": "Bash", "pattern": r"^docker\s+build\b"} not in wpoll(relay, "pod-rg", False)["rules"]
+
+
+def test_memoire_propositions_et_full_auto(relay):
+    p = paired_phone(relay)
+    wpoll(relay, "pod-fa", True, [{"id": "fa", "name": "Full auto"}], hello=True)
+    # Une tâche terminée met le projet en mémoire et ses prochaines étapes deviennent des propositions
+    t = call(p, "tache", {"instruction": "premier travail", "project": "fa"}).json()
+    got = wpoll(relay, "pod-fa", True)
+    assert [x["id"] for x in got["tasks"]] == [t["id"]]
+    steps = [{"titre": "Ajouter des tests", "instruction": "Ajoute des tests."}, {"titre": "Documenter", "instruction": "Documente."}]
+    worker_call(relay, "w_evenements", {"worker_id": "pod-fa", "events": [
+        {"kind": "task", "task_id": t["id"], "task": {"status": "done", "project": "fa", "result": "Fait.", "next_steps": steps}}]})
+    mem = call(p, "etat").json()["memory"]
+    assert [x["id"] for x in mem["projects"]] == ["fa"] and mem["projects"][0]["status"] == "en_cours"
+    assert {x["titre"] for x in mem["proposals"]} == {"Ajouter des tests", "Documenter"}
+    # Ignorer, ajouter à la main (doublon refusé), lancer
+    ids = {x["titre"]: x["id"] for x in mem["proposals"]}
+    assert call(p, "proposition", {"action": "ignorer", "id": ids["Documenter"]}).json()["ok"]
+    assert call(p, "proposition", {"action": "ajouter", "titre": "Idée", "instruction": "Fais ceci.", "project": "fa"}).json()["ok"]
+    assert call(p, "proposition", {"action": "ajouter", "titre": "Idée", "instruction": "Fais ceci.", "project": "fa"}).status_code == 400
+    lance = call(p, "proposition", {"action": "lancer", "id": ids["Ajouter des tests"]}).json()
+    assert call(p, "proposition", {"action": "lancer", "id": ids["Ajouter des tests"]}).status_code == 404  # déjà traitée
+    assert [x["id"] for x in wpoll(relay, "pod-fa", True)["tasks"]] == [lance["task_id"]]
+    # Full auto : refusé tant qu'il n'est pas armé, puis une seule tâche automatique à la fois
+    assert worker_call(relay, "w_auto_tache", {}).json() == {"skipped": "désarmé"}
+    assert call(p, "autopilote", {"enabled": True, "days": 3, "max_per_day": 5}).json()["enabled"]
+    assert wpoll(relay, "pod-fa", True)["autopilot"]["max_per_day"] == 5
+    auto = worker_call(relay, "w_auto_tache", {}).json()
+    assert auto["titre"] == "Idée"
+    assert worker_call(relay, "w_auto_tache", {}).json()["skipped"] == "une tâche automatique est en cours"
+    assert last_status(p)[auto["task_id"]]["auto"] is True
+    # Trois erreurs de suite désarment le mode
+    for i in range(3):
+        if i:
+            worker_call(relay, "w_memoire_projets", {"proposals": {"fa": [{"titre": f"Idée {i}", "instruction": "Encore."}]}})
+            auto = worker_call(relay, "w_auto_tache", {}).json()
+        worker_call(relay, "w_evenements", {"worker_id": "pod-fa", "events": [
+            {"kind": "task", "task_id": auto["task_id"], "task": {"status": "error", "project": "fa", "result": "raté"}}]})
+    assert call(p, "etat").json()["autopilot"]["enabled"] is False
+    assert any("Full auto" in a["titre"] for a in call(p, "resume").json()["alerts"])
+
+
+def test_alerte_reinitialisation_des_tokens(relay):
+    p = paired_phone(relay)
+    assert worker_call(relay, "w_alerte", {"kind": "inconnu"}).status_code == 400
+    assert worker_call(relay, "w_alerte", {"kind": "five_hour"}).json()["ok"]
+    worker_call(relay, "w_alerte", {"kind": "five_hour"})  # un autre pod signale la même réinitialisation : une seule alerte
+    alerts = [a for a in call(p, "resume").json()["alerts"] if "Tokens" in a["titre"]]
+    assert len(alerts) == 1 and "5 h" in alerts[0]["corps"]
+
+
+def test_mode_hard(relay):
+    p = paired_phone(relay)
+    wpoll(relay, "pod-hd", True, [{"id": "hd", "name": "Hard"}], hello=True)
+    assert wpoll(relay, "pod-hd", True)["hard"] is False
+    assert call(p, "mode_hard", {"enabled": True, "hours": 2}).json()["enabled"]
+    assert wpoll(relay, "pod-hd", True)["hard"] is True and call(p, "etat").json()["hard"]["enabled"]
+    assert call(p, "mode_hard", {"enabled": False}).json()["enabled"] is False
+    assert wpoll(relay, "pod-hd", True)["hard"] is False

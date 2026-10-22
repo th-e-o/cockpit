@@ -146,3 +146,27 @@ def test_regle_appliquee_par_l_agent(tmp_path):
     out = asyncio.run(pre({"tool_name": "Bash", "tool_input": {"command": "helm upgrade x y"}, "tool_use_id": "1"}, "1", None))
     assert out["hookSpecificOutput"]["permissionDecision"] == "allow" and asked == []
     assert "règle" in task.events[-1]["text"] and '"policy": "rule"' in (tmp_path / "data" / "audit.jsonl").read_text()
+
+
+def test_mode_hard_aucune_validation_sauf_refus(tmp_path):
+    """Mode hard : tout ce qui demandait une validation est approuvé et journalisé ; les refus (deny) restent."""
+    store = Store(tmp_path / "data")
+    runner = Runner(store, POLICY)
+    asked = []
+
+    async def request_approval(task, project, tool, tool_input, reason):
+        asked.append(tool_input.get("command"))
+        return False
+
+    runner.request_approval = request_approval
+    task = Task(id="t", instruction="x", conversation="c")
+    store.tasks["t"] = task
+    pre = hook(runner, task, str(tmp_path))
+    call = lambda cmd: asyncio.run(pre({"tool_name": "Bash", "tool_input": {"command": cmd}, "tool_use_id": cmd}, cmd, None))
+    assert call("git push origin main")["hookSpecificOutput"]["permissionDecision"] == "deny" and asked == ["git push origin main"]
+    runner.hard = True
+    for cmd in ("git push origin main", "sudo apt install x", "helm upgrade x y"):
+        assert call(cmd)["hookSpecificOutput"]["permissionDecision"] == "allow", cmd
+    assert asked == ["git push origin main"]  # plus aucune demande
+    assert '"policy": "hard"' in (tmp_path / "data" / "audit.jsonl").read_text()
+    assert call("rm -rf ~")["hookSpecificOutput"]["permissionDecision"] == "deny"  # refus absolu de la politique
