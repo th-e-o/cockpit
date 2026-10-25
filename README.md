@@ -162,6 +162,12 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
     (`policy: hard`) ; les validations en attente sont approuvées à l'activation ;
   - plus aucune question : Claude tranche seul (l'outil `poser_question` lui dit de décider), et s'il en a posé une quand même,
     le relais lui répond automatiquement de choisir l'option la plus prudente et de continuer (4 fois au plus par conversation) ;
+  - **projets au choix** : un dialogue liste les projets (● pod en ligne / ○ hors ligne) ; seuls ceux cochés sont concernés
+    (validations, questions, propositions). Sous la liste, un **aperçu** montre ce que Claude compte faire, dans l'ordre :
+    d'abord le travail resté en plan, du plus ancien au plus récent (tâches interrompues par un redémarrage, ou transmises
+    à un pod en ligne sans jamais avancer : elles sont reprises dans leur conversation, les bloquées sont annulées puis
+    relancées), puis les propositions de l'état de mémoire. Les projets dont le pod est hors ligne restent à l'arrêt (le
+    cockpit ne sait pas relancer un pod) : l'aperçu les signale avec leurs tâches en attente ;
   - le full auto est armé pour la même durée et mène **plusieurs projets de front** (jusqu'à 6, un projet à la fois, un pod
     par projet), en enchaînant les propositions de l'état de mémoire ;
   - **compte rendu** (tableau de bord, *📋 Compte rendu*) : par projet, ce qui a été fait (résultat, fichiers, commits, branche,

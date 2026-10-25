@@ -153,6 +153,21 @@
     </form>
   </dialog>
 
+  <dialog id="hardDlg">
+    <div class="dlghead"><h2>☠ Mode hard</h2><button class="icon" data-close>✕</button></div>
+    <form id="hardForm" class="podform">
+      <p class="hint">Pleine autonomie : plus aucune validation, questions tranchées par Claude, propositions enchaînées, compte rendu à la fin.
+        Choisis les projets concernés ; les autres ne sont pas touchés.</p>
+      <div class="repolist" id="hardProjects"></div>
+      <div class="row2">
+        <label>Durée (heures)<input id="hardHours" type="number" min="1" max="336" value="8"></label>
+        <label>Projets de front<input id="hardParallel" type="number" min="1" max="6" value="3"></label>
+      </div>
+      <div class="hardpreview" id="hardPreview"></div>
+      <button type="submit" id="hardGo">☠ Activer le mode hard</button>
+    </form>
+  </dialog>
+
   <dialog id="cmdDlg">
     <div class="dlghead"><h2>Commandes rapides</h2><button class="icon" data-close>✕</button></div>
     <form id="cmdForm" class="podform">

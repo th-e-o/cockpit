@@ -516,6 +516,7 @@ class Worker:
             if bool(msg["hard"]) != self.runner.hard:
                 self.store.audit("mode_hard", enabled=bool(msg["hard"]))
             self.runner.hard = bool(msg["hard"])
+            self.runner.hard_projects = set(msg.get("hard_projects") or [])
         if "autopilot" in msg:
             self.autopilot.config = msg["autopilot"] or {}
         if "rules" in msg:

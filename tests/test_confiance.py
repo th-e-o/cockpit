@@ -199,3 +199,27 @@ def test_mode_hard_aucune_question_a_l_utilisateur(tmp_path):
     runner.hard = True
     append = opts().system_prompt["append"]
     assert "MODE HARD" in append and "AUCUNE question" in append and "premier message de cette conversation" not in append
+
+
+def test_mode_hard_limite_aux_projets_choisis(tmp_path):
+    """Le périmètre du mode hard : un projet hors périmètre garde ses validations, un projet du périmètre n'en a plus."""
+    store = Store(tmp_path / "data")
+    runner = Runner(store, POLICY)
+    asked = []
+
+    async def request_approval(task, project, tool, tool_input, reason):
+        asked.append(tool_input.get("command"))
+        return False
+
+    runner.request_approval = request_approval
+    task = Task(id="t", instruction="x", conversation="c")
+    store.tasks["t"] = task
+    pre = hook(runner, task, str(tmp_path))  # projet « p »
+    call = lambda cmd: asyncio.run(pre({"tool_name": "Bash", "tool_input": {"command": cmd}, "tool_use_id": cmd}, cmd, None))
+    runner.hard, runner.hard_projects = True, {"autre"}
+    assert runner.is_hard("autre") and not runner.is_hard("p")
+    assert call("git push origin main")["hookSpecificOutput"]["permissionDecision"] == "deny" and asked == ["git push origin main"]
+    runner.hard_projects = {"p", "autre"}
+    assert call("git push origin main")["hookSpecificOutput"]["permissionDecision"] == "allow" and len(asked) == 1
+    runner.hard_projects = set()  # sans périmètre : tous les projets
+    assert runner.is_hard("n'importe-lequel")

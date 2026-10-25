@@ -1340,7 +1340,7 @@ function memoryHtml() {
       <div class="fhead"><button class="btn" data-prop="lancer" data-id="${esc(x.id)}">▶ Lancer</button>
         <button class="btn ghost" data-prop="ignorer" data-id="${esc(x.id)}">Ignorer</button></div></article>`).join('');
   const hard = state.hard?.enabled
-    ? `<div class="hint">☠ Mode hard actif jusqu'à ${esc(new Date(state.hard.until * 1000).toLocaleString('fr-FR', { weekday: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))} : plus aucune validation n'est demandée.</div>
+    ? `<div class="hint">☠ Mode hard actif${state.hard.projects?.length ? ` sur ${state.hard.projects.map((id) => esc(name(id))).join(', ')}` : ''} jusqu'à ${esc(new Date(state.hard.until * 1000).toLocaleString('fr-FR', { weekday: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))} : plus aucune validation n'est demandée.</div>
        <button class="btn ghost" data-hard="off">Désactiver le mode hard</button>`
     : `<div class="hint">Mode hard : pleine autonomie. Claude ne demande plus rien (validations approuvées, questions tranchées par lui), mène plusieurs projets de front en enchaînant les propositions, et dresse un compte rendu de ce qui a été fait. Seuls les refus absolus de la politique restent.</div>
        <button class="btn ghost" data-hard="on">☠ Activer le mode hard</button>`;
@@ -1364,16 +1364,64 @@ async function autoToggle(on) {
 }
 
 async function hardToggle(on) {
-  if (!on) { await api('mode_hard', { enabled: false }); state.reportAt = 0; return poll(); }
-  const hours = Number(prompt('Mode hard : pleine autonomie. Pendant combien d\'heures ? (1 à 336)', '8'));
-  if (!hours) return;
-  const parallel = Number(prompt('Combien de projets mener de front au maximum ? (1 à 6)', '3'));
-  if (!parallel) return;
-  if (!confirm(`Activer le mode hard pendant ${hours} h, sur ${parallel} projet(s) à la fois ?\nClaude ne te demandera plus rien : validations approuvées (écrire n'importe où dans le pod, pousser sur main, cluster, sudo), questions tranchées par lui, propositions enchaînées. Un compte rendu sera dressé. Seuls les outils interdits (deny) restent bloqués.`)) return;
-  await api('mode_hard', { enabled: true, hours, max_parallel: parallel });
+  if (on) return openHardDialog();
+  await api('mode_hard', { enabled: false });
   state.reportAt = 0;
   poll();
 }
+
+const hardChosen = () => [...document.querySelectorAll('#hardProjects input:checked')].map((i) => i.value);
+
+/** Dialogue du mode hard : projets concernés, durée, parallélisme, et aperçu de ce que Claude compte faire. */
+function openHardDialog() {
+  const list = state.projects;
+  $('#hardProjects').innerHTML = list.length ? list.map((p) => `<label class="check"><input type="checkbox" value="${esc(p.id)}" ${p.online ? 'checked' : ''}>
+      <span>${esc(p.name || p.id)}</span><span class="off">${p.online ? '● pod en ligne' : '○ pod hors ligne'}</span></label>`).join('')
+    : '<div class="hint">Aucun projet connu.</div>';
+  $('#hardPreview').textContent = 'Chargement…';
+  $('#hardGo').disabled = false;
+  $('#hardDlg').showModal();
+  refreshHardPreview();
+}
+
+let hardPreviewTimer = 0;
+function refreshHardPreview() {
+  clearTimeout(hardPreviewTimer);
+  hardPreviewTimer = setTimeout(async () => {
+    const ids = hardChosen();
+    if (!ids.length) { $('#hardPreview').textContent = 'Choisis au moins un projet.'; $('#hardGo').disabled = true; return; }
+    $('#hardGo').disabled = false;
+    try {
+      const r = await api('hard_apercu', undefined, `&projects=${encodeURIComponent(ids.join(','))}`);
+      const name = (id) => r.projects.find((p) => p.id === id)?.name || id || 'Auto';
+      const kind = { reprise: '↻ reprise', proposition: '💡' };
+      const offline = r.projects.filter((p) => !p.online);
+      const lines = r.plan.map((x) => `<li>${kind[x.kind] || ''} <b>${esc(name(x.project))}</b> — ${esc(x.titre)}${x.online ? '' : ' <span class="muted">(pod hors ligne : en attente)</span>'}
+        <span class="muted">· ${ago(x.since)}</span></li>`).join('');
+      $('#hardPreview').innerHTML = `<b>Ce que le mode hard compte faire</b>
+        ${r.plan.length ? `<ol>${lines}</ol>${r.total > r.plan.length ? `<div class="muted">… et ${r.total - r.plan.length} de plus</div>` : ''}
+          <div class="muted">Dans l'ordre : d'abord le travail resté en plan (le plus ancien en premier), puis les propositions.</div>`
+        : '<div class="muted">Rien en mémoire pour ces projets : Claude proposera d\'abord des tâches à partir de l\'historique de chaque projet.</div>'}
+        ${offline.length ? `<div class="muted">⏸ Hors ligne, donc à l'arrêt tant que leur pod ne revient pas : ${offline.map((p) => `${esc(p.name)}${p.waiting ? ` (${p.waiting} tâche(s) en attente depuis ${ago(p.waiting_since)})` : ''}`).join(', ')}.</div>` : ''}`;
+    } catch (e) { $('#hardPreview').textContent = e.message; }
+  }, 250);
+}
+
+$('#hardProjects').addEventListener('change', refreshHardPreview);
+$('#hardForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  const projects = hardChosen();
+  const hours = Number($('#hardHours').value), parallel = Number($('#hardParallel').value);
+  if (!projects.length || !hours || !parallel) return;
+  if (!confirm(`Activer le mode hard pendant ${hours} h sur ${projects.length} projet(s), ${parallel} de front ?\nClaude ne te demandera plus rien : validations approuvées (écrire n'importe où dans le pod, pousser sur main, cluster, sudo), questions tranchées par lui, propositions enchaînées. Un compte rendu sera dressé. Seuls les outils interdits (deny) restent bloqués.`)) return;
+  $('#hardGo').disabled = true;
+  try {
+    await api('mode_hard', { enabled: true, hours, max_parallel: parallel, projects });
+    $('#hardDlg').close();
+    state.reportAt = 0;
+    poll();
+  } catch (e) { $('#hardPreview').textContent = e.message; $('#hardGo').disabled = false; }
+});
 
 /** Compte rendu de ce qui a été fait depuis l'armement du mode hard (rafraîchi toutes les 20 s tant que le tableau de bord est visible). */
 async function loadReport() {

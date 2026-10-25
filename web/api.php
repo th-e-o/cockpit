@@ -566,7 +566,7 @@ function memoire_publique(): array {
 /** Mode full auto : réglages et compteurs (réglage « autopilote »). */
 function autopilote_lire(): array {
     $a = json_decode(reglage('autopilote') ?? '', true) ?: [];
-    $a += ['enabled' => false, 'until' => 0, 'threshold' => AUTO_SEUIL, 'max_per_day' => AUTO_PAR_JOUR, 'max_parallel' => 1, 'day' => '', 'launched_today' => 0,
+    $a += ['enabled' => false, 'until' => 0, 'threshold' => AUTO_SEUIL, 'max_per_day' => AUTO_PAR_JOUR, 'max_parallel' => 1, 'projects' => [], 'day' => '', 'launched_today' => 0,
            'failures' => 0, 'stopped' => '', 'since' => 0, 'last' => 0, 'total' => 0];
     if ($a['enabled'] && time() >= (int)$a['until']) { $a['enabled'] = false; $a['stopped'] = 'durée écoulée'; }
     if ($a['day'] !== date('Y-m-d')) { $a['day'] = date('Y-m-d'); $a['launched_today'] = 0; }
@@ -576,7 +576,7 @@ function autopilote_lire(): array {
 /** Mode hard : plus aucune validation demandée à l'utilisateur (seuls les refus « deny » de la politique restent). */
 function hard_lire(): array {
     $h = json_decode(reglage('mode_hard') ?? '', true) ?: [];
-    $h += ['enabled' => false, 'until' => 0, 'since' => 0];
+    $h += ['enabled' => false, 'until' => 0, 'since' => 0, 'projects' => []];  // projects : périmètre (vide : tous les projets)
     if ($h['enabled'] && time() >= (int)$h['until']) {
         $h['enabled'] = false;
         reglage('mode_hard', json_encode($h));
@@ -599,8 +599,8 @@ function creer_tache_racine(string $instruction, ?string $projet, array $extra =
 /** Alerte à notifier sur le téléphone (réinitialisation des tokens, arrêt du full auto) : lue par « resume ». */
 function alerte_ajouter(string $cle, string $titre, string $corps): void {
     $liste = json_decode(reglage('alertes') ?? '', true) ?: [];
-    foreach ($liste as $x) if ($x['cle'] === $cle && time() - $x['at'] < 600) return; // doublon (plusieurs pods lisent le même forfait)
-    array_unshift($liste, ['cle' => $cle . '-' . time(), 'titre' => $titre, 'corps' => $corps, 'at' => time()]);
+    foreach ($liste as $x) if (($x['type'] ?? '') === $cle && time() - $x['at'] < 600) return; // doublon (plusieurs pods lisent le même forfait)
+    array_unshift($liste, ['type' => $cle, 'cle' => $cle . '-' . time(), 'titre' => $titre, 'corps' => $corps, 'at' => time()]);
     reglage('alertes', json_encode(array_slice($liste, 0, ALERTES_MAX), JSON_UNESCAPED_UNICODE));
     notifier();
 }
@@ -615,12 +615,55 @@ function creer_tache_suite(array $parent, string $instruction, array $extra = []
     return $id;
 }
 
+/** Travail resté en plan, du plus ancien au plus récent : tâches interrompues par un redémarrage, ou transmises à un pod
+ * en ligne sans jamais avancer. Le mode hard les reprend avant de lancer de nouvelles propositions. */
+function taches_a_reprendre(array $portee = []): array {
+    $enLigne = array_column(array_filter(projets(), fn($p) => $p['online']), 'id');
+    $out = [];
+    $lignes = q("SELECT * FROM taches WHERE action IS NULL AND projet IS NOT NULL AND cree_le > ? AND (extra IS NULL OR extra NOT LIKE '%\"repris\":true%')
+                 AND ((statut = 'error' AND resultat LIKE 'Interrompue%') OR (statut IN ('pending','queued','routing') AND livree = 1 AND maj_le < ?))
+                 ORDER BY cree_le ASC, rowid ASC LIMIT 60", [time() - 7 * 86400, time() - 1800])->fetchAll();
+    foreach ($lignes as $t) {
+        if ($portee && !in_array($t['projet'], $portee, true)) continue;
+        if (!in_array($t['projet'], $enLigne, true)) continue; // un pod hors ligne ne peut rien reprendre
+        $out[] = ['id' => $t['id'], 'project' => $t['projet'], 'instruction' => $t['instruction'], 'created' => (int)$t['cree_le'],
+                  'kind' => $t['statut'] === 'error' ? 'interrompue' : 'bloquee'];
+    }
+    return $out;
+}
+
+/** Aperçu du mode hard : ce qu'il compte faire, dans l'ordre (reprises d'abord, puis propositions), et ce qui l'en empêche. */
+function hard_apercu(array $portee): array {
+    $m = memoire_lire();
+    $resumes = taches_a_reprendre($portee);
+    $plan = [];
+    foreach ($resumes as $r) $plan[] = ['kind' => 'reprise', 'project' => $r['project'], 'titre' => mb_substr(preg_replace('/\s+/', ' ', $r['instruction']), 0, 90),
+                                         'since' => $r['created'], 'online' => true, 'detail' => $r['kind']];
+    $projets = [];
+    $enLigne = [];
+    foreach (projets() as $p) $enLigne[$p['id']] = $p['online'];
+    foreach ($m['proposals'] as $x) {
+        if ($x['etat'] !== 'ouverte' || ($x['project'] !== null && $portee && !in_array($x['project'], $portee, true))) continue;
+        $plan[] = ['kind' => 'proposition', 'project' => $x['project'], 'titre' => $x['titre'], 'since' => (int)$x['cree'], 'online' => $enLigne[$x['project']] ?? false, 'detail' => $x['source']];
+    }
+    $memoire = array_column($m['projects'], null, 'id');
+    foreach (projets() as $p) {
+        if ($portee && !in_array($p['id'], $portee, true)) continue;
+        $att = q("SELECT COUNT(*) n, MIN(cree_le) depuis FROM taches WHERE projet = ? AND action IS NULL AND statut IN ('pending','queued','routing')", [$p['id']])->fetch();
+        $projets[] = ['id' => $p['id'], 'name' => $p['name'] ?? $p['id'], 'online' => $p['online'], 'pod' => $p['worker_name'] ?? '',
+                      'summary' => $memoire[$p['id']]['summary'] ?? '', 'waiting' => (int)$att['n'], 'waiting_since' => (int)$att['depuis']];
+    }
+    return ['plan' => array_slice($plan, 0, 14), 'total' => count($plan), 'projects' => $projets];
+}
+
 /** Mode hard : Claude a posé des questions et personne ne peut répondre : il décide seul et continue. */
 function hard_repondre_question(string $tacheId): void {
-    if (!hard_lire()['enabled']) return;
+    $h = hard_lire();
+    if (!$h['enabled']) return;
     $t = q('SELECT * FROM taches WHERE id = ?', [$tacheId])->fetch();
     $x = $t ? (json_decode($t['extra'] ?? '', true) ?: []) : [];
     if (!$t || empty($x['question']) || !$t['projet']) return;
+    if ($h['projects'] && !in_array($t['projet'], $h['projects'], true)) return;
     $conv = $t['conversation'] ?? $t['id'];
     $deja = (int)q("SELECT COUNT(*) FROM taches WHERE conversation = ? AND extra LIKE '%\"auto_reponse\":true%'", [$conv])->fetchColumn();
     if ($deja >= HARD_REPONSES_MAX) return;
@@ -796,7 +839,9 @@ switch ($route) {
         $orch = orchestrateur_en_ligne() ?? erreur('orchestrateur hors ligne : lance ./run.sh dans le pod admin', 409);
         $action = ['type' => 'lancer_service', 'nom' => $nom, 'depot_git' => $depot, 'branche' => $branche,
                    'cpu' => (string)($in['cpu'] ?? '2'), 'memoire' => (string)($in['memoire'] ?? '8Gi'),
-                   'disque' => (string)($in['disque'] ?? '10Gi'), 'gpu' => !empty($in['gpu'])]
+                   'disque' => (string)($in['disque'] ?? '10Gi'), 'gpu' => !empty($in['gpu']),
+                   // Case « Aperçu » du formulaire : port 5000 publié ; booléen strict, false si absent
+                   'apercu' => filter_var($in['apercu'] ?? false, FILTER_VALIDATE_BOOLEAN)]
                  + ($nouveauDepot ? ['creer_depot' => $nouveauDepot] : []);
         $id = bin2hex(random_bytes(5));
         $source = $nouveauDepot ? 'nouveau dépôt GitHub ' . ($nouveauDepot['prive'] ? 'privé ' : 'public ') . "« {$nouveauDepot['nom']} »" : ($depot !== '' ? preg_replace('#^https://(www\.)?github\.com/#', '', $depot) . ($branche !== '' ? " ($branche)" : '') : 'dossier vide');
@@ -1094,6 +1139,11 @@ switch ($route) {
                 }
             }
         }
+        // Fusions de PR restées en attente d'un pod hors ligne : l'orchestrateur les prend (même token GitHub sur tous les pods)
+        if ($orchestrateur) {
+            q("UPDATE taches SET worker_id = ? WHERE action LIKE '%fusionner_pr%' AND statut = 'pending' AND livree = 0 AND worker_id IS NOT NULL AND worker_id != ?
+               AND worker_id NOT IN (SELECT id FROM workers WHERE vu_le > ?)", [$wid, $wid, time() - WORKER_EN_LIGNE]);
+        }
         if (isset($in['state']) && is_array($in['state'])) {
             $etat = json_encode($in['state'], JSON_UNESCAPED_UNICODE);
             if (strlen($etat) <= 64000) q('UPDATE workers SET etat = ? WHERE id = ?', [$etat, $wid]);
@@ -1160,6 +1210,7 @@ switch ($route) {
                 'reply_to' => $t['suite_de'] ?? null], $taches),
             'autopilot' => autopilote_lire(),
             'hard' => hard_lire()['enabled'],
+            'hard_projects' => hard_lire()['projects'],
             'steers' => $recadrages, 'memory_edits' => $memoires, 'trust' => (object)confiances(), 'rules' => regles(),
             'decisions' => $decisions, 'cancels' => $annulations,
             'choices' => array_map(fn($c) => ['task_id' => $c['id'], 'project' => $c['choix_projet']], $choix),
@@ -1384,6 +1435,7 @@ switch ($route) {
             $a['threshold'] = max(0.3, min(0.95, (float)($in['threshold'] ?? AUTO_SEUIL)));
             $a['max_per_day'] = max(1, min(50, (int)($in['max_per_day'] ?? AUTO_PAR_JOUR)));
             $a['max_parallel'] = max(1, min(AUTO_PARALLELE_MAX, (int)($in['max_parallel'] ?? 1)));
+            $a['projects'] = array_values(array_intersect(array_column(projets(), 'id'), array_map('strval', (array)($in['projects'] ?? []))));
         }
         autopilote_ecrire($a);
         repondre(autopilote_lire());
@@ -1397,16 +1449,18 @@ switch ($route) {
         } else {
             $h['enabled'] = true;
             $h['since'] = time();
+            $h['projects'] = array_values(array_intersect(array_column(projets(), 'id'), array_map('strval', (array)($in['projects'] ?? []))));
             $h['until'] = time() + max(1, min(HARD_HEURES_MAX, (int)($in['hours'] ?? 8))) * 3600;
             // Les validations déjà en attente sont approuvées : le mode s'applique tout de suite
             q("UPDATE validations SET decision = 'approve' WHERE decision IS NULL");
             // Pleine autonomie : le full auto est armé pour la même durée, sur plusieurs projets de front
             $a = ['enabled' => true, 'until' => $h['until'], 'since' => time(), 'failures' => 0, 'stopped' => '', 'threshold' => 0.95,
-                  'max_per_day' => 40, 'max_parallel' => max(1, min(AUTO_PARALLELE_MAX, (int)($in['max_parallel'] ?? 3)))] + autopilote_lire();
+                  'max_per_day' => 40, 'projects' => $h['projects'],
+                  'max_parallel' => max(1, min(AUTO_PARALLELE_MAX, (int)($in['max_parallel'] ?? 3)))] + autopilote_lire();
             autopilote_ecrire($a);
         }
         reglage('mode_hard', json_encode($h));
-        q('INSERT INTO audit(donnees, ts) VALUES(?, ?)', [json_encode(['ts' => date('Y-m-d\TH:i:s'), 'event' => 'mode_hard', 'enabled' => $h['enabled'], 'until' => $h['until']]), time()]);
+        q('INSERT INTO audit(donnees, ts) VALUES(?, ?)', [json_encode(['ts' => date('Y-m-d\TH:i:s'), 'event' => 'mode_hard', 'enabled' => $h['enabled'], 'until' => $h['until'], 'projects' => $h['projects']]), time()]);
         repondre(hard_lire());
 
     // ----- mémoire des projets et mode full auto (worker)
@@ -1433,12 +1487,37 @@ switch ($route) {
         $occupes = q("SELECT projet FROM taches WHERE extra LIKE '%\"auto\":true%' AND statut IN ('pending','routing','queued','running','waiting_approval','needs_project')")->fetchAll(PDO::FETCH_COLUMN);
         $max = max(1, (int)$a['max_parallel']);
         if (count($occupes) >= $max) $refus(count($occupes) . ' tâche(s) automatique(s) déjà en cours (maximum ' . $max . ')');
-        $m = memoire_lire();
+        $portee = $a['projects'] ?: [];
         $enLigne = array_column(array_filter(projets(), fn($p) => $p['online']), 'id');
+        // 1. Le travail resté en plan d'abord, du plus ancien au plus récent
+        foreach (taches_a_reprendre($portee) as $r) {
+            if (in_array($r['project'], $occupes, true)) continue;
+            $orig = q('SELECT * FROM taches WHERE id = ?', [$r['id']])->fetch();
+            $x = json_decode($orig['extra'] ?? '', true) ?: [];
+            $x['repris'] = true;
+            q('UPDATE taches SET extra = ? WHERE id = ?', [json_encode($x, JSON_UNESCAPED_UNICODE), $orig['id']]);
+            if ($r['kind'] === 'bloquee') {
+                q("UPDATE taches SET statut = 'cancelled', annulation = 1, resultat = ?, maj_le = ? WHERE id = ?",
+                  ['Relancée par le mode hard : restée sans avancer après sa transmission au pod.', time(), $orig['id']]);
+                evenement_tache($orig['id']);
+            }
+            $id = creer_tache_suite($orig, "Ce travail a été interrompu avant la fin (redémarrage ou arrêt du pod). Reprends-le là où il s'est arrêté : "
+                . "vérifie d'abord l'état du dépôt (git status, git log, branche en cours), puis mène-le à son terme. Instruction d'origine :\n\n" . $orig['instruction'],
+                ['auto' => true, 'reprise_de' => $orig['id']]);
+            $a['launched_today']++;
+            $a['total']++;
+            $a['last'] = time();
+            autopilote_ecrire($a);
+            valider();
+            repondre(['task_id' => $id, 'titre' => 'Reprise : ' . mb_substr(preg_replace('/\s+/', ' ', $orig['instruction']), 0, 60)]);
+        }
+        // 2. Puis les propositions, dans l'ordre où elles sont arrivées
+        $m = memoire_lire();
         $choix = null;
         foreach ($m['proposals'] as &$p) {
             // Un projet à la fois : sa tâche automatique en cours doit être terminée avant d'en lancer une autre dessus
-            if ($p['etat'] === 'ouverte' && $p['project'] !== null && in_array($p['project'], $enLigne, true) && !in_array($p['project'], $occupes, true)) { $choix = &$p; break; }
+            if ($p['etat'] === 'ouverte' && $p['project'] !== null && in_array($p['project'], $enLigne, true) && !in_array($p['project'], $occupes, true)
+                && (!$portee || in_array($p['project'], $portee, true))) { $choix = &$p; break; }
         }
         if (!$choix) { unset($p); $refus('aucune proposition'); }
         $id = creer_tache_racine($choix['instruction'], $choix['project'], ['auto' => true, 'proposal' => $choix['id']]);
@@ -1513,6 +1592,11 @@ switch ($route) {
         }
         $apres = $controle();
         repondre(['repare' => $apres === ['ok'], 'avant' => $avant, 'apres' => $apres, 'sauvegarde' => $sauvegarde]);
+
+    case 'hard_apercu': // aperçu : ce que le mode hard compte faire sur les projets choisis (?projects=a,b ; vide : tous)
+        exiger_session();
+        $portee = array_values(array_filter(array_map('trim', explode(',', (string)($_GET['projects'] ?? '')))));
+        repondre(hard_apercu($portee));
 
     case 'w_pr_etat': // état d'une pull request relevé sur GitHub par n'importe quel pod (le propriétaire de la tâche peut être hors ligne)
         exiger_worker();

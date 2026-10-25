@@ -32,6 +32,16 @@ b64u_dec = lambda s: base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
 @pytest.fixture(scope="module")
 def relay():
+    yield from lancer_relais()
+
+
+@pytest.fixture
+def relay_neuf():
+    """Relais vide, pour les tests qui dépendent de l'état global (full auto, mode hard) et ne doivent pas se gêner entre eux."""
+    yield from lancer_relais()
+
+
+def lancer_relais():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
@@ -429,7 +439,8 @@ def test_nouveau_pod_et_bilan(relay):
     assert t["kind"] == "service" and t["instruction"] == "🚀 Nouveau pod « drones » : th-e-o/drones (dev)"
     livrees = [x for x in wpoll(relay, "orch-np", True)["tasks"] if x["id"] == t["id"]]
     assert livrees[0]["action"] == {"type": "lancer_service", "nom": "drones", "depot_git": "https://github.com/th-e-o/drones",
-                                    "branche": "dev", "cpu": "4", "memoire": "8Gi", "disque": "10Gi", "gpu": False}
+                                    "branche": "dev", "cpu": "4", "memoire": "8Gi", "disque": "10Gi", "gpu": False,
+                                    "apercu": False}
 
     # Bilan : tâches, durée, fichiers distincts, lignes, commits, activité du jour
     t1 = call(p, "tache", {"instruction": "un", "project": "np-onyxia"}).json()["id"]
@@ -446,6 +457,19 @@ def test_nouveau_pod_et_bilan(relay):
     assert [x["id"] for x in b["recent"]] == [t2, t1]
     assert len(call(p, "bilan", jours=30).json()["projects"][0]["days"]) == 30
     assert call(p, "bilan", jours=99).json()["days"] == 7
+
+
+def test_nouveau_pod_apercu(relay):
+    """Case « Aperçu » du formulaire « + Nouveau pod » : transmise en booléen à l'action lancer_service, false si absente."""
+    p = paired_phone(relay)
+    wpoll(relay, "orch-ap", True, [{"id": "ap-onyxia", "name": "Onyxia"}], hello=True)
+    for nom, extra, attendu in [("ap-vrai", {"apercu": True}, True), ("ap-faux", {"apercu": False}, False),
+                                ("ap-absent", {}, False), ("ap-texte", {"apercu": "false"}, False)]:
+        t = call(p, "lancer_pod", {"nom": nom, **extra}).json()
+        wid = last_status(p)[t["id"]]["worker"]
+        livrees = wpoll(relay, wid, True, instance="inst-orch-2" if wid == "orch" else None)["tasks"]
+        act = [x for x in livrees if x["id"] == t["id"]][0]["action"]
+        assert act["apercu"] is attendu, (nom, act)
 
 
 def test_suite_et_notifications(relay):
@@ -668,15 +692,15 @@ def test_regles_d_autorisation(relay):
     assert {"tool": "Bash", "pattern": r"^docker\s+build\b"} not in wpoll(relay, "pod-rg", False)["rules"]
 
 
-def test_memoire_propositions_et_full_auto(relay):
-    p = paired_phone(relay)
-    wpoll(relay, "pod-fa", True, [{"id": "fa", "name": "Full auto"}], hello=True)
+def test_memoire_propositions_et_full_auto(relay_neuf):
+    p = paired_phone(relay_neuf)
+    wpoll(relay_neuf, "pod-fa", True, [{"id": "fa", "name": "Full auto"}], hello=True)
     # Une tâche terminée met le projet en mémoire et ses prochaines étapes deviennent des propositions
     t = call(p, "tache", {"instruction": "premier travail", "project": "fa"}).json()
-    got = wpoll(relay, "pod-fa", True)
+    got = wpoll(relay_neuf, "pod-fa", True)
     assert [x["id"] for x in got["tasks"]] == [t["id"]]
     steps = [{"titre": "Ajouter des tests", "instruction": "Ajoute des tests."}, {"titre": "Documenter", "instruction": "Documente."}]
-    worker_call(relay, "w_evenements", {"worker_id": "pod-fa", "events": [
+    worker_call(relay_neuf, "w_evenements", {"worker_id": "pod-fa", "events": [
         {"kind": "task", "task_id": t["id"], "task": {"status": "done", "project": "fa", "result": "Fait.", "next_steps": steps}}]})
     mem = call(p, "etat").json()["memory"]
     assert [x["id"] for x in mem["projects"]] == ["fa"] and mem["projects"][0]["status"] == "en_cours"
@@ -688,21 +712,21 @@ def test_memoire_propositions_et_full_auto(relay):
     assert call(p, "proposition", {"action": "ajouter", "titre": "Idée", "instruction": "Fais ceci.", "project": "fa"}).status_code == 400
     lance = call(p, "proposition", {"action": "lancer", "id": ids["Ajouter des tests"]}).json()
     assert call(p, "proposition", {"action": "lancer", "id": ids["Ajouter des tests"]}).status_code == 404  # déjà traitée
-    assert [x["id"] for x in wpoll(relay, "pod-fa", True)["tasks"]] == [lance["task_id"]]
+    assert [x["id"] for x in wpoll(relay_neuf, "pod-fa", True)["tasks"]] == [lance["task_id"]]
     # Full auto : refusé tant qu'il n'est pas armé, puis une seule tâche automatique à la fois
-    assert worker_call(relay, "w_auto_tache", {}).json() == {"skipped": "désarmé"}
+    assert worker_call(relay_neuf, "w_auto_tache", {}).json() == {"skipped": "désarmé"}
     assert call(p, "autopilote", {"enabled": True, "days": 3, "max_per_day": 5}).json()["enabled"]
-    assert wpoll(relay, "pod-fa", True)["autopilot"]["max_per_day"] == 5
-    auto = worker_call(relay, "w_auto_tache", {}).json()
+    assert wpoll(relay_neuf, "pod-fa", True)["autopilot"]["max_per_day"] == 5
+    auto = worker_call(relay_neuf, "w_auto_tache", {}).json()
     assert auto["titre"] == "Idée"
-    assert "déjà en cours" in worker_call(relay, "w_auto_tache", {}).json()["skipped"]
+    assert "déjà en cours" in worker_call(relay_neuf, "w_auto_tache", {}).json()["skipped"]
     assert last_status(p)[auto["task_id"]]["auto"] is True
     # Trois erreurs de suite désarment le mode
     for i in range(3):
         if i:
-            worker_call(relay, "w_memoire_projets", {"proposals": {"fa": [{"titre": f"Idée {i}", "instruction": "Encore."}]}})
-            auto = worker_call(relay, "w_auto_tache", {}).json()
-        worker_call(relay, "w_evenements", {"worker_id": "pod-fa", "events": [
+            worker_call(relay_neuf, "w_memoire_projets", {"proposals": {"fa": [{"titre": f"Idée {i}", "instruction": "Encore."}]}})
+            auto = worker_call(relay_neuf, "w_auto_tache", {}).json()
+        worker_call(relay_neuf, "w_evenements", {"worker_id": "pod-fa", "events": [
             {"kind": "task", "task_id": auto["task_id"], "task": {"status": "error", "project": "fa", "result": "raté"}}]})
     assert call(p, "etat").json()["autopilot"]["enabled"] is False
     assert any("Full auto" in a["titre"] for a in call(p, "resume").json()["alerts"])
@@ -727,13 +751,13 @@ def test_mode_hard(relay):
     assert wpoll(relay, "pod-hd", True)["hard"] is False
 
 
-def test_mode_hard_pleine_autonomie(relay):
+def test_mode_hard_pleine_autonomie(relay_neuf):
     """Mode hard : full auto armé sur plusieurs projets, questions de Claude tranchées automatiquement, compte rendu."""
-    p = paired_phone(relay)
+    p = paired_phone(relay_neuf)
     for wid, proj in (("pod-h1", "h1"), ("pod-h2", "h2"), ("pod-h3", "h3")):
-        wpoll(relay, wid, wid == "pod-h1", [{"id": proj, "name": proj}], hello=True)
+        wpoll(relay_neuf, wid, wid == "pod-h1", [{"id": proj, "name": proj}], hello=True)
     t = call(p, "tache", {"instruction": "travail initial", "project": "h1"}).json()
-    wpoll(relay, "pod-h1", True)
+    wpoll(relay_neuf, "pod-h1", True)
     state = call(p, "mode_hard", {"enabled": True, "hours": 4, "max_parallel": 2}).json()
     assert state["enabled"]
     auto = call(p, "etat").json()["autopilot"]
@@ -742,16 +766,16 @@ def test_mode_hard_pleine_autonomie(relay):
     for proj in ("h1", "h2", "h3"):
         call(p, "proposition", {"action": "ajouter", "titre": f"Idée {proj}", "instruction": f"Avance sur {proj}.", "project": proj})
         call(p, "proposition", {"action": "ajouter", "titre": f"Autre {proj}", "instruction": f"Autre chose sur {proj}.", "project": proj})
-    first = worker_call(relay, "w_auto_tache", {}).json()
-    second = worker_call(relay, "w_auto_tache", {}).json()
+    first = worker_call(relay_neuf, "w_auto_tache", {}).json()
+    second = worker_call(relay_neuf, "w_auto_tache", {}).json()
     assert first["task_id"] and second["task_id"] and first["titre"] != second["titre"]
     assert {first["titre"][-2:], second["titre"][-2:]} == {"h1", "h2"}  # deux projets différents
-    assert "déjà en cours" in worker_call(relay, "w_auto_tache", {}).json()["skipped"]
+    assert "déjà en cours" in worker_call(relay_neuf, "w_auto_tache", {}).json()["skipped"]
     # Une question posée par Claude reçoit une réponse automatique dans la même conversation
-    worker_call(relay, "w_evenements", {"worker_id": "pod-h1", "events": [
+    worker_call(relay_neuf, "w_evenements", {"worker_id": "pod-h1", "events": [
         {"kind": "task", "task_id": t["id"], "task": {"status": "done", "project": "h1", "result": "Quel format ?",
                                                        "question": {"text": "Quel format ?", "options": ["CSV", "JSON"]}}}]})
-    reply = [x for x in wpoll(relay, "pod-h1", True)["tasks"] if "Mode hard" in x["instruction"]]
+    reply = [x for x in wpoll(relay_neuf, "pod-h1", True)["tasks"] if "Mode hard" in x["instruction"]]
     assert len(reply) == 1 and reply[0]["conversation"] == t["id"] and reply[0]["project"] == "h1"
     # Compte rendu : projets, tâches et question tranchée
     rapport = call(p, "compte_rendu").json()
@@ -778,3 +802,29 @@ def test_pr_etat_et_fusion_par_l_orchestrateur(relay):
     assert worker_call(relay, "w_pr_etat", {"task_id": t["id"], "url": url, "state": "merged"}).json()["deja"] is True
     assert worker_call(relay, "w_pr_etat", {"task_id": t["id"], "url": url, "state": "bizarre"}).status_code == 400
     assert any(e.get("type") == "pr_merged" and e.get("url") == url for e in call(p, "etat").json()["events"])
+
+
+def test_mode_hard_perimetre_apercu_et_reprise(relay_neuf):
+    """Mode hard : projets choisis, aperçu de ce qu'il compte faire, tâches interrompues reprises du plus ancien au plus récent."""
+    p = paired_phone(relay_neuf)
+    wpoll(relay_neuf, "pod-hp", True, [{"id": "hp1", "name": "Un"}, {"id": "hp2", "name": "Deux"}], hello=True)
+    # Deux tâches interrompues par un redémarrage (la plus ancienne d'abord), sur hp1
+    ids = []
+    for texte in ("première tâche", "deuxième tâche"):
+        t = call(p, "tache", {"instruction": texte, "project": "hp1"}).json()
+        ids.append(t["id"])
+    got = wpoll(relay_neuf, "pod-hp", True)
+    assert {x["id"] for x in got["tasks"]} >= set(ids)
+    wpoll(relay_neuf, "pod-hp", True, [{"id": "hp1", "name": "Un"}, {"id": "hp2", "name": "Deux"}], hello=True)  # redémarrage : tâches interrompues
+    call(p, "proposition", {"action": "ajouter", "titre": "Idée deux", "instruction": "Avance sur hp2.", "project": "hp2"})
+    ap = call(p, "hard_apercu", projects="hp1").json()
+    assert [x["kind"] for x in ap["plan"]][:2] == ["reprise", "reprise"] and ap["plan"][0]["titre"].startswith("première")
+    assert all(x["project"] == "hp1" for x in ap["plan"])  # hp2 hors périmètre : sa proposition n'apparaît pas
+    assert [x["id"] for x in ap["projects"]] == ["hp1"]
+    # Armement limité à hp1 : reprises dans l'ordre, jamais hp2
+    assert call(p, "mode_hard", {"enabled": True, "hours": 2, "max_parallel": 3, "projects": ["hp1"]}).json()["projects"] == ["hp1"]
+    assert wpoll(relay_neuf, "pod-hp", True)["hard_projects"] == ["hp1"]
+    premiere = worker_call(relay_neuf, "w_auto_tache", {}).json()
+    assert premiere["titre"].startswith("Reprise : première")
+    assert "déjà en cours" in worker_call(relay_neuf, "w_auto_tache", {}).json()["skipped"] or worker_call(relay_neuf, "w_auto_tache", {}).json()["skipped"] == "aucune proposition"
+    call(p, "mode_hard", {"enabled": False})

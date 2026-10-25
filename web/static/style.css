@@ -285,6 +285,16 @@ section.flash > .task { animation: flash 1.4s ease-out; }
 .brecent .rinst { flex: 1; min-width: 0; font-size: 13px; }
 .brecent:hover .rinst { color: var(--accent); }
 
+/* ---------- Mode hard */
+#hardDlg { width: min(94vw, 560px); }
+#hardProjects .check { padding: 8px 10px; border-bottom: 1px solid var(--line); }
+#hardProjects .check:last-child { border-bottom: 0; }
+#hardProjects .off { color: var(--muted); font-size: 12px; margin-left: auto; }
+.hardpreview { font-size: 13px; border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; background: var(--panel2); max-height: 30dvh; overflow-y: auto; }
+.hardpreview ol { margin: 4px 0 0; padding-left: 20px; }
+.hardpreview li { margin: 2px 0; }
+.hardpreview .muted { color: var(--muted); font-size: 12px; }
+
 /* ---------- Nouveau pod */
 #podDlg { width: min(94vw, 560px); }
 .podform { display: flex; flex-direction: column; gap: 8px; margin-top: 6px; }

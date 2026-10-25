@@ -477,12 +477,17 @@ class Runner:
         self.preview: dict | None = None  # URL publique du port utilisateur du pod {url, port}
         self.steers: dict[str, list[str]] = {}  # messages de l'utilisateur pendant une tâche
         self.hard = False  # mode hard (téléphone) : plus aucune validation, seuls les refus (deny) de la politique restent
+        self.hard_projects: set[str] = set()  # périmètre du mode hard (vide : tous les projets de ce pod)
         self.trust: dict[str, float] = {}  # mode confiance : conversation -> fin (activé depuis le téléphone)
         self.on_rate_limit = None  # RateLimitInfo -> None (barre d'usage), fourni par le worker
         self.project_status = None  # async (projet) -> état vu du relais (outil etat_projet), fourni par le worker
         self.session_usage = None  # () -> utilisation de la session de 5 h (0-1) ou None, fourni par le worker
         self.refresh_usage = None  # async () -> utilisation relue juste après une tâche, fourni par le worker
         self._background: set[asyncio.Task] = set()
+
+    def is_hard(self, project_id: str | None) -> bool:
+        """Mode hard actif pour ce projet (sans périmètre : pour tous)."""
+        return self.hard and (not self.hard_projects or project_id in self.hard_projects)
 
     @staticmethod
     def _lock(locks: dict[str, asyncio.Lock], key: str) -> asyncio.Lock:
@@ -539,7 +544,7 @@ class Runner:
                 ok = True
             elif d.action == DENY:
                 ok = False
-            elif self.hard:
+            elif self.is_hard(project.id):
                 ok, d.action = True, "hard"
                 self.store.publish("message", {"task_id": task.id, "type": "trusted", "tool": tool, "text": d.reason})
             elif rule := self.policy.user_allowed(tool, tool_input, cwd):
@@ -588,12 +593,12 @@ class Runner:
                                             pub=lambda **kw: self.store.publish("message", {"task_id": task.id, **kw}),
                                             upload=upload, delegate=delegate,
                                             on_question=lambda q: setattr(task, "question", q), status=self.project_status,
-                                            hard=lambda: self.hard)
+                                            hard=lambda: self.is_hard(project.id))
         if self.preview:
             append += PREVIEW_APPEND.format(**self.preview)
         if not self.services and delegate:
             append += PROJECT_APPEND.format(project=project.id)
-        if self.hard:
+        if self.is_hard(project.id):
             append += HARD_APPEND
         elif not task.context and not task.parent and not task.reply_to_task:  # première demande d'une conversation
             append += FIRST_APPEND
@@ -747,7 +752,7 @@ class Runner:
                 final = {k: v for k, v in final.items() if k != "status"}
             elif final.get("status") == "done" and changes and changes.get("file_count"):
                 final |= await self._tests(task, project, cwd)
-            if final.get("status") == "done" and not task.question and not self.hard:
+            if final.get("status") == "done" and not task.question and not self.is_hard(project.id):
                 if q := detect_question(final.get("result", "")):
                     final["question"] = q
             # Statut final et modifications publiés ensemble : la notification de fin peut les résumer.
