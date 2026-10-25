@@ -1424,6 +1424,13 @@ switch ($route) {
             try { $res['tables'][$t] = (int)$pdo->query("SELECT COUNT(*) FROM \"$t\"")->fetchColumn(); $pdo->query("SELECT * FROM \"$t\"")->fetchAll(); }
             catch (Throwable $e) { $res['tables'][$t] = 'ILLISIBLE : ' . $e->getMessage(); }
         }
+        $res['sqlite'] = $pdo->query('SELECT sqlite_version()')->fetchColumn();
+        $res['php'] = PHP_VERSION;
+        try { $res['sequences'] = $pdo->query('SELECT name, seq FROM sqlite_sequence')->fetchAll(PDO::FETCH_KEY_PAIR); } catch (Throwable $e) { $res['sequences'] = $e->getMessage(); }
+        try { // table propriétaire des pages signalées par integrity_check (si l'extension dbstat est disponible)
+            $res['pages'] = $pdo->query('SELECT pageno, name, path FROM dbstat WHERE pageno IN (23, 993, 1600)')->fetchAll();
+        } catch (Throwable $e) { $res['pages'] = 'dbstat indisponible'; }
+        try { $res['max_rowid'] = array_map(fn($t) => (int)$pdo->query("SELECT COALESCE(MAX(rowid), 0) FROM \"$t\"")->fetchColumn(), array_combine(array_keys($res['tables']), array_keys($res['tables']))); } catch (Throwable $e) {}
         $res['fichiers'] = array_map(fn($f) => [basename($f), filesize($f)], glob(__DIR__ . '/data/cockpit.db*') ?: []);
         repondre($res);
 
