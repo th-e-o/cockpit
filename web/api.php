@@ -1427,6 +1427,24 @@ switch ($route) {
         $res['fichiers'] = array_map(fn($f) => [basename($f), filesize($f)], glob(__DIR__ . '/data/cockpit.db*') ?: []);
         repondre($res);
 
+    case 'w_reparer': // base corrompue (« malformed ») : sauvegarde, REINDEX puis VACUUM (reconstruction atomique), contrôle
+        exiger_worker();
+        $pdo = db();
+        $controle = fn() => array_slice($pdo->query('PRAGMA integrity_check(20)')->fetchAll(PDO::FETCH_COLUMN), 0, 20);
+        $avant = $controle();
+        if ($avant === ['ok']) repondre(['deja_sain' => true]);
+        $pdo->exec('PRAGMA wal_checkpoint(TRUNCATE)');
+        $sauvegarde = 'cockpit.db.sauvegarde-' . date('Ymd-His');
+        if (!copy(__DIR__ . '/data/cockpit.db', __DIR__ . '/data/' . $sauvegarde)) erreur('sauvegarde impossible : base laissée telle quelle', 500);
+        try {
+            $pdo->exec('REINDEX');
+            $pdo->exec('VACUUM');
+        } catch (Throwable $e) {
+            repondre(['repare' => false, 'erreur' => $e->getMessage(), 'avant' => $avant, 'sauvegarde' => $sauvegarde], 500);
+        }
+        $apres = $controle();
+        repondre(['repare' => $apres === ['ok'], 'avant' => $avant, 'apres' => $apres, 'sauvegarde' => $sauvegarde]);
+
     case 'w_alerte': // le worker signale un événement à notifier (réinitialisation des tokens)
         exiger_worker();
         $genre = (string)($in['kind'] ?? '');
