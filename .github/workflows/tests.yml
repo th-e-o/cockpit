@@ -16,6 +16,8 @@ jobs:
           python-version: '3.13'
           cache: pip
       - run: pip install -r requirements.txt ruff
+      - name: Chromium pour les tests UI (Playwright)
+        run: python -m playwright install --with-deps chromium
       - name: Ruff
         run: ruff check .
       - name: Pytest
