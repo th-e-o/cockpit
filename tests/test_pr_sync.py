@@ -22,8 +22,11 @@ def test_sync_prs(tmp_path, monkeypatch):
     t.events = [{"type": "pr", "url": FUSIONNEE}, {"type": "pr", "url": FERMEE}, {"type": "pr", "url": AILLEURS}]
     w.store.tasks["t1"] = t
 
-    async def projet_etat(project):
+    async def projet_etat(project="", limit=8):
         return {"tasks": [{"id": "t0", "result": "", "pull_requests": [{"url": RELAIS}]}]}
+
+    async def pr_etat(task_id, url, state):  # tâche d'un autre pod : publiée par le relais, pas par ce worker
+        sent.append({"kind": "message", "type": "pr_merged" if state == "merged" else "pr_closed", "url": url, "task_id": task_id})
 
     async def etat_pr(url):
         if url == AILLEURS:
@@ -32,6 +35,7 @@ def test_sync_prs(tmp_path, monkeypatch):
 
     sent = []
     w.relay.projet_etat = projet_etat
+    w.relay.pr_etat = pr_etat
     w.store.forward = sent.append
     monkeypatch.setattr(github, "etat_pr", etat_pr)
 

@@ -67,9 +67,13 @@ class Relay:
         """Publie la mémoire du projet (CLAUDE.md) pour l'afficher et la modifier depuis le téléphone."""
         await self.call("w_memoire", {"project": project, "content": content, "hash": digest, "worker_id": self.worker_id})
 
-    async def projet_etat(self, project: str = "") -> dict:
-        """État d'un projet du cockpit (ou liste des projets si vide), vu du relais."""
-        return await self.call("w_projet_etat", {"project": project})
+    async def projet_etat(self, project: str = "", limit: int = 8) -> dict:
+        """État d'un projet du cockpit (ou liste des projets si vide), vu du relais ; limit : dernières tâches (40 au plus)."""
+        return await self.call("w_projet_etat", {"project": project, "limit": limit})
+
+    async def pr_etat(self, task_id: str, url: str, state: str) -> None:
+        """Publie la fusion ou la fermeture d'une pull request sur une tâche d'un autre pod (éventuellement hors ligne)."""
+        await self.call("w_pr_etat", {"task_id": task_id, "url": url, "state": state, "worker_id": self.worker_id})
 
     async def alerte(self, kind: str) -> None:
         """Signale une réinitialisation de limite d'usage (notification sur le téléphone)."""

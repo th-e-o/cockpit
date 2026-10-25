@@ -42,6 +42,7 @@ MEMORY_FILE, MEMORY_MAX = "CLAUDE.md", 50_000
 AUTO_UPDATE = os.environ.get("COCKPIT_AUTO_UPDATE") == "1"
 UPDATE_EVERY = int(os.environ.get("COCKPIT_UPDATE_EVERY", "600"))
 PR_SYNC_EVERY = int(os.environ.get("COCKPIT_PR_SYNC_EVERY", "120"))
+PR_TASKS_SEEN = 40  # dernières tâches de chaque projet examinées (le tableau de bord en affiche jusqu'à 30)
 PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
 ACTIVE = {"pending", "routing", "queued", "running", "waiting_approval"}
 KEY_HASH_FILE = CONFIG / "worker_key.sha256"  # versionné : seule l'empreinte est publique
@@ -273,9 +274,16 @@ class Worker:
                     found[e["url"]] = t.id
             for url in PR_URL.findall(t.result or ""):
                 found.setdefault(url, t.id)
-        for project in self.projects:
+        # L'orchestrateur suit aussi les pull requests des pods hors ligne (même token GitHub) ; un pod de projet, les siennes.
+        projects = list(self.projects)
+        if ORCHESTRATOR:
             try:
-                etat = await self.relay.projet_etat(project)
+                projects = [p["id"] for p in (await self.relay.projet_etat()).get("projects", [])] or projects
+            except Exception as e:
+                log.info("liste des projets : relais injoignable (%s)", e)
+        for project in projects:
+            try:
+                etat = await self.relay.projet_etat(project, limit=PR_TASKS_SEEN)
             except Exception as e:
                 log.info("pull requests de %s : relais injoignable (%s)", project, e)
                 continue
@@ -299,9 +307,17 @@ class Worker:
                 continue  # dépôt hors de portée du token de ce pod : on ne touche à rien
             if state == "open":
                 continue
+            task = self.store.tasks.get(task_id)
+            try:
+                if task or not ORCHESTRATOR:
+                    self.store.publish("message", {"task_id": task_id, "type": "pr_merged" if state == "merged" else "pr_closed",
+                                                   "url": url})
+                else:  # tâche d'un autre pod : seul le relais peut la mettre à jour (ce pod n'en est pas le propriétaire)
+                    await self.relay.pr_etat(task_id, url, state)
+            except Exception as e:
+                log.info("pull request %s non publiée : %s", url, e)
+                continue
             self._pr_done.add(url)
-            self.store.publish("message", {"task_id": task_id, "type": "pr_merged" if state == "merged" else "pr_closed",
-                                           "url": url})
 
     async def sync_prs(self) -> None:
         while True:

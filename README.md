@@ -131,6 +131,9 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
 - **« Toujours autoriser »** : troisième bouton de chaque validation ; il approuve et crée une règle ciblée (une
   commande comme « docker build … », un dossier, un outil) appliquée par tous les pods. ☰ → *Règles d'autorisation*
   pour les voir et les supprimer. Jamais pour un refus définitif, une commande masquée (`$(…)`) ni `.git`.
+- **Synchro des pull requests** : le worker interroge GitHub toutes les 2 min et fait sortir de « à valider » les PR fusionnées
+  ou fermées ailleurs. L'orchestrateur suit aussi les PR des pods hors ligne (même token) et *Fusionner* passe par lui quand le
+  pod du projet est hors ligne, au lieu d'attendre indéfiniment.
 - **Pull requests** : encadré sur la carte (titre, branches, *Voir sur GitHub*, *Fusionner*), section *Pull requests
   à valider* du tableau de bord, bouton *Voir la PR* dans la notification. *Fusionner* demande au pod du projet de
   fusionner la PR avec son token GitHub (refus clair si la CI, une revue ou un conflit l'empêche).
@@ -154,11 +157,17 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
   tâches par jour) fait enchaîner ces propositions à l'orchestrateur, une tâche à la fois, tant que la session reste sous
   le seuil d'usage (85 %) ; il reprend après chaque réinitialisation et se désarme après 3 erreurs de suite. Même
   politique que le reste : une validation sans réponse est refusée au bout de 15 min, jamais approuvée d'office.
-- **Mode hard** (☠, tableau de bord) : plus aucune validation n'est demandée, pour une durée choisie (1 h à 14 jours).
-  Tout ce qui demandait ton accord est approuvé (écriture hors du projet, push sur main, cluster, `sudo`…), chaque
-  action reste journalisée (`policy: hard`) et signalée sur la carte. Seuls les outils en `deny` de
-  `config/policy.yaml` restent bloqués ; les validations déjà en attente sont approuvées à l'activation. Avec le full
-  auto, le pod travaille alors sans que personne ne le surveille : à n'activer que sur un pod dont tu acceptes les risques.
+- **Mode hard** (☠, tableau de bord) : pleine autonomie, pour une durée choisie (1 h à 14 jours) :
+  - plus aucune validation (écriture hors du projet, push sur main, cluster, `sudo`…), chaque action reste journalisée
+    (`policy: hard`) ; les validations en attente sont approuvées à l'activation ;
+  - plus aucune question : Claude tranche seul (l'outil `poser_question` lui dit de décider), et s'il en a posé une quand même,
+    le relais lui répond automatiquement de choisir l'option la plus prudente et de continuer (4 fois au plus par conversation) ;
+  - le full auto est armé pour la même durée et mène **plusieurs projets de front** (jusqu'à 6, un projet à la fois, un pod
+    par projet), en enchaînant les propositions de l'état de mémoire ;
+  - **compte rendu** (tableau de bord, *📋 Compte rendu*) : par projet, ce qui a été fait (résultat, fichiers, commits, branche,
+    tests), les questions tranchées, le nombre de validations passées automatiquement et les opérations sensibles ; une
+    notification annonce la fin du mode, et le compte rendu reste consultable ensuite.
+  Seuls les outils en `deny` de `config/policy.yaml` restent bloqués. À n'activer que sur des pods dont tu acceptes les risques.
 - **Réinitialisation des tokens** : notification « 🔄 Tokens réinitialisés » quand la session de 5 h ou une limite
   hebdomadaire se renouvelle après avoir dépassé 80 % (`COCKPIT_RESET_NOTIFY_MIN`).
 - **Tes dépôts GitHub** : une demande qui parle d'un dépôt ou d'un code qui n'est pas encore un projet (« reprends

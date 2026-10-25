@@ -97,3 +97,17 @@ def test_tick_ne_lance_rien_si_desarme_ou_si_le_forfait_est_plein():
     u.update(limits(0.2, None), "api")
     tick()
     assert relay.calls == 1 and ap.waiting == ""
+
+
+def test_plusieurs_projets_de_front_jusqu_au_maximum():
+    """Le worker demande au relais une tâche par projet libre, jusqu'à max_parallel, puis s'arrête sur son refus."""
+    relay = FakeRelay([{"task_id": "a", "titre": "A"}, {"task_id": "b", "titre": "B"}, {"skipped": "2 tâche(s) automatique(s) déjà en cours (maximum 3)"}])
+    ap = Autopilot(relay, usage.Usage())
+    ap.config = {"enabled": True, "max_parallel": 3}
+    asyncio.run(ap.tick())
+    assert relay.calls == 3 and "déjà en cours" in ap.waiting
+    relay = FakeRelay([{"task_id": "a", "titre": "A"}] * 5)
+    ap = Autopilot(relay, usage.Usage())
+    ap.config = {"enabled": True, "max_parallel": 2}
+    asyncio.run(ap.tick())
+    assert relay.calls == 2  # jamais plus que le maximum demandé

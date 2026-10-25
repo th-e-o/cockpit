@@ -170,3 +170,32 @@ def test_mode_hard_aucune_validation_sauf_refus(tmp_path):
     assert asked == ["git push origin main"]  # plus aucune demande
     assert '"policy": "hard"' in (tmp_path / "data" / "audit.jsonl").read_text()
     assert call("rm -rf ~")["hookSpecificOutput"]["permissionDecision"] == "deny"  # refus absolu de la politique
+
+
+def test_mode_hard_aucune_question_a_l_utilisateur(tmp_path):
+    """Mode hard : l'agent ne pose plus de question (l'outil lui dit de trancher seul) et le prompt le lui interdit."""
+    from cockpit import agent as agent_mod
+
+    created, asked = {}, []
+    real = agent_mod.create_sdk_mcp_server
+    agent_mod.create_sdk_mcp_server = lambda name, tools: created.update({t.name: t.handler for t in tools}) or {}
+    hard = [False]
+    try:
+        agent_mod.cockpit_server(str(tmp_path), lambda s: None, on_question=asked.append, hard=lambda: hard[0])
+    finally:
+        agent_mod.create_sdk_mcp_server = real
+    ask = lambda: asyncio.run(created["poser_question"]({"question": "Quel format ?", "choix": ["CSV", "JSON"]}))
+    ask()
+    assert len(asked) == 1  # hors mode hard : la question part sur le téléphone
+    hard[0] = True
+    r = ask()
+    assert len(asked) == 1 and "Mode hard" in r["content"][0]["text"]  # plus de question : l'agent tranche
+
+    store = Store(tmp_path / "data")
+    runner = Runner(store, POLICY)
+    task = Task(id="t", instruction="x", conversation="c")
+    opts = lambda: runner._options(task, Project(id="p", name="P", cwd=str(tmp_path)), str(tmp_path), None, set())
+    assert "MODE HARD" not in opts().system_prompt["append"] and "poser_question" in opts().system_prompt["append"]
+    runner.hard = True
+    append = opts().system_prompt["append"]
+    assert "MODE HARD" in append and "AUCUNE question" in append and "premier message de cette conversation" not in append

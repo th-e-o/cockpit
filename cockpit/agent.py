@@ -109,6 +109,14 @@ répondu, fais le travail (ou transmets un cahier des charges complet, réponses
 simple, avance directement sans poser de question.
 """
 
+HARD_APPEND = """
+MODE HARD : l'utilisateur n'est pas là et personne ne répondra. Ne pose AUCUNE question (n'appelle pas poser_question,
+ne termine pas ta réponse par une question) et n'attends aucune confirmation. Quand une information te manque,
+décide toi-même de l'option la plus raisonnable (la plus prudente en cas de doute), note ce choix dans la rubrique
+« Choix » de ta réponse finale et avance. Mène le travail jusqu'au bout : ton compte rendu final (Fait, Choix, À faire)
+sera lu plus tard, il doit dire précisément ce qui a été fait.
+"""
+
 PROJECT_APPEND = """
 Tu travailles dans le pod du projet « {project} », piloté par le cockpit. Tu ne peux ni créer ni démarrer de pod :
 c'est l'orchestrateur qui le fait. Pour un nouveau projet, un nouveau pod, ou une demande qui concerne un autre
@@ -270,7 +278,8 @@ def detect_question(result: str) -> dict | None:
     return {"text": " ".join(found[-3:])[:600], "options": [], "detected": True} if found else None
 
 
-def cockpit_server(cwd: str, on_next, spawn=None, pub=None, upload=None, delegate=None, on_question=None, status=None):
+def cockpit_server(cwd: str, on_next, spawn=None, pub=None, upload=None, delegate=None, on_question=None, status=None,
+                   hard=None):
     """Outils propres au cockpit : prochaines étapes, dépôts et PR GitHub, captures d'écran, agents en parallèle."""
 
     @tool("proposer_suite",
@@ -379,6 +388,9 @@ def cockpit_server(cwd: str, on_next, spawn=None, pub=None, upload=None, delegat
             options = opts(args.get("choix"))
         if not text and not items:
             return _text("question vide", error=True)
+        if hard and hard():  # mode hard : personne ne répond, l'agent décide seul
+            return _text("Mode hard : personne ne peut répondre. Ne pose pas de question : choisis toi-même l'option la plus "
+                         "raisonnable, note ton choix dans la rubrique « Choix » de ta réponse finale et continue le travail.")
         if on_question:
             on_question({"text": text or "Quelques questions avant de commencer :", "options": [] if items else options,
                          **({"items": items} if items else {})})
@@ -575,12 +587,15 @@ class Runner:
         servers["cockpit"] = cockpit_server(cwd, lambda steps: setattr(task, "next_steps", steps), spawn,
                                             pub=lambda **kw: self.store.publish("message", {"task_id": task.id, **kw}),
                                             upload=upload, delegate=delegate,
-                                            on_question=lambda q: setattr(task, "question", q), status=self.project_status)
+                                            on_question=lambda q: setattr(task, "question", q), status=self.project_status,
+                                            hard=lambda: self.hard)
         if self.preview:
             append += PREVIEW_APPEND.format(**self.preview)
         if not self.services and delegate:
             append += PROJECT_APPEND.format(project=project.id)
-        if not task.context and not task.parent and not task.reply_to_task:  # première demande d'une conversation
+        if self.hard:
+            append += HARD_APPEND
+        elif not task.context and not task.parent and not task.reply_to_task:  # première demande d'une conversation
             append += FIRST_APPEND
         if task.worktree:
             append += WORKTREE_APPEND.format(cwd=cwd, branch=task.worktree["branch"])
@@ -732,7 +747,7 @@ class Runner:
                 final = {k: v for k, v in final.items() if k != "status"}
             elif final.get("status") == "done" and changes and changes.get("file_count"):
                 final |= await self._tests(task, project, cwd)
-            if final.get("status") == "done" and not task.question:
+            if final.get("status") == "done" and not task.question and not self.hard:
                 if q := detect_question(final.get("result", "")):
                     final["question"] = q
             # Statut final et modifications publiés ensemble : la notification de fin peut les résumer.

@@ -695,7 +695,7 @@ def test_memoire_propositions_et_full_auto(relay):
     assert wpoll(relay, "pod-fa", True)["autopilot"]["max_per_day"] == 5
     auto = worker_call(relay, "w_auto_tache", {}).json()
     assert auto["titre"] == "Idée"
-    assert worker_call(relay, "w_auto_tache", {}).json()["skipped"] == "une tâche automatique est en cours"
+    assert "déjà en cours" in worker_call(relay, "w_auto_tache", {}).json()["skipped"]
     assert last_status(p)[auto["task_id"]]["auto"] is True
     # Trois erreurs de suite désarment le mode
     for i in range(3):
@@ -725,3 +725,56 @@ def test_mode_hard(relay):
     assert wpoll(relay, "pod-hd", True)["hard"] is True and call(p, "etat").json()["hard"]["enabled"]
     assert call(p, "mode_hard", {"enabled": False}).json()["enabled"] is False
     assert wpoll(relay, "pod-hd", True)["hard"] is False
+
+
+def test_mode_hard_pleine_autonomie(relay):
+    """Mode hard : full auto armé sur plusieurs projets, questions de Claude tranchées automatiquement, compte rendu."""
+    p = paired_phone(relay)
+    for wid, proj in (("pod-h1", "h1"), ("pod-h2", "h2"), ("pod-h3", "h3")):
+        wpoll(relay, wid, wid == "pod-h1", [{"id": proj, "name": proj}], hello=True)
+    t = call(p, "tache", {"instruction": "travail initial", "project": "h1"}).json()
+    wpoll(relay, "pod-h1", True)
+    state = call(p, "mode_hard", {"enabled": True, "hours": 4, "max_parallel": 2}).json()
+    assert state["enabled"]
+    auto = call(p, "etat").json()["autopilot"]
+    assert auto["enabled"] and auto["max_parallel"] == 2 and auto["max_per_day"] == 40
+    # Deux projets de front, pas davantage ; un projet à la fois
+    for proj in ("h1", "h2", "h3"):
+        call(p, "proposition", {"action": "ajouter", "titre": f"Idée {proj}", "instruction": f"Avance sur {proj}.", "project": proj})
+        call(p, "proposition", {"action": "ajouter", "titre": f"Autre {proj}", "instruction": f"Autre chose sur {proj}.", "project": proj})
+    first = worker_call(relay, "w_auto_tache", {}).json()
+    second = worker_call(relay, "w_auto_tache", {}).json()
+    assert first["task_id"] and second["task_id"] and first["titre"] != second["titre"]
+    assert {first["titre"][-2:], second["titre"][-2:]} == {"h1", "h2"}  # deux projets différents
+    assert "déjà en cours" in worker_call(relay, "w_auto_tache", {}).json()["skipped"]
+    # Une question posée par Claude reçoit une réponse automatique dans la même conversation
+    worker_call(relay, "w_evenements", {"worker_id": "pod-h1", "events": [
+        {"kind": "task", "task_id": t["id"], "task": {"status": "done", "project": "h1", "result": "Quel format ?",
+                                                       "question": {"text": "Quel format ?", "options": ["CSV", "JSON"]}}}]})
+    reply = [x for x in wpoll(relay, "pod-h1", True)["tasks"] if "Mode hard" in x["instruction"]]
+    assert len(reply) == 1 and reply[0]["conversation"] == t["id"] and reply[0]["project"] == "h1"
+    # Compte rendu : projets, tâches et question tranchée
+    rapport = call(p, "compte_rendu").json()
+    assert rapport["enabled"] and rapport["totals"]["tasks"] >= 3 and rapport["totals"]["questions"] == 1
+    assert "h1" in [x["project"] for x in rapport["projects"]]
+    assert call(p, "mode_hard", {"enabled": False}).json()["enabled"] is False
+    assert any("Mode hard terminé" in a["titre"] for a in call(p, "resume").json()["alerts"])
+    assert call(p, "compte_rendu").json()["since"] > 0  # le compte rendu reste consultable après l'arrêt
+
+
+def test_pr_etat_et_fusion_par_l_orchestrateur(relay):
+    """N'importe quel pod peut publier la fusion ou la fermeture d'une PR (le propriétaire de la tâche peut être hors ligne)."""
+    p = paired_phone(relay)
+    url = "https://github.com/a/b/pull/7"
+    wpoll(relay, "orch-pr", True, [{"id": "orchpr", "name": "orch"}], hello=True)
+    wpoll(relay, "pod-off", False, [{"id": "offpr", "name": "off"}], hello=True)
+    t = call(p, "tache", {"instruction": "x", "project": "offpr"}).json()
+    wpoll(relay, "pod-off", False)
+    worker_call(relay, "w_evenements", {"worker_id": "pod-off", "events": [
+        {"kind": "message", "task_id": t["id"], "type": "pr", "url": url, "title": "PR"},
+        {"kind": "task", "task_id": t["id"], "task": {"status": "done", "project": "offpr", "result": f"PR : {url}"}}]})
+    # (le pod « off » n'est plus interrogé : il est considéré hors ligne après quelques secondes ; l'orchestrateur reste actif)
+    assert worker_call(relay, "w_pr_etat", {"task_id": t["id"], "url": url, "state": "merged"}).json() == {"ok": True, "deja": False}
+    assert worker_call(relay, "w_pr_etat", {"task_id": t["id"], "url": url, "state": "merged"}).json()["deja"] is True
+    assert worker_call(relay, "w_pr_etat", {"task_id": t["id"], "url": url, "state": "bizarre"}).status_code == 400
+    assert any(e.get("type") == "pr_merged" and e.get("url") == url for e in call(p, "etat").json()["events"])

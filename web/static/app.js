@@ -4,7 +4,7 @@ const $ = (s) => document.querySelector(s);
 // replyTo : tâche dont le prochain message est la suite (undefined tant que l'historique n'est pas chargé)
 const state = { projects: [], selected: null, tasks: new Map(), order: [], lastId: 0, workerOnline: false, replay: false, replyTo: undefined,
   workers: [], diffs: new Map(), view: 'chat', bilan: null, bilanAt: 0, bilanJours: 7, repos: null,
-  commands: {}, review: new Map(), model: '', variants: 1, trust: {}, memory: null, autopilot: null, hard: null };
+  commands: {}, review: new Map(), model: '', variants: 1, trust: {}, memory: null, autopilot: null, hard: null, report: null, reportAt: 0 };
 const MODELES = { rapide: '⚡ Rapide', standard: '● Standard', approfondi: '◆ Approfondi' };
 /** « claude-opus-5-5 » -> « Opus 5.5 » ; « claude-sonnet-4-5-20250929 » -> « Sonnet 4.5 ». */
 function modelName(id) {
@@ -1318,6 +1318,7 @@ function renderDash() {
   // Reconstruit seulement si le contenu change (survol, focus et clics préservés) ; les durées vivent dans tick().
   if (html !== state.dashHtml) { $('#dash').innerHTML = html; state.dashHtml = html; restoreQuestions($('#dash')); sizes($('#dash')); tick(); }
   loadBilan();
+  loadReport();
 }
 
 // ---------- état de mémoire (projets suivis, propositions) et mode full auto
@@ -1341,9 +1342,9 @@ function memoryHtml() {
   const hard = state.hard?.enabled
     ? `<div class="hint">☠ Mode hard actif jusqu'à ${esc(new Date(state.hard.until * 1000).toLocaleString('fr-FR', { weekday: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))} : plus aucune validation n'est demandée.</div>
        <button class="btn ghost" data-hard="off">Désactiver le mode hard</button>`
-    : `<div class="hint">Mode hard : Claude fait tout sans te demander, y compris écrire hors du projet, pousser sur main ou toucher au cluster. Seuls les refus absolus de la politique restent.</div>
+    : `<div class="hint">Mode hard : pleine autonomie. Claude ne demande plus rien (validations approuvées, questions tranchées par lui), mène plusieurs projets de front en enchaînant les propositions, et dresse un compte rendu de ce qui a été fait. Seuls les refus absolus de la politique restent.</div>
        <button class="btn ghost" data-hard="on">☠ Activer le mode hard</button>`;
-  return `<section class="sect"><div class="secthead"><h3>Mode hard</h3></div>${hard}</section>
+  return `<section class="sect"><div class="secthead"><h3>Mode hard</h3></div>${hard}</section>${reportHtml()}
     <section class="sect"><div class="secthead"><h3>Mémoire · ${m.projects.length} projet(s)</h3></div>
     <div class="follows">${projects || '<div class="emptyd">Les projets apparaissent ici après leur première tâche terminée.</div>'}</div></section>
     <section class="sect"><div class="secthead"><h3>Propositions · ${m.proposals.length}</h3><button type="button" class="btn ghost" data-prop="ajouter">＋ Ajouter</button></div>
@@ -1356,17 +1357,48 @@ async function autoToggle(on) {
   if (!days) return;
   const max = Number(prompt('Combien de tâches par jour au plus ?', '12'));
   if (!max) return;
-  await api('autopilote', { enabled: true, days, max_per_day: max });
+  const parallel = Number(prompt('Combien de projets mener de front au maximum ? (1 à 6)', '1'));
+  if (!parallel) return;
+  await api('autopilote', { enabled: true, days, max_per_day: max, max_parallel: parallel });
   poll();
 }
 
 async function hardToggle(on) {
-  if (!on) { await api('mode_hard', { enabled: false }); return poll(); }
-  const hours = Number(prompt('Mode hard : plus aucune validation. Pendant combien d\'heures ? (1 à 336)', '8'));
+  if (!on) { await api('mode_hard', { enabled: false }); state.reportAt = 0; return poll(); }
+  const hours = Number(prompt('Mode hard : pleine autonomie. Pendant combien d\'heures ? (1 à 336)', '8'));
   if (!hours) return;
-  if (!confirm(`Activer le mode hard pendant ${hours} h ?\nClaude pourra tout faire sans te demander : écrire n'importe où dans le pod, pousser sur main, forcer un push, modifier le cluster, utiliser sudo. Les validations en attente sont approuvées. Seuls les outils interdits (deny) restent bloqués.`)) return;
-  await api('mode_hard', { enabled: true, hours });
+  const parallel = Number(prompt('Combien de projets mener de front au maximum ? (1 à 6)', '3'));
+  if (!parallel) return;
+  if (!confirm(`Activer le mode hard pendant ${hours} h, sur ${parallel} projet(s) à la fois ?\nClaude ne te demandera plus rien : validations approuvées (écrire n'importe où dans le pod, pousser sur main, cluster, sudo), questions tranchées par lui, propositions enchaînées. Un compte rendu sera dressé. Seuls les outils interdits (deny) restent bloqués.`)) return;
+  await api('mode_hard', { enabled: true, hours, max_parallel: parallel });
+  state.reportAt = 0;
   poll();
+}
+
+/** Compte rendu de ce qui a été fait depuis l'armement du mode hard (rafraîchi toutes les 20 s tant que le tableau de bord est visible). */
+async function loadReport() {
+  if (state.reportLoading || !state.hard?.since || !dashVisible() || Date.now() - state.reportAt < 20000) return;
+  state.reportLoading = true;
+  try { state.report = await api('compte_rendu'); state.reportAt = Date.now(); } catch { /* nouvel essai au prochain rendu */ }
+  state.reportLoading = false;
+  renderDash();
+}
+
+function reportHtml() {
+  const r = state.report;
+  if (!state.hard?.since || !r?.since) return '';
+  const t = r.totals || {};
+  const icon = { done: '✅', error: '❌', cancelled: '⏹' };
+  const projects = r.projects.map((p) => `<article class="follow ${p.tasks.some((x) => x.status === 'error') ? 'ask' : ''}"><div class="fhead"><b>${esc(state.projects.find((x) => x.id === p.project)?.name || p.project)}</b>
+      <span class="muted">${p.tasks.length} tâche(s)</span></div>${p.tasks.map((x) => `<div class="hint"><button class="forigin" data-jump="${esc(x.id)}">${icon[x.status] || '⏳'} ${esc(x.instruction)}${x.answered ? ' · 🤖 question tranchée' : ''}</button>
+      ${x.result ? `<div>${esc(x.result.replace(/\*\*|`/g, '').slice(0, 260))}</div>` : ''}
+      ${x.files || x.commits.length ? `<div class="muted">${x.files} fichier(s) +${x.added} −${x.removed}${x.commits.length ? ` · ${x.commits.length} commit(s)` : ''}${x.branch ? ` · ${esc(x.branch)}` : ''}${x.tests ? (x.tests.ok ? ' · tests ✓' : ' · tests ✗') : ''}</div>` : ''}</div>`).join('')}</article>`).join('');
+  const sensitive = r.sensitive?.length ? `<div class="hint">⚠ Opérations sensibles passées sans validation : ${r.sensitive.map((x) => `<code>${esc(x.what)}</code>`).join(' · ')}</div>` : '';
+  return `<section class="sect"><div class="secthead"><h3>📋 Compte rendu · ${r.enabled ? 'en cours' : 'terminé'}</h3></div>
+    <div class="hint">Depuis ${esc(new Date(r.since * 1000).toLocaleString('fr-FR', { weekday: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))} :
+      ${t.tasks || 0} tâche(s) · ✅ ${t.done || 0}${t.error ? ` · ❌ ${t.error}` : ''}${t.active ? ` · ⏳ ${t.active}` : ''} · ${t.files || 0} fichier(s) +${t.added || 0} −${t.removed || 0} · ${t.commits || 0} commit(s)
+      · ${t.approved || 0} validation(s) passée(s) automatiquement${t.questions ? ` · ${t.questions} question(s) tranchée(s) par Claude` : ''}</div>
+    ${sensitive}<div class="follows">${projects || '<div class="emptyd">Aucune tâche pour l\'instant.</div>'}</div></section>`;
 }
 
 async function propositionAction(b) {

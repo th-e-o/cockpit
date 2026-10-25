@@ -98,14 +98,18 @@ class Autopilot:
         if reason:
             self.note(f"en attente : {reason}")
             return
-        r = await self.relay.auto_tache()
-        if r.get("task_id"):
-            self.waiting = ""
-            log.info("full auto : tâche %s lancée — %s", r["task_id"], r.get("titre"))
-        elif r.get("skipped") == "aucune proposition":
-            await self.generate()
-        else:
-            self.note(f"en attente : {r.get('skipped')}")
+        # Plusieurs projets de front : tant que le relais accepte une tâche de plus (un projet à la fois, au plus max_parallel)
+        for _ in range(max(1, int(self.config.get("max_parallel") or 1))):
+            r = await self.relay.auto_tache()
+            if r.get("task_id"):
+                self.waiting = ""
+                log.info("full auto : tâche %s lancée — %s", r["task_id"], r.get("titre"))
+            elif r.get("skipped") == "aucune proposition":
+                await self.generate()
+                return
+            else:
+                self.note(f"en attente : {r.get('skipped')}")
+                return
 
     def note(self, text: str) -> None:
         if text != self.waiting:
