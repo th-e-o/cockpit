@@ -1,10 +1,12 @@
 """Pods de projet : demandes hors projet confiées à l'orchestrateur, mise à jour automatique du cockpit."""
 
 import asyncio
+import sqlite3
 import subprocess
 from pathlib import Path
 
 import pytest
+from test_relay import PHP, call, last_status, paired_phone, relay, worker_call, wpoll  # noqa: F401 (fixture)
 
 from cockpit.agent import Runner
 from cockpit.policy import Policy
@@ -129,3 +131,25 @@ def test_outils_interdits_et_etapes_completes():
                               {"titre": "Hébergement", "instruction": "Voici l'hébergement : à compléter"},
                               {"titre": "Tests", "instruction": "Lance pytest"}])
     assert steps == [{"titre": "Tests", "instruction": "Lance pytest"}]
+
+
+@pytest.mark.skipif(not PHP, reason="PHP introuvable (définir COCKPIT_PHP)")
+def test_attente_projet_expire(relay):  # noqa: F811 (fixture importée)
+    """Une tâche confiée à un pod qui ne se connecte pas passe en erreur au bout de 30 min, avec un message clair."""
+    p = paired_phone(relay)
+    wpoll(relay, "orch-ex", True, [{"id": "ex-onyxia", "name": "Onyxia"}], hello=True)
+    parent = call(p, "tache", {"instruction": "lance un pod ex-bot", "project": "ex-onyxia"}).json()
+    body = {"parent": parent["id"], "worker_id": "orch-ex", "defer": True}
+    ancienne, recente = worker_call(relay, "w_taches", {**body, "tasks": [
+        {"instruction": "Code le bot", "project": "ex-bot"},
+        {"instruction": "Code l'autre bot", "project": "ex-autre"}]}).json()["ids"]
+    db = Path(relay["docroot"]) / "cockpit" / "data" / "cockpit.db"
+    with sqlite3.connect(db) as c:
+        c.execute("UPDATE taches SET cree_le = cree_le - 1801 WHERE id = ?", (ancienne,))
+    etats = last_status(p)
+    assert etats[ancienne]["status"] == "error" and etats[ancienne]["waiting_project"] is False
+    assert "ne s'est pas connecté au bout de 30 min" in etats[ancienne]["result"]
+    assert etats[recente]["status"] == "pending" and etats[recente]["waiting_project"] is True
+    # Le pod finit par se connecter : seule la tâche encore en attente lui est livrée
+    premier = wpoll(relay, "pod-ex", False, [{"id": "ex-bot", "name": "ex-bot"}, {"id": "ex-autre", "name": "ex-autre"}], hello=True)
+    assert [t["id"] for t in premier["tasks"]] == [recente]

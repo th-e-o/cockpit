@@ -96,7 +96,8 @@ Comptez 1 à 3 minutes entre le lancement et la connexion du worker.
      prochain poll ;
    - **`"orchestrateur"`** : tâche sans projet ni worker, routée par l'orchestrateur (étape 1) ;
    - **projet inconnu au nom valide** (pod en cours de démarrage) : `attente_projet = 1`, sans worker. Le
-     téléphone affiche « ⏳ En attente du pod ». La tâche est rattachée au premier worker qui déclare ce projet.
+     téléphone affiche « ⏳ En attente du pod ». La tâche est rattachée au premier worker qui déclare ce projet,
+     ou passe en `error` si aucun ne l'a déclaré au bout de 30 min (`ATTENTE_PROJET_MAX`).
 3. L'agent n'attend pas : il termine sa réponse ; l'utilisateur suit la tâche fille dans le cockpit, et un
    agent peut la suivre avec `etat_projet`.
 
@@ -141,7 +142,8 @@ nouveau pod, autre dépôt) part à l'orchestrateur avec `confier_au_projet(proj
 ### États d'une tâche (`store.Task.status`)
 
 `pending` → (`routing` → `needs_project`) → `queued` → `running` ⇄ `waiting_approval` → `done` | `error` | `cancelled`.
-Le drapeau `waiting_project` (colonne `attente_projet`) s'ajoute à `pending` tant que le pod cible n'est pas connecté.
+Le drapeau `waiting_project` (colonne `attente_projet`) s'ajoute à `pending` tant que le pod cible n'est pas connecté,
+pendant 30 min au plus : passé ce délai, la tâche passe en `error`.
 
 ## Limites connues
 
@@ -154,10 +156,12 @@ Le drapeau `waiting_project` (colonne `attente_projet`) s'ajoute à `pending` ta
 - **Pas de lancement de pod hors de l'orchestrateur.** Seul le pod admin peut installer des releases helm ;
   si l'orchestrateur est hors ligne, *＋ Nouveau pod* est refusé (409) et les tâches *Auto* ou confiées à
   `"orchestrateur"` attendent qu'il revienne.
-- **Une tâche en `attente_projet` n'expire pas.** Si le pod ne démarre jamais (quota atteint, échec helm,
-  script d'init en erreur) ou si l'identifiant confié ne correspond pas au nom du service, la tâche reste
-  « En attente du pod » jusqu'à son annulation manuelle. Le nom passé à `confier_au_projet` doit être
-  exactement celui de `lancer_service`.
+- **Une tâche en `attente_projet` expire au bout de 30 min.** Si le pod ne se connecte pas à temps (quota
+  atteint, échec helm, script d'init en erreur, démarrage très lent) ou si l'identifiant confié ne correspond pas
+  au nom du service, la tâche passe en `error` (« Expirée : le pod du projet ne s'est pas connecté au bout de
+  30 min… ») et une notification est envoyée ; il faut la relancer une fois le pod en ligne. L'expiration est
+  vérifiée à chaque poll de worker et à chaque rafraîchissement du téléphone (constante `ATTENTE_PROJET_MAX`
+  de `web/api.php`). Le nom passé à `confier_au_projet` doit être exactement celui de `lancer_service`.
 - **Pas d'accusé de réception entre agents.** La délégation est « tire et oublie » : l'agent d'origine ne reçoit
   ni le résultat ni les questions de l'agent cible. Le suivi passe par le téléphone ou par `etat_projet`, à la
   demande.
