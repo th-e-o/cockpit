@@ -4,7 +4,7 @@ const $ = (s) => document.querySelector(s);
 // replyTo : tâche dont le prochain message est la suite (undefined tant que l'historique n'est pas chargé)
 const state = { projects: [], selected: null, tasks: new Map(), order: [], lastId: 0, workerOnline: false, replay: false, replyTo: undefined,
   workers: [], diffs: new Map(), view: 'chat', bilan: null, bilanAt: 0, bilanJours: 7, repos: null,
-  commands: {}, review: new Map(), model: '', variants: 1, trust: {}, memory: null, autopilot: null, hard: null, week: null, report: null, reportAt: 0 };
+  commands: {}, review: new Map(), model: '', variants: 1, trust: {}, memory: null, autopilot: null, hard: null, week: null, deleted: {}, report: null, reportAt: 0 };
 const MODELES = { rapide: '⚡ Rapide', standard: '● Standard', approfondi: '◆ Approfondi' };
 /** « claude-opus-5-5 » -> « Opus 5.5 » ; « claude-sonnet-4-5-20250929 » -> « Sonnet 4.5 ». */
 function modelName(id) {
@@ -264,6 +264,24 @@ async function openRules() {
     Les refus définitifs et les commandes masquées (\$(…)) restent toujours bloqués.</p>${rules.map((r) => `<div class="dev"><div>${esc(r.label)}
     <small>${r.example ? `ex. ${esc(r.example.slice(0, 80))} · ` : ''}créée ${ago(r.created)}</small></div>
     <button class="btn ghost" data-del-rule="${r.id}">Supprimer</button></div>`).join('') || '<p class="hint">Aucune règle pour l\'instant.</p>'}`);
+}
+
+/** Gérer les projets : retirer un projet du cockpit (le pod, le dépôt et le service Onyxia ne sont pas touchés), ou le restaurer. */
+async function openProjects() {
+  const count = new Map();
+  for (const e of state.tasks.values()) count.set(e.task.project, (count.get(e.task.project) || 0) + 1);
+  const hosted = (id) => state.workers.some((w) => w.orchestrator && (w.projects || []).includes(id));
+  const rows = state.projects.map((p) => `<div class="dev"><div>${esc(p.name || p.id)}
+      <small>${p.online ? '● pod en ligne' : '○ pod hors ligne'} · ${plural(count.get(p.id) || 0, 'tâche')}${p.worker_name ? ` · ${esc(p.worker_name)}` : ''}</small></div>
+      ${hosted(p.id) ? '<small title="Hébergé par l\'orchestrateur : à retirer de config/projects.yaml">🔒</small>'
+        : `<button class="btn ghost" data-del-project="${esc(p.id)}">Supprimer</button>`}</div>`).join('');
+  const gone = Object.entries(state.deleted || {}).map(([id, d]) => `<div class="dev"><div>${esc(d.name || id)} <small>retiré ${ago(d.at)}</small></div>
+      <button class="btn ghost" data-restore-project="${esc(id)}">Restaurer</button></div>`).join('');
+  showList('Projets', `<p class="hint">Supprimer retire le projet du cockpit : liste, mémoire, propositions et périmètres du full auto / mode hard.
+    Le pod, le dépôt git et le service Onyxia ne sont pas touchés (le pod continue de tourner) ; un projet retiré peut être restauré.
+    Impossible tant qu'une tâche tourne dessus.</p>
+    <label class="check"><input type="checkbox" id="projHistory"> Supprimer aussi son historique (tâches, événements) — définitif</label>
+    ${rows || '<p class="hint">Aucun projet.</p>'}${gone ? `<h3>Retirés</h3>${gone}` : ''}`);
 }
 
 function approvalHtml(a) {
@@ -1847,6 +1865,7 @@ async function poll() {
     state.autopilot = s.autopilot || null;
     state.hard = s.hard || null;
     state.week = s.week || null;
+    state.deleted = s.deleted_projects || {};
     renderUsageBar();
     renderPip();
     updateTrust();
@@ -1965,6 +1984,28 @@ async function onClick(ev) {
       await api('regle_ajouter', { tool: r.tool, pattern: r.pattern, label: r.label, example: r.example });
       await api('decider', { approval_id: a.id, decision: 'approve' });
       poll();
+    } else if (b.id === 'mProjects') {
+      await openProjects();
+    } else if (b.dataset.delProject) {
+      const id = b.dataset.delProject;
+      const name = state.projects.find((p) => p.id === id)?.name || id;
+      const history = $('#projHistory')?.checked;
+      if (!confirm(`Retirer « ${name} » du cockpit ?\nLe pod, le dépôt git et le service Onyxia ne sont pas touchés ; le projet disparaît de la liste, de la mémoire et des propositions (restaurable).${history ? '\n\nSon HISTORIQUE (tâches, événements) sera supprimé définitivement.' : ''}`)) return;
+      try {
+        await api('projet_supprimer', { project: id, history });
+        if (history) {  // le fil et le tableau de bord n'affichent plus ses tâches
+          for (const [tid, e] of [...state.tasks]) if (e.task.project === id) { state.tasks.delete(tid); document.getElementById(`t-${tid}`)?.remove(); }
+          state.order = state.order.filter((tid) => state.tasks.has(tid));
+        }
+        if (state.selected === id) state.selected = null;
+        await poll();
+        renderProjects();
+        updateGroups();
+      } catch (e) { alert(e.message); }
+      await openProjects();
+    } else if (b.dataset.restoreProject) {
+      try { await api('projet_restaurer', { project: b.dataset.restoreProject }); await poll(); renderProjects(); } catch (e) { alert(e.message); }
+      await openProjects();
     } else if (b.id === 'mRules') {
       await openRules();
     } else if (b.dataset.delRule) {

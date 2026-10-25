@@ -352,12 +352,19 @@ function worker_en_ligne(): bool {
     return (bool)q('SELECT 1 FROM workers WHERE vu_le > ?', [time() - WORKER_EN_LIGNE])->fetchColumn();
 }
 
-/** Projets de tous les workers connus, avec leur worker et leur statut (en ligne ou non). */
+/** Projets retirés du cockpit depuis le téléphone : id => {name, at}. Leur pod continue de les annoncer, ils restent masqués. */
+function projets_supprimes(): array {
+    return json_decode(reglage('projets_supprimes') ?? '', true) ?: [];
+}
+
+/** Projets de tous les workers connus, avec leur worker et leur statut (en ligne ou non), sans ceux retirés du cockpit. */
 function projets(): array {
     $out = [];
+    $retires = projets_supprimes();
     foreach (q('SELECT id, nom, projets, vu_le FROM workers ORDER BY vu_le DESC')->fetchAll() as $w) {
         $enLigne = time() - (int)$w['vu_le'] < WORKER_EN_LIGNE;
         foreach (json_decode($w['projets'], true) ?: [] as $p) {
+            if (isset($retires[$p['id']])) continue;
             if (isset($out[$p['id']]) && !$enLigne) continue; // un worker en ligne l'emporte
             $out[$p['id']] = $p + ['worker' => $w['id'], 'worker_name' => $w['nom'], 'online' => $enLigne];
         }
@@ -531,7 +538,7 @@ function memoire_proposer(array &$m, ?string $projet, array $items, string $sour
 /** Tâche terminée : le projet est mis à jour dans l'état de mémoire et ses prochaines étapes deviennent des propositions. */
 function memoire_tache_terminee(string $id): void {
     $t = q('SELECT * FROM taches WHERE id = ?', [$id])->fetch();
-    if (!$t || !$t['projet']) return;
+    if (!$t || !$t['projet'] || isset(projets_supprimes()[$t['projet']])) return;
     $x = json_decode($t['extra'] ?? '', true) ?: [];
     $m = memoire_lire();
     $nom = $t['projet'];
@@ -871,6 +878,7 @@ switch ($route) {
             'autopilot' => autopilote_lire(),
             'hard' => hard_lire(),
             'week' => estimation_semaine(),
+            'deleted_projects' => (object)projets_supprimes(),
         ]);
 
     case 'diff': // diffs par fichier des modifications d'une tâche
@@ -1671,6 +1679,58 @@ switch ($route) {
         exiger_session();
         $portee = array_values(array_filter(array_map('trim', explode(',', (string)($_GET['projects'] ?? '')))));
         repondre(hard_apercu($portee));
+
+    case 'projet_supprimer': // retire un projet du cockpit (le pod, le dépôt et le service Onyxia ne sont pas touchés)
+        exiger_session();
+        $id = (string)($in['project'] ?? '');
+        $info = current(array_filter(projets(), fn($p) => $p['id'] === $id)) ?: erreur('projet inconnu', 404);
+        if (q('SELECT 1 FROM workers WHERE id = ? AND orchestrateur = 1', [$info['worker']])->fetchColumn())
+            erreur('projet hébergé par l\'orchestrateur : retire-le de config/projects.yaml', 409);
+        $actives = (int)q("SELECT COUNT(*) FROM taches WHERE projet = ? AND statut IN ('pending','routing','queued','running','waiting_approval')", [$id])->fetchColumn();
+        if ($actives) erreur("$actives tâche(s) en cours sur ce projet : annule-les d'abord", 409);
+        debut();
+        $retires = projets_supprimes();
+        $retires[$id] = ['name' => $info['name'] ?? $id, 'at' => time()];
+        reglage('projets_supprimes', json_encode($retires, JSON_UNESCAPED_UNICODE));
+        // État de mémoire : le projet et ses propositions disparaissent ; sa mémoire (CLAUDE.md publié) et ses commandes rapides aussi
+        $m = memoire_lire();
+        $m['projects'] = array_values(array_filter($m['projects'], fn($p) => $p['id'] !== $id));
+        $m['proposals'] = array_values(array_filter($m['proposals'], fn($p) => $p['project'] !== $id));
+        memoire_ecrire($m);
+        q('DELETE FROM reglages WHERE cle IN (?, ?)', ["memoire:$id", "memoire_edit:$id"]);
+        $cmd = json_decode(reglage('commandes') ?? 'null', true);
+        if (is_array($cmd) && isset($cmd[$id])) { unset($cmd[$id]); reglage('commandes', json_encode($cmd, JSON_UNESCAPED_UNICODE)); }
+        // Périmètres du full auto et du mode hard : un périmètre réduit à ce seul projet ne devient pas « tous les projets » : le mode est désarmé
+        $h = hard_lire();
+        if (in_array($id, $h['projects'], true)) {
+            $h['projects'] = array_values(array_diff($h['projects'], [$id]));
+            if (!$h['projects']) $h['enabled'] = false;
+            reglage('mode_hard', json_encode($h));
+        }
+        $a = autopilote_lire();
+        if (in_array($id, $a['projects'], true)) {
+            $a['projects'] = array_values(array_diff($a['projects'], [$id]));
+            if (!$a['projects']) { $a['enabled'] = false; $a['stopped'] = 'projet retiré du cockpit'; }
+            autopilote_ecrire($a);
+        }
+        $histo = !empty($in['history']);
+        if ($histo) {  // historique : tâches, événements et validations du projet
+            q('DELETE FROM evenements WHERE tache_id IN (SELECT id FROM taches WHERE projet = ?)', [$id]);
+            q('DELETE FROM validations WHERE tache_id IN (SELECT id FROM taches WHERE projet = ?)', [$id]);
+            q('DELETE FROM taches WHERE projet = ?', [$id]);
+        }
+        q('INSERT INTO audit(donnees, ts) VALUES(?, ?)', [json_encode(['ts' => date('Y-m-d\TH:i:s'), 'event' => 'projet_supprime', 'project' => $id, 'history' => $histo]), time()]);
+        valider();
+        repondre(['ok' => true, 'history' => $histo]);
+
+    case 'projet_restaurer': // le projet réapparaît (son pod l'annonce toujours)
+        exiger_session();
+        $id = (string)($in['project'] ?? '');
+        $retires = projets_supprimes();
+        if (!isset($retires[$id])) erreur('projet non retiré', 404);
+        unset($retires[$id]);
+        reglage('projets_supprimes', json_encode($retires ?: new stdClass(), JSON_UNESCAPED_UNICODE));
+        repondre(['ok' => true]);
 
     case 'w_reveil': // full auto : projets du périmètre dont le pod est hors ligne alors qu'il y a du travail pour eux
         exiger_worker();

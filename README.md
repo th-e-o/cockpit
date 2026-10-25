@@ -157,6 +157,12 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
   tâches par jour) fait enchaîner ces propositions à l'orchestrateur, une tâche à la fois, tant que la session reste sous
   le seuil d'usage (85 %) ; il reprend après chaque réinitialisation et se désarme après 3 erreurs de suite. Même
   politique que le reste : une validation sans réponse est refusée au bout de 15 min, jamais approuvée d'office.
+- **Gérer les projets** (☰ → *🗂 Gérer les projets*) : *Supprimer* retire un projet du cockpit : liste, état de mémoire, propositions,
+  mémoire (CLAUDE.md publié) et commandes rapides ; un périmètre du full auto ou du mode hard réduit à ce seul projet est désarmé.
+  Le pod, le dépôt git et le service Onyxia **ne sont pas touchés** (le pod continue d'annoncer le projet, qui reste masqué).
+  Refusé tant qu'une tâche tourne dessus, et pour les projets de l'orchestrateur (à retirer de `config/projects.yaml`). La case
+  « Supprimer aussi son historique » efface en plus ses tâches et événements (définitif) ; sinon l'historique reste. Les projets
+  retirés sont listés en bas, avec *Restaurer*. Arrêter le service Onyxia lui-même n'est pas proposé ici (le stockage du pod serait détruit).
 - **Fil par projet** : le chat est regroupé en menus déroulants, un par projet (le plus récemment actif en bas), avec le nombre
   de tâches, celles en cours (⚙) et les validations en attente (⚠, le menu s'ouvre alors tout seul). Ouverts au départ : ceux qui
   travaillent et le plus récent ; ton choix est mémorisé, *Tout replier / Tout déplier* en haut du fil. Suivre une conversation ou

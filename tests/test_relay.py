@@ -891,3 +891,44 @@ def test_reveil_des_pods_hors_ligne_avec_du_travail(relay_neuf):
     call(p, "autopilote", {"enabled": True, "hours": 2, "projects": ["rv2"]})  # périmètre : rv1 hors périmètre
     assert [x["id"] for x in worker_call(relay_neuf, "w_reveil", {}).json()["projects"]] == ["rv2"]
     assert t["id"]
+
+
+def test_supprimer_et_restaurer_un_projet(relay_neuf):
+    """Retirer un projet du cockpit : il disparaît partout (liste, mémoire, propositions, périmètres) et reste masqué, sauf demande."""
+    p = paired_phone(relay_neuf)
+    wpoll(relay_neuf, "orch-sp", True, [{"id": "orchsp", "name": "Orchestrateur"}], hello=True)
+    wpoll(relay_neuf, "pod-sp", False, [{"id": "sp1", "name": "Un"}, {"id": "sp2", "name": "Deux"}], hello=True)
+    t = call(p, "tache", {"instruction": "travail", "project": "sp1"}).json()
+    got = wpoll(relay_neuf, "pod-sp", False)
+    assert [x["id"] for x in got["tasks"]] == [t["id"]]
+    # Tâche en cours : refus ; projet de l'orchestrateur : refus ; inconnu : 404
+    assert call(p, "projet_supprimer", {"project": "sp1"}).status_code == 409
+    assert call(p, "projet_supprimer", {"project": "orchsp"}).status_code == 409
+    assert call(p, "projet_supprimer", {"project": "nexiste-pas"}).status_code == 404
+    worker_call(relay_neuf, "w_evenements", {"worker_id": "pod-sp", "events": [
+        {"kind": "task", "task_id": t["id"], "task": {"status": "done", "project": "sp1", "result": "Fait.",
+                                                      "next_steps": [{"titre": "Suite sp1", "instruction": "Continue."}]}}]})
+    call(p, "proposition", {"action": "ajouter", "titre": "Idée sp2", "instruction": "Avance.", "project": "sp2"})
+    call(p, "autopilote", {"enabled": True, "hours": 2, "projects": ["sp1"]})
+    etat = call(p, "etat").json()
+    assert {"sp1", "sp2"} <= {x["id"] for x in etat["projects"]} and "sp1" in [x["id"] for x in etat["memory"]["projects"]]
+    # Suppression sans l'historique
+    assert call(p, "projet_supprimer", {"project": "sp1"}).json() == {"ok": True, "history": False}
+    etat = call(p, "etat").json()
+    assert "sp1" not in [x["id"] for x in etat["projects"]] and "sp2" in [x["id"] for x in etat["projects"]]
+    assert "sp1" not in [x["id"] for x in etat["memory"]["projects"]]
+    assert [x["titre"] for x in etat["memory"]["proposals"]] == ["Idée sp2"]  # la proposition de sp1 est partie
+    assert etat["deleted_projects"]["sp1"]["name"] == "Un"
+    assert etat["autopilot"]["enabled"] is False  # son périmètre était sp1 seul : désarmé, pas « tous les projets »
+    assert t["id"] in {e["task_id"] for e in etat["events"] if e["kind"] == "task"}  # l'historique est conservé
+    assert call(p, "tache", {"instruction": "encore", "project": "sp1"}).status_code == 400  # plus routable
+    wpoll(relay_neuf, "pod-sp", False, [{"id": "sp1", "name": "Un"}, {"id": "sp2", "name": "Deux"}])  # le pod l'annonce toujours
+    assert "sp1" not in [x["id"] for x in call(p, "etat").json()["projects"]]
+    # Restauration
+    assert call(p, "projet_restaurer", {"project": "sp1"}).json()["ok"]
+    assert "sp1" in [x["id"] for x in call(p, "etat").json()["projects"]]
+    assert call(p, "projet_restaurer", {"project": "sp1"}).status_code == 404
+    # Suppression avec l'historique
+    assert call(p, "projet_supprimer", {"project": "sp1", "history": True}).json()["history"] is True
+    etat = call(p, "etat", since=0).json()
+    assert t["id"] not in {e["task_id"] for e in etat["events"]}
