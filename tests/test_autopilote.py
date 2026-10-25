@@ -150,3 +150,21 @@ def test_reveil_ne_bloque_pas_les_lancements():
     ap.config = {"enabled": True, "max_parallel": 1}
     asyncio.run(ap.tick())
     assert relay.calls == 1
+
+
+def test_reveil_sans_autonomie_seulement_pour_les_taches_en_attente():
+    woken = []
+
+    async def wake(projet):
+        woken.append(projet)
+        return "relancé"
+
+    relay = FakeRelay([], offline=[{"id": "a", "waiting": 2, "proposals": 0}, {"id": "b", "waiting": 0, "proposals": 3}])
+    ap = Autopilot(relay, usage.Usage(), wake=wake)
+    ap.config = {}  # autonomie désarmée
+    asyncio.run(ap.tick())
+    assert woken == ["a"]  # b n'a que des propositions : pas de réveil sans autonomie
+    ap.config = {"enabled": True}
+    relay.answers = [{"skipped": "désarmé"}]
+    asyncio.run(ap.tick())
+    assert woken == ["a", "b"]  # armée : les propositions comptent aussi (a est dans son délai de 10 min)

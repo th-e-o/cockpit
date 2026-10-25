@@ -884,7 +884,9 @@ def test_reveil_des_pods_hors_ligne_avec_du_travail(relay_neuf):
     db.execute("UPDATE workers SET vu_le = 0 WHERE id LIKE 'pod-rv%'")
     db.commit()
     db.close()
-    assert worker_call(relay_neuf, "w_reveil", {}).json() == {"projects": []}  # full auto désarmé : rien à réveiller
+    # Autonomie désarmée : seuls les pods qui ont des tâches en attente sont à réveiller (rv2 n'a qu'une proposition)
+    got = {x["id"]: x for x in worker_call(relay_neuf, "w_reveil", {}).json()["projects"]}
+    assert set(got) == {"rv1"} and got["rv1"]["waiting"] == 1
     call(p, "autopilote", {"enabled": True, "hours": 2})
     got = {x["id"]: x for x in worker_call(relay_neuf, "w_reveil", {}).json()["projects"]}
     assert set(got) == {"rv1", "rv2"} and got["rv1"]["waiting"] == 1 and got["rv2"]["proposals"] == 1
@@ -932,3 +934,50 @@ def test_supprimer_et_restaurer_un_projet(relay_neuf):
     assert call(p, "projet_supprimer", {"project": "sp1", "history": True}).json()["history"] is True
     etat = call(p, "etat", since=0).json()
     assert t["id"] not in {e["task_id"] for e in etat["events"]}
+
+
+def test_ecoute_longue_sans_verrou_d_ecriture(relay_neuf):
+    """La boucle d'écoute lit sans verrou, livre un travail arrivé pendant l'attente et n'écrit « vu_le » qu'à intervalles espacés."""
+    import sqlite3
+    import threading
+
+    p = paired_phone(relay_neuf)
+    wpoll(relay_neuf, "pod-ll", False, [{"id": "ll", "name": "ll"}], hello=True)
+    base = Path(relay_neuf["docroot"]) / "cockpit" / "data"
+    vu = lambda: sqlite3.connect(base / "cockpit.db").execute("SELECT vu_le FROM workers WHERE id = 'pod-ll'").fetchone()[0]  # noqa: E731
+    avant = vu()
+    got = {}
+
+    def ecoute():
+        got["rep"] = worker_call(relay_neuf, "w_poll", {"worker_id": "pod-ll", "instance": "inst-pod-ll", "wait": 6, "orchestrateur": False}).json()
+        got["fin"] = time.time()
+
+    t0 = time.time()
+    th = threading.Thread(target=ecoute)
+    th.start()
+    time.sleep(1.2)
+    tache = call(p, "tache", {"instruction": "arrivée pendant l'attente", "project": "ll"}).json()
+    th.join(10)
+    assert [x["id"] for x in got["rep"]["tasks"]] == [tache["id"]]
+    assert got["fin"] - t0 < 4  # livrée dans la seconde qui suit, sans attendre la fin du délai
+    assert vu() >= avant
+    # Un « superseded » se détecte aussi sans verrou
+    assert worker_call(relay_neuf, "w_poll", {"worker_id": "pod-ll", "instance": "autre", "wait": 0, "orchestrateur": False}).json() == {"superseded": True}
+
+
+def test_sauvegarde_quotidienne_de_la_base(relay_neuf):
+    """Une sauvegarde cohérente par jour (VACUUM INTO), lisible et saine ; seules les 3 dernières sont gardées."""
+    import sqlite3
+
+    p = paired_phone(relay_neuf)
+    base = Path(relay_neuf["docroot"]) / "cockpit" / "data"
+    # Anciennes sauvegardes factices : seules les plus récentes doivent rester
+    for jour in ("20200101", "20200102", "20200103"):
+        (base / f"cockpit.db.auto-{jour}").write_bytes(b"x")
+    wpoll(relay_neuf, "pod-sv", False, [{"id": "sv", "name": "sv"}], hello=True)  # premier poll : entretien
+    sauvegardes = sorted(base.glob("cockpit.db.auto-*"))
+    assert len(sauvegardes) == 3 and sauvegardes[-1].name == f"cockpit.db.auto-{time.strftime('%Y%m%d')}"
+    copie = sqlite3.connect(sauvegardes[-1])
+    assert copie.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
+    assert copie.execute("SELECT COUNT(*) FROM workers").fetchone()[0] >= 1
+    assert call(p, "moi").json()["worker_online"] is True

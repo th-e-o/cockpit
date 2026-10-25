@@ -11,6 +11,7 @@ import asyncio
 import hashlib
 import logging
 import os
+import random
 import re
 import secrets
 import subprocess
@@ -42,6 +43,7 @@ MEMORY_FILE, MEMORY_MAX = "CLAUDE.md", 50_000
 AUTO_UPDATE = os.environ.get("COCKPIT_AUTO_UPDATE") == "1"
 UPDATE_EVERY = int(os.environ.get("COCKPIT_UPDATE_EVERY", "600"))
 PR_SYNC_EVERY = int(os.environ.get("COCKPIT_PR_SYNC_EVERY", "120"))
+SUPERSEDED_WINDOW = 300  # deux « remplacé » en moins de 5 min : un vrai doublon tourne, ce worker s'arrête
 PR_TASKS_SEEN = 40  # dernières tâches de chaque projet examinées (le tableau de bord en affiche jusqu'à 30)
 PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
 ACTIVE = {"pending", "routing", "queued", "running", "waiting_approval"}
@@ -110,6 +112,7 @@ class Worker:
         self._state: dict | None = None
         self._state_ts = 0.0
         self._repos_dirty = False  # dépôt créé : liste à republier
+        self._superseded_at = 0.0  # dernier « remplacé » par le relais (voir superseded_pause)
         self._pr_done: set[str] = set()  # pull requests dont la fusion / fermeture a déjà été publiée
         self.runner.upload_image = self.relay.image
         self.runner.project_status = self.relay.projet_etat
@@ -120,6 +123,18 @@ class Worker:
         self.autopilot = Autopilot(relay, self.usage)
         self.vscode: dict | None = None  # {"url", "password"} : bouton « Ouvrir VSCode » du tableau de bord
         self.runner.on_rate_limit = self.rate_limit
+
+    def superseded_pause(self, now: float | None = None) -> float | None:
+        """Pause avant de se réannoncer au relais après un « superseded », ou None si ce worker doit s'arrêter.
+
+        Un « superseded » n'est pas toujours un vrai doublon : après une panne ou une réinitialisation de la base du relais, tous les
+        workers l'ont reçu en même temps et sont morts pour toujours. Le premier est donc pardonné (pause aléatoire de 30 à 60 s, pour
+        que deux vrais doublons ne se disputent pas la place) ; un second en moins de 5 min est un vrai doublon."""
+        now = time.time() if now is None else now
+        if now - self._superseded_at < SUPERSEDED_WINDOW:
+            return None
+        self._superseded_at = now
+        return 30 + random.uniform(0, 30)
 
     def spawn(self, coro) -> None:
         t = asyncio.create_task(coro)
@@ -575,8 +590,14 @@ class Worker:
                 delay = min(delay * 2, 60)
                 continue
             if msg.get("superseded"):
-                log.error("un autre worker s'est connecté au relais : arrêt de celui-ci")
-                return
+                pause = self.superseded_pause()
+                if pause is None:
+                    log.error("remplacé deux fois en moins de %d min : un autre worker tourne pour ce pod, arrêt de celui-ci", SUPERSEDED_WINDOW // 60)
+                    return
+                log.warning("le relais ne reconnaît plus ce worker (remplacé, ou sa base a été réinitialisée) : nouvelle annonce dans %ds", pause)
+                await asyncio.sleep(pause)
+                hello = True
+                continue
             try:
                 self.handle(msg)
             except Exception:

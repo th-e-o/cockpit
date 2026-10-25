@@ -37,6 +37,9 @@ const AUTO_PAR_JOUR = 12;               // full auto : tâches lancées par jour
 const AUTO_JOURS_MAX = 14;              // full auto : durée maximale d'un armement
 const AUTO_ECHECS_MAX = 3;              // full auto : arrêt après autant d'erreurs de suite
 const ALERTES_MAX = 10;
+const POLL_BATTEMENT = 10;              // secondes entre deux mises à jour de « vu_le » d'un pod (une écriture, pas deux par seconde)
+const ENTRETIEN_PERIODE = 1800;         // secondes entre deux entretiens de la base (checkpoint, contrôle, sauvegarde)
+const SAUVEGARDES_GARDEES = 3;
 const INCITATION_VERIF = 600;           // secondes entre deux vérifications du reste de la semaine
 const INCITATION_PALIERS = [[48, 0.20], [12, 0.10]];  // [heures avant la réinitialisation, part restante minimale]
 const AUTO_PARALLELE_MAX = 6;           // full auto : projets menés de front, au plus
@@ -645,6 +648,57 @@ function incitation_hard(): void {
     reglage('incitation', json_encode($etat));
 }
 
+/** Y a-t-il quelque chose à livrer à ce worker ? Lecture seule, sans verrou d'écriture : la boucle d'écoute l'appelle deux fois par
+ * seconde par pod, et prendre un verrou d'écriture à chaque tour fragilisait SQLite (WAL qui ne se vide plus, corruption). */
+function travail_pour_worker(string $wid, string $mienne): bool {
+    foreach ([["SELECT 1 FROM taches WHERE livree = 0 AND statut = 'pending' AND $mienne LIMIT 1"],
+              ['SELECT 1 FROM validations v JOIN taches t ON t.id = v.tache_id WHERE v.decision IS NOT NULL AND v.decision_livree = 0 AND t.worker_id = ? LIMIT 1'],
+              ['SELECT 1 FROM taches WHERE annulation = 1 AND worker_id = ? LIMIT 1'],
+              ['SELECT 1 FROM taches WHERE choix_projet IS NOT NULL AND worker_id = ? LIMIT 1'],
+              ['SELECT 1 FROM taches WHERE action_worktree IS NOT NULL AND worker_id = ? LIMIT 1'],
+              ['SELECT 1 FROM taches WHERE recadrages IS NOT NULL AND worker_id = ? AND livree = 1 LIMIT 1']] as [$sql]) {
+        if (q($sql, [$wid])->fetchColumn()) return true;
+    }
+    foreach (json_decode((string)q('SELECT projets FROM workers WHERE id = ?', [$wid])->fetchColumn(), true) ?: [] as $p) {
+        if (reglage('memoire_edit:' . $p['id'])) return true;
+    }
+    return false;
+}
+
+/** Entretien de la base, au plus toutes les 30 min : checkpoint non bloquant du WAL, contrôle rapide d'intégrité (alerte si corrompue)
+ * et une sauvegarde cohérente par jour (VACUUM INTO), les 3 dernières gardées dans data/ (fermé à la lecture web, hors du déploiement). */
+function entretien_base(): void {
+    if (time() - (int)(reglage('entretien') ?? 0) < ENTRETIEN_PERIODE) return;
+    reglage('entretien', (string)time());
+    $pdo = db();
+    try { $pdo->query('PRAGMA wal_checkpoint(PASSIVE)')->fetchAll(); } catch (Throwable) {}
+    try {
+        $controle = $pdo->query('PRAGMA quick_check(1)')->fetchColumn();
+    } catch (Throwable $e) {
+        $controle = $e->getMessage();
+    }
+    if ($controle !== 'ok') {  // jamais de sauvegarde d'une base abîmée (elle écraserait la dernière bonne en 3 jours)
+        if (time() - (int)(reglage('alerte_base') ?? 0) > 86400) {
+            reglage('alerte_base', (string)time());
+            alerte_ajouter('base-corrompue', '⚠ Base du relais corrompue', 'Le contrôle d\'intégrité échoue (' . mb_substr((string)$controle, 0, 80) . '). Répare-la avec la route w_reparer.');
+        }
+        return;
+    }
+    $dir = __DIR__ . '/data';
+    $fichier = "$dir/cockpit.db.auto-" . date('Ymd');
+    if (is_file($fichier)) return;
+    try {
+        $pdo->exec('VACUUM INTO ' . $pdo->quote($fichier));
+    } catch (Throwable $e) {
+        error_log('cockpit: sauvegarde impossible : ' . $e->getMessage());
+        @unlink($fichier);
+        return;
+    }
+    $anciennes = glob("$dir/cockpit.db.auto-*") ?: [];
+    rsort($anciennes);
+    foreach (array_slice($anciennes, SAUVEGARDES_GARDEES) as $f) @unlink($f);
+}
+
 /** Mode hard : plus aucune validation demandée à l'utilisateur (seuls les refus « deny » de la politique restent). */
 function hard_lire(): array {
     $h = json_decode(reglage('mode_hard') ?? '', true) ?: [];
@@ -1227,6 +1281,7 @@ switch ($route) {
             if (strlen($etat) <= 64000) q('UPDATE workers SET etat = ? WHERE id = ?', [$etat, $wid]);
         }
         incitation_hard();  // après l'enregistrement de l'état : l'usage du forfait vient de ce pod
+        entretien_base();
         if (!empty($in['hello'])) {
             // Ce worker vient de (re)démarrer : ce qu'il exécutait est perdu.
             foreach (q("SELECT id FROM taches WHERE livree = 1 AND worker_id = ? AND statut NOT IN ('done','error','cancelled','needs_project')", [$wid])->fetchAll(PDO::FETCH_COLUMN) as $id) {
@@ -1245,13 +1300,24 @@ switch ($route) {
         // Tâches à livrer : celles de ce worker, et (orchestrateur) celles sans worker, à router.
         $mienne = $orchestrateur ? '(worker_id = ? OR (worker_id IS NULL AND attente_projet IS NULL))' : 'worker_id = ?';
         $fin = microtime(true) + ($in['wait'] ?? LONG_POLL);
+        $taches = $decisions = $annulations = $choix = $worktrees = $recadrages = $memoires = [];
+        $dernierBattement = 0;
         do {
+            // Lecture seule d'abord ; le verrou d'écriture n'est pris que pour livrer du travail, et « vu_le » n'est écrit qu'à intervalles espacés
+            if (q('SELECT instance FROM workers WHERE id = ?', [$wid])->fetchColumn() !== $instance) repondre(['superseded' => true]);
+            if (time() - $dernierBattement >= POLL_BATTEMENT) {
+                q('UPDATE workers SET vu_le = ? WHERE id = ?', [time(), $wid]);
+                $dernierBattement = time();
+            }
+            if (!travail_pour_worker($wid, $mienne)) {
+                usleep(500000);
+                continue;
+            }
             debut();
             if (q('SELECT instance FROM workers WHERE id = ?', [$wid])->fetchColumn() !== $instance) {
                 annuler();
                 repondre(['superseded' => true]);
             }
-            q('UPDATE workers SET vu_le = ? WHERE id = ?', [time(), $wid]);
             $taches = q("SELECT * FROM taches WHERE livree = 0 AND statut = 'pending' AND $mienne", [$wid])->fetchAll();
             foreach ($taches as $t) q('UPDATE taches SET livree = 1, worker_id = COALESCE(worker_id, ?) WHERE id = ?', [$wid, $t['id']]);
             $decisions = q('SELECT v.id, v.decision FROM validations v JOIN taches t ON t.id = v.tache_id
@@ -1734,16 +1800,17 @@ switch ($route) {
 
     case 'w_reveil': // full auto : projets du périmètre dont le pod est hors ligne alors qu'il y a du travail pour eux
         exiger_worker();
+        // Autonomie désarmée : tous les projets, mais seulement ceux qui ont des tâches en attente (du travail demandé qu'un pod muet bloque)
         $a = autopilote_lire();
-        if (!$a['enabled']) repondre(['projects' => []]);
-        $portee = $a['projects'] ?: [];
+        $actif = $a['enabled'];
+        $portee = $actif ? ($a['projects'] ?: []) : [];
         $m = memoire_lire();
         $out = [];
         foreach (projets() as $p) {
             if ($p['online'] || ($portee && !in_array($p['id'], $portee, true))) continue;
             $attente = (int)q("SELECT COUNT(*) FROM taches WHERE projet = ? AND action IS NULL AND statut IN ('pending','queued','routing')", [$p['id']])->fetchColumn();
             $propositions = count(array_filter($m['proposals'], fn($x) => $x['etat'] === 'ouverte' && $x['project'] === $p['id']));
-            if ($attente || $propositions) $out[] = ['id' => $p['id'], 'waiting' => $attente, 'proposals' => $propositions];
+            if ($attente || ($actif && $propositions)) $out[] = ['id' => $p['id'], 'waiting' => $attente, 'proposals' => $propositions];
         }
         repondre(['projects' => $out]);
 

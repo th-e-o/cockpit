@@ -80,3 +80,15 @@ def test_pr_fermee_quitte_a_valider(relay):
         assert page.locator("[data-merge-url]").count() == 0  # plus de bouton « Fusionner » sur une PR fermée
         assert not errors, errors
         browser.close()
+
+
+def test_superseded_pardonne_une_fois(tmp_path, monkeypatch):
+    """Le premier « superseded » n'arrête pas le worker (après une panne du relais, tous l'ont reçu en même temps) ; le second oui."""
+    monkeypatch.setattr(worker_mod, "DATA", tmp_path / "data")
+    w = worker_mod.Worker(Relay("http://relais.invalid", "k"))
+    pause = w.superseded_pause(now=1000.0)
+    assert 30 <= pause <= 60
+    assert w.superseded_pause(now=1100.0) is None  # deuxième en moins de 5 min : un vrai doublon, on s'arrête
+    w2 = worker_mod.Worker(Relay("http://relais.invalid", "k"))
+    assert w2.superseded_pause(now=1000.0) is not None
+    assert w2.superseded_pause(now=1000.0 + worker_mod.SUPERSEDED_WINDOW + 1) is not None  # espacés : pardonnés à nouveau

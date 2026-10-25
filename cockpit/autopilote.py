@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 
@@ -25,6 +26,8 @@ log = logging.getLogger("cockpit.autopilote")
 
 CHECK_EVERY = 60  # secondes entre deux lancements possibles
 WAKE_COOLDOWN = 600  # un pod dont le worker vient d'être relancé n'est pas relancé à nouveau avant 10 min
+# Réveil sans autonomie armée, limité aux pods qui ont des tâches en attente (COCKPIT_WAKE_PODS=0 pour le couper)
+WAKE_WITHOUT_AUTONOMY = os.environ.get("COCKPIT_WAKE_PODS", "1") != "0"
 GENERATE_EVERY = 3 * 3600  # propositions regénérées au plus toutes les 3 h
 WEEK_MARGIN = 0.10  # la limite hebdomadaire bloque 10 points au-dessus du seuil de session (95 % au plus)
 PROPOSALS_PER_PROJECT = 3
@@ -98,6 +101,8 @@ class Autopilot:
     async def tick(self) -> None:
         if not self.config.get("enabled"):
             self.waiting = ""
+            if WAKE_WITHOUT_AUTONOMY:  # du travail demandé attend un pod muet : on le relance même sans autonomie
+                await self.wake_pods(only_waiting=True)
             return
         await self.wake_pods()
         reason = usage_blocks(self.usage, self.config)
@@ -117,7 +122,7 @@ class Autopilot:
                 self.note(f"en attente : {r.get('skipped')}")
                 return
 
-    async def wake_pods(self) -> None:
+    async def wake_pods(self, only_waiting: bool = False) -> None:
         """Projets du périmètre dont le pod est prêt mais dont le worker est hors ligne, alors qu'il y a du travail pour eux :
         le worker y est relancé (au plus une fois toutes les 10 min par projet) pour que les tâches transmises avancent."""
         try:
@@ -126,6 +131,8 @@ class Autopilot:
             log.info("full auto : liste des pods à réveiller indisponible (%s)", e)
             return
         for p in offline:
+            if only_waiting and not p.get("waiting"):
+                continue
             pid = p["id"]
             if time.time() - self._wake_try.get(pid, 0) < WAKE_COOLDOWN:
                 continue

@@ -250,6 +250,20 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
 - **Révoquer un appareil** : ☰ → Passkeys → Supprimer. **Révoquer le worker** : supprimer `data/worker_key`,
   puis `./run.sh init` et pousser la nouvelle empreinte.
 
+## Robustesse du relais et des workers
+
+Une panne de la base SQLite du relais (21 octobre 2026 : 500 pendant des heures, puis un « superseded » reçu par tous les workers
+en même temps, qui les a arrêtés pour toujours) a conduit à ces garde-fous :
+- **Moins d'écritures** : la boucle d'écoute de `w_poll` lit sans verrou et ne prend le verrou d'écriture que pour livrer du travail ;
+  `vu_le` n'est écrit qu'au plus toutes les 10 s (au lieu de deux écritures par seconde et par pod).
+- **Entretien toutes les 30 min** : checkpoint non bloquant du WAL, contrôle rapide d'intégrité (notification « ⚠ Base du relais
+  corrompue » au plus une fois par jour) et **une sauvegarde par jour** (`data/cockpit.db.auto-AAAAMMJJ`, les 3 dernières ; jamais
+  d'une base abîmée). Réparation : route `w_reparer` (clé du worker), voir `w_integrite` pour le diagnostic.
+- **Worker tolérant** : le premier `superseded` n'arrête plus le worker, il se réannonce après 30 à 60 s ; un second en moins de
+  5 min (vrai doublon) l'arrête. Un pod muet qui a des tâches en attente est relancé même sans autonomie armée
+  (`COCKPIT_WAKE_PODS=0` pour le couper).
+- Le serveur d'hébergement utilise SQLite 3.27.2, antérieur au correctif du bug « WAL reset » (3.51.3) : à faire mettre à jour.
+
 ## Limites connues
 
 - **Même origine web que PLFMarket** (`deltastat.fr`). Une faille XSS dans PLFMarket permettrait à un script
