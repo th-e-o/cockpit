@@ -147,3 +147,45 @@ def test_vscode_joignable_sur_les_nouveaux_pods():
     assert svc.helm_values(svc.Launch(nom="etp"), {}, None, ing)["security"]["password"] != v["security"]["password"]
     assert svc.helm_values(svc.Launch(nom="etp", apercu=True), {}, None, ing)["networking"]["user"]["enabled"]
     assert "ingress" not in svc.helm_values(svc.Launch(nom="etp"), {}, None, None)
+
+
+def test_reveiller_worker(monkeypatch):
+    """Réveil d'un pod prêt dont le worker est mort : kubectl exec dans le bon conteneur, sans rien créer ni remplacer."""
+    import asyncio
+    import json
+
+    from cockpit import services as svc
+
+    calls = []
+    pods = {"items": [
+        {"metadata": {"name": "cockpit-lexipix-vscode-python-1"}, "spec": {"containers": [{"name": "vscode-python"}]},
+         "status": {"phase": "Pending", "containerStatuses": [{"ready": False}]}},
+        {"metadata": {"name": "cockpit-lexipix-vscode-python-0"}, "spec": {"containers": [{"name": "vscode-python"}]},
+         "status": {"phase": "Running", "containerStatuses": [{"ready": True}]}}]}
+
+    async def run(*cmd, timeout=300):
+        calls.append(cmd)
+        return json.dumps(pods) if cmd[1] == "get" else "relancé"
+
+    monkeypatch.setattr(svc, "_run", run)
+    monkeypatch.setattr(svc, "namespace", lambda: "user-test")
+    assert asyncio.run(svc.reveiller_worker("lexipix")) == "relancé"
+    get, ex = calls
+    assert "app.kubernetes.io/instance=cockpit-lexipix" in get and "user-test" in get
+    assert ex[:4] == ("kubectl", "exec", "-n", "user-test") and "cockpit-lexipix-vscode-python-0" in ex and "PROJET=lexipix" in ex
+    assert ex[ex.index("-c") + 1] == "vscode-python" and "helm" not in " ".join(ex)
+    # Nom invalide : aucune commande lancée ; pod pas prêt : erreur claire
+    calls.clear()
+    for bad in ("Lexi pix", "a;rm -rf ~", ""):
+        try:
+            asyncio.run(svc.reveiller_worker(bad))
+            raise AssertionError(bad)
+        except svc.ServiceError:
+            pass
+    assert calls == []
+    pods["items"] = pods["items"][:1]
+    try:
+        asyncio.run(svc.reveiller_worker("lexipix"))
+        raise AssertionError("pod pas prêt")
+    except svc.ServiceError as e:
+        assert "aucun pod prêt" in str(e)

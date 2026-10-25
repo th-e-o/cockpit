@@ -16,6 +16,7 @@ import logging
 import re
 import time
 
+from . import services as svc
 from .relay import Relay
 from .router import _ask_haiku
 from .usage import Usage
@@ -23,6 +24,7 @@ from .usage import Usage
 log = logging.getLogger("cockpit.autopilote")
 
 CHECK_EVERY = 60  # secondes entre deux lancements possibles
+WAKE_COOLDOWN = 600  # un pod dont le worker vient d'être relancé n'est pas relancé à nouveau avant 10 min
 GENERATE_EVERY = 3 * 3600  # propositions regénérées au plus toutes les 3 h
 WEEK_MARGIN = 0.10  # la limite hebdomadaire bloque 10 points au-dessus du seuil de session (95 % au plus)
 PROPOSALS_PER_PROJECT = 3
@@ -75,9 +77,12 @@ def parse_proposals(text: str, known: set[str]) -> dict[str, list[dict]]:
 
 
 class Autopilot:
-    def __init__(self, relay: Relay, usage: Usage):
+    def __init__(self, relay: Relay, usage: Usage, wake=None):
         self.relay = relay
         self.usage = usage
+        self.wake = wake or svc.reveiller_worker  # async (projet) -> texte : relance le worker d'un pod prêt mais muet
+        self.woken: dict[str, dict] = {}  # projet -> {ts, ok, text} : dernier réveil, affiché dans le tableau de bord
+        self._wake_try: dict[str, float] = {}
         self.config: dict = {}  # réglages armés depuis le téléphone, reçus à chaque poll
         self.waiting = ""  # dernière raison d'attente (journal, sans répétition)
         self._generated = 0.0
@@ -94,6 +99,7 @@ class Autopilot:
         if not self.config.get("enabled"):
             self.waiting = ""
             return
+        await self.wake_pods()
         reason = usage_blocks(self.usage, self.config)
         if reason:
             self.note(f"en attente : {reason}")
@@ -110,6 +116,31 @@ class Autopilot:
             else:
                 self.note(f"en attente : {r.get('skipped')}")
                 return
+
+    async def wake_pods(self) -> None:
+        """Projets du périmètre dont le pod est prêt mais dont le worker est hors ligne, alors qu'il y a du travail pour eux :
+        le worker y est relancé (au plus une fois toutes les 10 min par projet) pour que les tâches transmises avancent."""
+        try:
+            offline = await self.relay.reveil()
+        except Exception as e:  # le réveil ne doit jamais empêcher de lancer les tâches des pods en ligne
+            log.info("full auto : liste des pods à réveiller indisponible (%s)", e)
+            return
+        for p in offline:
+            pid = p["id"]
+            if time.time() - self._wake_try.get(pid, 0) < WAKE_COOLDOWN:
+                continue
+            self._wake_try[pid] = time.time()
+            try:
+                text = await self.wake(pid)
+                self.woken[pid] = {"ts": int(time.time()), "ok": True, "text": text[-80:]}
+                log.info("full auto : worker du pod %s relancé (%s)", pid, text[-80:])
+            except Exception as e:
+                self.woken[pid] = {"ts": int(time.time()), "ok": False, "text": str(e)[-120:]}
+                log.warning("full auto : pod %s non relancé : %s", pid, e)
+
+    def public(self) -> dict:
+        """État affiché dans le tableau de bord : ce que fait ou attend le full auto, et les pods relancés."""
+        return {"waiting": self.waiting, "woken": self.woken}
 
     def note(self, text: str) -> None:
         if text != self.waiting:

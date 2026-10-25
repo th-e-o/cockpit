@@ -33,6 +33,11 @@
   <button type="button" id="usageBar" class="usagebar hidden" data-view="dash" aria-label="usage de Claude"><i></i><span></span></button>
   <div id="layout">
   <div id="chat">
+  <div id="feedBar" class="feedbar hidden">
+    <span>Par projet</span>
+    <button type="button" class="btn ghost" id="foldAll">Tout replier</button>
+    <button type="button" class="btn ghost" id="unfoldAll">Tout déplier</button>
+  </div>
   <main id="feed" aria-live="polite">
     <div class="empty">Envoie une instruction. Le cockpit choisit le projet si tu restes sur <b>Auto</b>.
       Les messages suivants continuent la conversation ; « Nouvelle conversation » lance un autre Claude en parallèle.</div>

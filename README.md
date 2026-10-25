@@ -157,6 +157,15 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
   tâches par jour) fait enchaîner ces propositions à l'orchestrateur, une tâche à la fois, tant que la session reste sous
   le seuil d'usage (85 %) ; il reprend après chaque réinitialisation et se désarme après 3 erreurs de suite. Même
   politique que le reste : une validation sans réponse est refusée au bout de 15 min, jamais approuvée d'office.
+- **Fil par projet** : le chat est regroupé en menus déroulants, un par projet (le plus récemment actif en bas), avec le nombre
+  de tâches, celles en cours (⚙) et les validations en attente (⚠, le menu s'ouvre alors tout seul). Ouverts au départ : ceux qui
+  travaillent et le plus récent ; ton choix est mémorisé, *Tout replier / Tout déplier* en haut du fil. Suivre une conversation ou
+  toucher une tâche dans le tableau de bord ouvre son menu.
+- **Réveil des pods** : quand le full auto ou le mode hard est armé, l'orchestrateur relance (`kubectl exec`) le worker des pods
+  de projet **prêts mais muets** (un worker s'arrête définitivement quand le relais le croit remplacé, et rien ne le relançait)
+  qui ont du travail (tâches en attente, propositions), au plus une fois toutes les 10 min par projet. Il ne crée ni ne remplace
+  aucun service : un pod absent ou arrêté n'est pas relancé (l'erreur s'affiche). La carte *Autonomie* montre en direct les
+  tâches automatiques en cours, la raison d'une attente et les pods relancés.
 - **Reste de la semaine et incitation** (tableau de bord, *⏳ Reste de la semaine*) : jauge hebdomadaire, temps avant la
   réinitialisation et **estimation en tokens** de ce qu'il reste à dépenser (budget déduit des tokens des tâches du cockpit
   cette semaine divisés par la part d'usage correspondante : estimation prudente, l'usage hors cockpit n'est pas compté ;

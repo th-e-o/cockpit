@@ -1672,6 +1672,21 @@ switch ($route) {
         $portee = array_values(array_filter(array_map('trim', explode(',', (string)($_GET['projects'] ?? '')))));
         repondre(hard_apercu($portee));
 
+    case 'w_reveil': // full auto : projets du périmètre dont le pod est hors ligne alors qu'il y a du travail pour eux
+        exiger_worker();
+        $a = autopilote_lire();
+        if (!$a['enabled']) repondre(['projects' => []]);
+        $portee = $a['projects'] ?: [];
+        $m = memoire_lire();
+        $out = [];
+        foreach (projets() as $p) {
+            if ($p['online'] || ($portee && !in_array($p['id'], $portee, true))) continue;
+            $attente = (int)q("SELECT COUNT(*) FROM taches WHERE projet = ? AND action IS NULL AND statut IN ('pending','queued','routing')", [$p['id']])->fetchColumn();
+            $propositions = count(array_filter($m['proposals'], fn($x) => $x['etat'] === 'ouverte' && $x['project'] === $p['id']));
+            if ($attente || $propositions) $out[] = ['id' => $p['id'], 'waiting' => $attente, 'proposals' => $propositions];
+        }
+        repondre(['projects' => $out]);
+
     case 'w_pr_etat': // état d'une pull request relevé sur GitHub par n'importe quel pod (le propriétaire de la tâche peut être hors ligne)
         exiger_worker();
         $tid = (string)($in['task_id'] ?? '');

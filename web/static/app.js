@@ -388,8 +388,9 @@ function render(ids) {
       wrap.id = `t-${id}`;
       wrap.dataset.task = id;
       wrap.innerHTML = '<div class="user"></div><div class="task"></div>';
-      feed.appendChild(wrap);
     }
+    const body = groupBody(e.task.project);  // la tâche suit son projet (routée plus tard : elle change de menu)
+    if (wrap.parentElement !== body) body.appendChild(wrap);
     wrap.querySelector('.user').textContent = shownInstruction(e.task.instruction);
     const box = wrap.querySelector('.task');
     const open = new Set([...box.querySelectorAll('details[data-k][open]')].map((d) => d.dataset.k));
@@ -406,10 +407,97 @@ function render(ids) {
     wrap.classList.toggle('suite', !!e.task.reply_to);
     wrap.classList.toggle('current', !!state.replyTo && conversationOf(id) === conversationOf(state.replyTo));
   }
+  updateGroups();
   if (nearBottom || state.replay) feed.scrollTop = feed.scrollHeight;
   updatePending();
   updateComposer();
 }
+
+// ---------- fil groupé par projet : un menu déroulant par projet, le plus récemment actif en bas
+const GROUPS_KEY = 'cockpit_groups';  // projet -> ouvert (true) ou replié (false), choisi par l'utilisateur
+const groupPrefs = () => { try { return JSON.parse(localStorage.getItem(GROUPS_KEY) || '{}'); } catch { return {}; } };
+const saveGroupPref = (id, open) => { try { localStorage.setItem(GROUPS_KEY, JSON.stringify({ ...groupPrefs(), [id]: open })); } catch { /* sans importance */ } };
+const groupId = (project) => project || '_auto';
+const groupName = (project) => (project ? state.projects.find((p) => p.id === project)?.name || project : '💬 Sans projet (Auto)');
+const groupEl = (id) => [...document.querySelectorAll('#feed details.pgroup')].find((d) => d.dataset.g === id);
+
+/** Ouvre ou ferme un menu par programme, sans que cela passe pour un choix de l'utilisateur. */
+function setGroupOpen(d, open) {
+  if (d.open === open) return;
+  d._prog = true;
+  d.open = open;
+}
+
+function groupBody(project) {
+  const id = groupId(project);
+  let d = groupEl(id);
+  if (!d) {
+    d = document.createElement('details');
+    d.className = 'pgroup';
+    d.dataset.g = id;
+    d.innerHTML = '<summary><span class="pname"></span><span class="pmeta"></span></summary><div class="pbody"></div>';
+    d.addEventListener('toggle', () => {
+      if (d._prog) { d._prog = false; return; }
+      saveGroupPref(id, d.open);
+    });
+    $('#feed').appendChild(d);
+  }
+  return d.querySelector('.pbody');
+}
+
+function updateGroups() {
+  const feed = $('#feed');
+  const groups = [...feed.querySelectorAll('details.pgroup')];
+  const info = new Map();
+  for (const id of state.order) {
+    const e = state.tasks.get(id);
+    const g = groupId(e.task.project);
+    const i = info.get(g) || { n: 0, active: 0, pending: 0, last: 0 };
+    i.n++;
+    if (ACTIVE.has(e.task.status)) i.active++;
+    for (const a of e.approvals.values()) if (!a.decision) i.pending++;
+    i.last = Math.max(i.last, e.task.updated || e.task.created || 0);
+    info.set(g, i);
+  }
+  const prefs = groupPrefs();
+  const newest = [...info.entries()].sort((a, b) => b[1].last - a[1].last)[0]?.[0];
+  for (const d of groups) {
+    const i = info.get(d.dataset.g);
+    if (!i) continue;
+    const parts = [plural(i.n, 'tâche')];
+    if (i.active) parts.push(`⚙ ${i.active} en cours`);
+    if (i.pending) parts.push(`⚠ ${i.pending} à valider`);
+    d.querySelector('.pname').textContent = groupName(d.dataset.g === '_auto' ? null : d.dataset.g);
+    d.querySelector('.pmeta').textContent = parts.join(' · ');
+    d.classList.toggle('working', i.active > 0);
+    d.classList.toggle('attn', i.pending > 0);
+    if (!d.dataset.init) {  // premier affichage : le choix de l'utilisateur, sinon ouvert si actif ou le plus récent
+      d.dataset.init = '1';
+      setGroupOpen(d, d.dataset.g in prefs ? prefs[d.dataset.g] : i.active > 0 || i.pending > 0 || d.dataset.g === newest);
+    } else if (i.pending > 0) {
+      setGroupOpen(d, true);  // une validation attend : on ne la cache pas
+    }
+  }
+  const sorted = groups.filter((d) => info.has(d.dataset.g)).sort((a, b) => info.get(a.dataset.g).last - info.get(b.dataset.g).last);
+  if (sorted.some((d, k) => d !== groups[k])) sorted.forEach((d) => feed.appendChild(d));
+  $('#feedBar').classList.toggle('hidden', groups.length < 2);
+}
+
+/** Ouvre le menu du projet d'une tâche (suivre une conversation, aller à une tâche) ; renvoie la section de la tâche. */
+function openGroupOf(taskId) {
+  const el = document.getElementById(`t-${taskId}`);
+  const d = el?.closest('details.pgroup');
+  if (d) setGroupOpen(d, true);
+  return el;
+}
+
+function foldAll(open) {
+  const prefs = {};
+  document.querySelectorAll('#feed details.pgroup').forEach((d) => { setGroupOpen(d, open); prefs[d.dataset.g] = open; });
+  try { localStorage.setItem(GROUPS_KEY, JSON.stringify({ ...groupPrefs(), ...prefs })); } catch { /* sans importance */ }
+}
+$('#foldAll').addEventListener('click', () => foldAll(false));
+$('#unfoldAll').addEventListener('click', () => foldAll(true));
 
 // ---------- modifications (résumé git calculé par le worker) et branches parallèles
 const FST = { A: 'ajouté', M: 'modifié', D: 'supprimé', T: 'type modifié' };
@@ -1350,6 +1438,22 @@ function autoRow({ icon, title, on, chips, text, button }) {
     ${chips ? `<div class="chips">${chips}</div>` : ''}<div class="hint">${text}</div><div class="abtn">${button}</div></div>`;
 }
 
+/** Ce que fait ou attend l'autonomie en ce moment : tâches automatiques en cours, raison d'attente, pods relancés. */
+function liveAutonomy(name) {
+  if (!state.autopilot?.enabled && !state.hard?.enabled) return '';
+  const live = state.workers.find((w) => w.orchestrator && w.online)?.state?.autopilot;
+  const running = [...state.tasks.values()].filter((e) => e.task.auto && ACTIVE.has(e.task.status));
+  const lines = running.map((e) => `<button class="live" data-jump="${esc(e.task.id)}">⚙ <b>${esc(name(e.task.project))}</b> — ${esc(shownInstruction(e.task.instruction).slice(0, 90))}
+    <span class="muted">${esc(currentStep(e))}</span></button>`);
+  if (live?.waiting) lines.push(`<div class="live wait">⏳ ${esc(live.waiting.replace(/^en attente : /, 'En attente : '))}</div>`);
+  for (const [id, w] of Object.entries(live?.woken || {})) {
+    lines.push(`<div class="live ${w.ok ? '' : 'bad'}">${w.ok ? '⏻' : '⚠'} <b>${esc(name(id))}</b> — ${w.ok ? 'worker du pod relancé' : `pod non relancé : ${esc(w.text)}`}
+      <span class="muted">${ago(w.ts)}</span></div>`);
+  }
+  if (!lines.length) lines.push('<div class="live wait">⏳ Rien en cours : le prochain lancement part dans la minute si une proposition ou une reprise attend.</div>');
+  return `<div class="autolive"><div class="hint">En direct</div>${lines.join('')}</div>`;
+}
+
 function autonomyHtml(name) {
   const a = state.autopilot, h = state.hard;
   const chip = (t) => `<span class="chip">${t}</span>`;
@@ -1369,7 +1473,7 @@ function autonomyHtml(name) {
       : 'Pleine autonomie : validations approuvées, questions tranchées par Claude, full auto armé par défaut, compte rendu à la fin.',
     button: h?.enabled ? '<button class="btn ghost" data-hard="off">Désactiver</button>' : '<button class="btn" data-hard="on">☠ Activer le mode hard…</button>',
   });
-  return `<section class="sect"><div class="secthead"><h3>⚡ Autonomie</h3></div><div class="autocard">${auto}${hard}</div></section>`;
+  return `<section class="sect"><div class="secthead"><h3>⚡ Autonomie</h3></div><div class="autocard">${auto}${hard}</div>${liveAutonomy(name)}</section>`;
 }
 
 function memoryHtml() {
@@ -1544,7 +1648,7 @@ function setView(v) {
 }
 
 function jumpTo(id) {
-  const el = document.getElementById(`t-${id}`);
+  const el = openGroupOf(id);
   if (!el) return; // tâche ancienne, absente du fil
   if (state.view === 'dash' && !matchMedia('(min-width: 1100px)').matches) setView('chat');
   el.scrollIntoView({ behavior: 'smooth', block: 'center' });
@@ -1564,6 +1668,7 @@ function setReplyTo(id) {
   $('#thread').classList.toggle('hidden', !t);
   if (t) $('#threadText').textContent = `↪ Suite de « ${t.instruction?.length > 50 ? `${t.instruction.slice(0, 50)}…` : t.instruction} »`;
   render(state.order);
+  if (id) openGroupOf(id);
 }
 
 /** Le dernier message envoyé dans la conversation suivie est la tâche à laquelle on répond. */

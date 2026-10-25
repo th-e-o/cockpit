@@ -235,6 +235,31 @@ def nom_depuis_depot(url: str) -> str:
     return re.sub(r"-+", "-", re.sub(r"[^a-z0-9-]", "-", base)).strip("-")[:30].strip("-") or "projet"
 
 
+# Relance du worker dans un pod de projet : l'environnement de scripts/onyxia-init.sh n'existe plus après le démarrage du pod.
+_WAKE_SCRIPT = (
+    'cd "$HOME/work/.cockpit" || { echo "cockpit absent du pod"; exit 3; }; '
+    'pgrep -f "[c]ockpit.worker run" >/dev/null && { echo "déjà actif"; exit 0; }; '  # [c] : ne se reconnaît pas lui-même
+    'COCKPIT_ROLE=projet COCKPIT_AUTO_UPDATE=1 COCKPIT_WORKER_ID="$HOSTNAME" COCKPIT_WORKER_NAME="$PROJET" ./run.sh >/dev/null 2>&1; echo "relancé"'
+)
+
+
+async def reveiller_worker(nom: str) -> str:
+    """Pod de projet prêt dont le worker cockpit ne tourne plus (il s'arrête quand le relais le croit remplacé, et rien ne le
+    relance) : le relance dans le pod. Ne crée ni ne remplace aucun service ; sans pod prêt, échoue sans rien faire."""
+    if not _NAME.match(nom):
+        raise ServiceError("nom invalide")
+    ns = namespace()
+    items = json.loads(await _run("kubectl", "get", "pods", "-n", ns, "-l", f"app.kubernetes.io/instance={PREFIX}{nom}",
+                                  "-o", "json", timeout=30)).get("items", [])
+    pod = next((i for i in items if i["status"].get("phase") == "Running" and i["status"].get("containerStatuses")
+                and all(c.get("ready") for c in i["status"]["containerStatuses"])), None)
+    if not pod:
+        raise ServiceError(f"aucun pod prêt pour {PREFIX}{nom} (service absent, arrêté ou en démarrage)")
+    container = pod["spec"]["containers"][0]["name"]
+    return await _run("kubectl", "exec", "-n", ns, pod["metadata"]["name"], "-c", container, "--",
+                      "env", f"PROJET={nom}", "bash", "-c", _WAKE_SCRIPT, timeout=120)
+
+
 async def arreter(nom: str) -> str:
     if not _NAME.match(nom):
         raise ServiceError("nom invalide")

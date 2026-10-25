@@ -79,6 +79,10 @@ class Relay:
         """Signale une réinitialisation de limite d'usage (notification sur le téléphone)."""
         await self.call("w_alerte", {"kind": kind, "worker_id": self.worker_id})
 
+    async def reveil(self) -> list[dict]:
+        """Full auto : projets du périmètre dont le pod est hors ligne alors qu'il y a du travail pour eux ({id, waiting, proposals})."""
+        return (await self.call("w_reveil", {"worker_id": self.worker_id}))["projects"]
+
     async def auto_tache(self) -> dict:
         """Full auto : le relais lance la prochaine proposition ouverte ({task_id, titre}) ou répond {skipped: raison}."""
         return await self.call("w_auto_tache", {"worker_id": self.worker_id})

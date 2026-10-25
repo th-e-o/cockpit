@@ -153,6 +153,7 @@ class Worker:
         await self.publish_memory()
         self._state = {
             "usage": self.usage.public(),
+            "autopilot": self.autopilot.public() if ORCHESTRATOR else None,
             "vscode": self.vscode,
             "preview": self.runner.preview,
             "resources": self.pod.resources(), "projects": projects, "worktrees": worktrees,

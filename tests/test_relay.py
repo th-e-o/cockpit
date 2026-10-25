@@ -867,3 +867,27 @@ def test_incitation_mode_hard_fin_de_semaine(relay_neuf):
     assert len(msg) == 1 and "6 M" in msg[0]["corps"] and "mode hard" in msg[0]["corps"]
     wpoll(relay_neuf, "pod-iw", True, state={"usage": usage})  # vérification limitée à une toutes les 10 min : pas de doublon
     assert len([a for a in call(p, "resume").json()["alerts"] if "Il reste 60 %" in a["titre"]]) == 1
+
+
+def test_reveil_des_pods_hors_ligne_avec_du_travail(relay_neuf):
+    """Le relais désigne les projets du périmètre dont le pod est hors ligne et qui ont du travail (tâche en attente, proposition)."""
+    import sqlite3
+
+    p = paired_phone(relay_neuf)
+    wpoll(relay_neuf, "orch-rv", True, [{"id": "orchrv", "name": "orch"}], hello=True)
+    for wid, proj in (("pod-rv1", "rv1"), ("pod-rv2", "rv2"), ("pod-rv3", "rv3")):
+        wpoll(relay_neuf, wid, False, [{"id": proj, "name": proj}], hello=True)
+    t = call(p, "tache", {"instruction": "à faire", "project": "rv1"}).json()
+    call(p, "proposition", {"action": "ajouter", "titre": "Idée rv2", "instruction": "Avance.", "project": "rv2"})
+    # rv3 n'a aucun travail ; rv1, rv2 et rv3 passent hors ligne (aucun poll depuis longtemps)
+    db = sqlite3.connect(Path(relay_neuf["docroot"]) / "cockpit" / "data" / "cockpit.db")
+    db.execute("UPDATE workers SET vu_le = 0 WHERE id LIKE 'pod-rv%'")
+    db.commit()
+    db.close()
+    assert worker_call(relay_neuf, "w_reveil", {}).json() == {"projects": []}  # full auto désarmé : rien à réveiller
+    call(p, "autopilote", {"enabled": True, "hours": 2})
+    got = {x["id"]: x for x in worker_call(relay_neuf, "w_reveil", {}).json()["projects"]}
+    assert set(got) == {"rv1", "rv2"} and got["rv1"]["waiting"] == 1 and got["rv2"]["proposals"] == 1
+    call(p, "autopilote", {"enabled": True, "hours": 2, "projects": ["rv2"]})  # périmètre : rv1 hors périmètre
+    assert [x["id"] for x in worker_call(relay_neuf, "w_reveil", {}).json()["projects"]] == ["rv2"]
+    assert t["id"]

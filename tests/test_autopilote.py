@@ -75,8 +75,11 @@ def test_propositions_generees_filtrees():
 
 
 class FakeRelay:
-    def __init__(self, answers):
-        self.answers, self.calls = list(answers), 0
+    def __init__(self, answers, offline=()):
+        self.answers, self.calls, self.offline = list(answers), 0, list(offline)
+
+    async def reveil(self):
+        return self.offline
 
     async def auto_tache(self):
         self.calls += 1
@@ -111,3 +114,39 @@ def test_plusieurs_projets_de_front_jusqu_au_maximum():
     ap.config = {"enabled": True, "max_parallel": 2}
     asyncio.run(ap.tick())
     assert relay.calls == 2  # jamais plus que le maximum demandé
+
+
+def test_reveil_des_pods_prets_mais_muets():
+    """Un pod du périmètre dont le worker est hors ligne alors qu'il a du travail est relancé, une fois par tranche de 10 min."""
+    woken = []
+
+    async def wake(projet):
+        woken.append(projet)
+        if projet == "casse":
+            raise RuntimeError("aucun pod prêt")
+        return "relancé"
+
+    relay = FakeRelay([{"skipped": "désarmé"}] * 4, offline=[{"id": "lexipix", "waiting": 2, "proposals": 0}, {"id": "casse", "waiting": 1, "proposals": 1}])
+    ap = Autopilot(relay, usage.Usage(), wake=wake)
+    ap.config = {"enabled": True}
+    asyncio.run(ap.tick())
+    assert woken == ["lexipix", "casse"]
+    assert ap.woken["lexipix"]["ok"] is True and ap.woken["casse"]["ok"] is False and "aucun pod" in ap.woken["casse"]["text"]
+    asyncio.run(ap.tick())
+    assert woken == ["lexipix", "casse"]  # pas de nouvelle tentative avant le délai
+    assert set(ap.public()["woken"]) == {"lexipix", "casse"}
+    ap.config = {"enabled": False}
+    asyncio.run(ap.tick())
+    assert woken == ["lexipix", "casse"]  # désarmé : aucun réveil
+
+
+def test_reveil_ne_bloque_pas_les_lancements():
+    class Cassee(FakeRelay):
+        async def reveil(self):
+            raise RuntimeError("relais injoignable")
+
+    relay = Cassee([{"task_id": "t", "titre": "x"}])
+    ap = Autopilot(relay, usage.Usage(), wake=None)
+    ap.config = {"enabled": True, "max_parallel": 1}
+    asyncio.run(ap.tick())
+    assert relay.calls == 1
