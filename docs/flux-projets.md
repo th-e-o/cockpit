@@ -68,7 +68,8 @@ Deux chemins mènent au même résultat : un pod `cockpit-<nom>` dont le worker 
 Les consignes de `SERVICES_APPEND` imposent l'ordre suivant :
 1. Questions préalables si l'essentiel manque (`poser_question`, puis arrêt jusqu'à la réponse).
 2. `creer_depot(nom, relier=false)` : le dépôt est créé sans être relié au dossier de l'orchestrateur.
-3. `lancer_service(nom, depot_git=<URL du dépôt>)`, validation approuvée automatiquement par défaut (`trust`) ; sinon, carte avec ressources et quota restant sur le téléphone.
+3. `lancer_service(nom, depot_git=<URL du dépôt>)` : validation approuvée automatiquement par défaut (`trust`) ;
+   sinon, carte avec ressources et quota restant sur le téléphone.
 4. `confier_au_projet(projet=<nom>, instruction=<cahier des charges complet>)`.
 
 Pour un dépôt existant, l'agent le retrouve avec `chercher_depots`, puis enchaîne `lancer_service` et
@@ -77,11 +78,10 @@ Pour un dépôt existant, l'agent le retrouve avec `chercher_depots`, puis encha
 ### 3. Démarrage du pod de projet
 
 1. Helm installe le chart avec `kubernetes.role=view`, l'identité et le token git de l'orchestrateur, le secret
-   Vault `Claude` et `init.personalInit` = URL brute de `scripts/onyxia-init.sh` sur la branche `main` de GitHub (`INIT_SCRIPT`) et
-   `init.personalInitArgs = <nom>` (`services.helm_values`) : une modification du script n'est prise en compte qu'une
-   fois fusionnée dans `main`. Un ingress
-   VSCode avec mot de passe aléatoire est ajouté quand l'ingress de l'orchestrateur sert de modèle ; `apercu=true`
-   publie en plus le port 5000.
+   Vault `Claude`, `init.personalInit` = URL brute de `scripts/onyxia-init.sh` sur la branche `main` de GitHub
+   (`INIT_SCRIPT`) et `init.personalInitArgs = <nom>` (`services.helm_values`) : une modification du script n'est
+   prise en compte qu'une fois fusionnée dans `main`. Un ingress VSCode avec mot de passe aléatoire est ajouté
+   quand l'ingress de l'orchestrateur sert de modèle ; `apercu=true` publie en plus le port 5000.
 2. `onyxia-init.sh` clone le dépôt (ou `git init` relié à `origin` s'il est vide, ou dossier
    `~/work/<nom>` sans dépôt), clone le cockpit dans `~/work/.cockpit`, écrit un `config/projects.yaml` à un
    seul projet (`id = <nom>`) et lance `./run.sh` avec `COCKPIT_ROLE=projet` et `COCKPIT_AUTO_UPDATE=1`.
@@ -148,8 +148,8 @@ nouveau pod, autre dépôt) part à l'orchestrateur avec `confier_au_projet(proj
 ### États d'une tâche (`store.Task.status`)
 
 `pending` → (`routing` → `needs_project`) → `queued` → `running` ⇄ `waiting_approval` → `done` | `error` | `cancelled`.
-Le drapeau `waiting_project` n'appartient pas à `store.Task` : il est calculé par le relais (colonne `attente_projet`, exposé par `tache_publique`) et s'ajoute à `pending` tant que le pod cible n'est pas connecté,
-pendant 30 min au plus : passé ce délai, la tâche passe en `error`.
+Le drapeau `waiting_project` n'appartient pas à `store.Task` : il vient du relais (colonne `attente_projet`, exposée
+par `tache_publique`) et s'ajoute à `pending` tant que le pod cible n'est pas connecté, pendant 30 min au plus : passé ce délai, la tâche passe en `error`.
 
 ## Limites connues
 
@@ -173,16 +173,19 @@ pendant 30 min au plus : passé ce délai, la tâche passe en `error`.
   ni le résultat ni les questions de l'agent cible. Le suivi passe par le téléphone ou par `etat_projet`, à la
   demande.
 - **Le contexte ne suit pas la délégation.** L'agent cible ne voit ni la conversation d'origine, ni ses fichiers,
-  ni ses captures : tout doit tenir dans l'instruction (10 000 caractères au plus : le worker tronque silencieusement le surplus, sans
-  erreur ni avertissement).
+  ni ses captures : tout doit tenir dans l'instruction (10 000 caractères au plus : le worker tronque
+  silencieusement le surplus, sans erreur ni avertissement).
 - **Dépôts orphelins possibles.** Côté téléphone, l'existence de la release est vérifiée avant de créer le dépôt,
   mais un échec de `helm` après la création laisse un dépôt GitHub vide. Côté agent, `creer_depot` puis un
   échec ou un refus de `lancer_service` laissent aussi un dépôt sans pod.
 - **`lancer_service` appelé par un agent ne vérifie pas l'existence de la release** (`helm upgrade --install`) :
   relancer un nom existant met à jour et redémarre le service au lieu d'échouer. Seul le chemin du téléphone
-  (`lancer_nouveau`) le refuse. Avec `trust.default: true`, aucune carte de validation ne sert de garde-fou : le redémarrage a lieu sans demander.
+  (`lancer_nouveau`) le refuse. Avec `trust.default: true`, aucune carte de validation ne sert de garde-fou : le
+  redémarrage a lieu sans demander.
 - **L'arrêt détruit le stockage.** `arreter_service` supprime la release et son volume : le travail non poussé est
-  perdu. Le relais ne retire pas le worker de son registre : le projet reste listé, hors ligne.
+  perdu. Le relais ne retire pas le worker de son registre : le projet reste listé, hors ligne, et
+  *＋ Nouveau pod* refuse ensuite ce nom (« un projet existe déjà ») ; seul un agent de l'orchestrateur peut le
+  relancer avec `lancer_service`.
 - **Un projet par pod de projet, liste statique.** `config/projects.yaml` est écrit une fois par le script
   d'init ; deux services ne peuvent pas porter le même identifiant de projet.
 - **Tâches perdues au redémarrage.** Un worker qui redémarre (plantage, pod relancé) passe en erreur les tâches qu'il
