@@ -828,3 +828,42 @@ def test_mode_hard_perimetre_apercu_et_reprise(relay_neuf):
     assert premiere["titre"].startswith("Reprise : première")
     assert "déjà en cours" in worker_call(relay_neuf, "w_auto_tache", {}).json()["skipped"] or worker_call(relay_neuf, "w_auto_tache", {}).json()["skipped"] == "aucune proposition"
     call(p, "mode_hard", {"enabled": False})
+
+
+def test_full_auto_meme_perimetre_que_le_mode_hard(relay_neuf):
+    """Le full auto se règle comme le mode hard (projets, durée en heures, parallélisme) ; le mode hard l'arme par défaut."""
+    p = paired_phone(relay_neuf)
+    wpoll(relay_neuf, "pod-fp", True, [{"id": "fp1", "name": "Un"}, {"id": "fp2", "name": "Deux"}], hello=True)
+    auto = call(p, "autopilote", {"enabled": True, "hours": 6, "max_parallel": 2, "max_per_day": 7, "threshold": 0.7, "projects": ["fp2", "inconnu"]}).json()
+    assert auto["enabled"] and auto["projects"] == ["fp2"] and auto["max_parallel"] == 2 and auto["max_per_day"] == 7
+    assert 5 * 3600 < auto["until"] - time.time() <= 6 * 3600 + 5 and abs(auto["threshold"] - 0.7) < 1e-9
+    assert wpoll(relay_neuf, "pod-fp", True)["hard"] is False  # le full auto seul ne retire aucune validation
+    call(p, "autopilote", {"enabled": False})
+    # Mode hard sans full auto : seules les validations disparaissent
+    assert call(p, "mode_hard", {"enabled": True, "hours": 2, "auto": False}).json()["enabled"]
+    assert call(p, "etat").json()["autopilot"]["enabled"] is False
+    call(p, "mode_hard", {"enabled": False})
+    # Mode hard par défaut : full auto armé avec les mêmes projets et réglages
+    call(p, "mode_hard", {"enabled": True, "hours": 2, "projects": ["fp1"], "max_parallel": 4, "max_per_day": 9, "threshold": 0.9})
+    auto = call(p, "etat").json()["autopilot"]
+    assert auto["enabled"] and auto["projects"] == ["fp1"] and auto["max_parallel"] == 4 and auto["max_per_day"] == 9
+    assert abs(auto["threshold"] - 0.9) < 1e-9
+
+
+def test_incitation_mode_hard_fin_de_semaine(relay_neuf):
+    """Il reste de la semaine à l'approche de sa réinitialisation : estimation en tokens et alerte proposant le mode hard."""
+    p = paired_phone(relay_neuf)
+    now = int(time.time())
+    usage = {"limits": [{"type": "seven_day", "utilization": 0.4, "resets_at": now + 30 * 3600}], "ts": now}
+    wpoll(relay_neuf, "pod-iw", True, [{"id": "iw", "name": "iw"}], hello=True)
+    t = call(p, "tache", {"instruction": "gros travail", "project": "iw"}).json()
+    wpoll(relay_neuf, "pod-iw", True)
+    worker_call(relay_neuf, "w_evenements", {"worker_id": "pod-iw", "events": [
+        {"kind": "task", "task_id": t["id"], "task": {"status": "done", "project": "iw", "result": "ok", "tokens": {"total": 4_000_000}}}]})
+    assert call(p, "etat").json()["week"] is None  # aucun usage publié pour l'instant
+    wpoll(relay_neuf, "pod-iw", True, state={"usage": usage})  # publie l'usage et déclenche la vérification
+    alerts = call(p, "resume").json()["alerts"]
+    msg = [a for a in alerts if "Il reste 60 %" in a["titre"]]
+    assert len(msg) == 1 and "6 M" in msg[0]["corps"] and "mode hard" in msg[0]["corps"]
+    wpoll(relay_neuf, "pod-iw", True, state={"usage": usage})  # vérification limitée à une toutes les 10 min : pas de doublon
+    assert len([a for a in call(p, "resume").json()["alerts"] if "Il reste 60 %" in a["titre"]]) == 1

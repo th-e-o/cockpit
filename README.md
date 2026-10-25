@@ -157,6 +157,15 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
   tâches par jour) fait enchaîner ces propositions à l'orchestrateur, une tâche à la fois, tant que la session reste sous
   le seuil d'usage (85 %) ; il reprend après chaque réinitialisation et se désarme après 3 erreurs de suite. Même
   politique que le reste : une validation sans réponse est refusée au bout de 15 min, jamais approuvée d'office.
+- **Reste de la semaine et incitation** (tableau de bord, *⏳ Reste de la semaine*) : jauge hebdomadaire, temps avant la
+  réinitialisation et **estimation en tokens** de ce qu'il reste à dépenser (budget déduit des tokens des tâches du cockpit
+  cette semaine divisés par la part d'usage correspondante : estimation prudente, l'usage hors cockpit n'est pas compté ;
+  nombre de tâches moyennes équivalent). Quand il reste au moins 20 % à 48 h de la réinitialisation (puis 10 % à 12 h), une
+  notification « ☠ Il reste N % de la semaine » propose le mode hard, avec le bouton *Utiliser le reste* qui préremplit la
+  durée jusqu'à la réinitialisation. L'aperçu du dialogue chiffre aussi les tokens du plan affiché.
+- **Full auto : même dialogue que le mode hard** (🤖 *Armer le full auto*) : projets au choix (● pod en ligne / ○ hors ligne),
+  durée en heures, projets de front, tâches par jour, seuil de session, et le même **aperçu** de ce qu'il compte faire (travail
+  resté en plan d'abord, puis propositions). Il garde les validations (refusées au bout de 15 min sans réponse).
 - **Mode hard** (☠, tableau de bord) : pleine autonomie, pour une durée choisie (1 h à 14 jours) :
   - plus aucune validation (écriture hors du projet, push sur main, cluster, `sudo`…), chaque action reste journalisée
     (`policy: hard`) ; les validations en attente sont approuvées à l'activation ;
@@ -168,8 +177,9 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
     à un pod en ligne sans jamais avancer : elles sont reprises dans leur conversation, les bloquées sont annulées puis
     relancées), puis les propositions de l'état de mémoire. Les projets dont le pod est hors ligne restent à l'arrêt (le
     cockpit ne sait pas relancer un pod) : l'aperçu les signale avec leurs tâches en attente ;
-  - le full auto est armé pour la même durée et mène **plusieurs projets de front** (jusqu'à 6, un projet à la fois, un pod
-    par projet), en enchaînant les propositions de l'état de mémoire ;
+  - le full auto est armé par défaut (case à décocher dans le dialogue), pour la même durée et sur les mêmes projets : il mène
+    **plusieurs projets de front** (jusqu'à 6, un projet à la fois, un pod par projet), en enchaînant le travail resté en plan
+    puis les propositions de l'état de mémoire ;
   - **compte rendu** (tableau de bord, *📋 Compte rendu*) : par projet, ce qui a été fait (résultat, fichiers, commits, branche,
     tests), les questions tranchées, le nombre de validations passées automatiquement et les opérations sensibles ; une
     notification annonce la fin du mode, et le compte rendu reste consultable ensuite.

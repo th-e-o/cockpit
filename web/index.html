@@ -154,15 +154,23 @@
   </dialog>
 
   <dialog id="hardDlg">
-    <div class="dlghead"><h2>☠ Mode hard</h2><button class="icon" data-close>✕</button></div>
+    <div class="dlghead"><h2 id="hardTitle">☠ Mode hard</h2><button class="icon" data-close>✕</button></div>
     <form id="hardForm" class="podform">
-      <p class="hint">Pleine autonomie : plus aucune validation, questions tranchées par Claude, propositions enchaînées, compte rendu à la fin.
-        Choisis les projets concernés ; les autres ne sont pas touchés.</p>
+      <p class="hint" id="hardIntro"></p>
+      <div class="hardsel"><span class="muted">Projets :</span>
+        <button type="button" class="btn ghost" id="hardAll">Tous</button>
+        <button type="button" class="btn ghost" id="hardOnline">En ligne</button>
+        <button type="button" class="btn ghost" id="hardNone">Aucun</button></div>
       <div class="repolist" id="hardProjects"></div>
       <div class="row2">
         <label>Durée (heures)<input id="hardHours" type="number" min="1" max="336" value="8"></label>
         <label>Projets de front<input id="hardParallel" type="number" min="1" max="6" value="3"></label>
       </div>
+      <div class="row2">
+        <label>Tâches par jour au plus<input id="hardPerDay" type="number" min="1" max="50" value="12"></label>
+        <label>Seuil de session (%)<input id="hardThreshold" type="number" min="30" max="95" value="85"></label>
+      </div>
+      <label class="check" id="hardAutoRow"><input type="checkbox" id="hardAuto" checked> 🤖 Armer aussi le full auto (enchaîne les propositions)</label>
       <div class="hardpreview" id="hardPreview"></div>
       <button type="submit" id="hardGo">☠ Activer le mode hard</button>
     </form>

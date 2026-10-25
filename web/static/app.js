@@ -4,7 +4,7 @@ const $ = (s) => document.querySelector(s);
 // replyTo : tâche dont le prochain message est la suite (undefined tant que l'historique n'est pas chargé)
 const state = { projects: [], selected: null, tasks: new Map(), order: [], lastId: 0, workerOnline: false, replay: false, replyTo: undefined,
   workers: [], diffs: new Map(), view: 'chat', bilan: null, bilanAt: 0, bilanJours: 7, repos: null,
-  commands: {}, review: new Map(), model: '', variants: 1, trust: {}, memory: null, autopilot: null, hard: null, report: null, reportAt: 0 };
+  commands: {}, review: new Map(), model: '', variants: 1, trust: {}, memory: null, autopilot: null, hard: null, week: null, report: null, reportAt: 0 };
 const MODELES = { rapide: '⚡ Rapide', standard: '● Standard', approfondi: '◆ Approfondi' };
 /** « claude-opus-5-5 » -> « Opus 5.5 » ; « claude-sonnet-4-5-20250929 » -> « Sonnet 4.5 ». */
 function modelName(id) {
@@ -1322,16 +1322,60 @@ function renderDash() {
 }
 
 // ---------- état de mémoire (projets suivis, propositions) et mode full auto
+const fmtWhen = (ts) => new Date(ts * 1000).toLocaleString('fr-FR', { weekday: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+const fmtLeft = (h) => (h >= 48 ? `${Math.round(h / 24)} j` : h >= 1 ? `${Math.round(h)} h` : `${Math.max(1, Math.round(h * 60))} min`);
+
+/** Reste de la limite hebdomadaire : ces tokens sont perdus à la réinitialisation, d'où l'incitation à lancer le mode hard. */
+function weekHtml() {
+  const w = state.week;
+  if (!w) return '';
+  const incite = w.hours_left <= 48 && w.remaining >= 0.2 && !state.hard?.enabled;
+  const est = w.remaining_tokens != null
+    ? `≈ <b>${fmtTokens(w.remaining_tokens)}</b> de tokens à dépenser${w.tasks_estimate ? ` · ≈ ${w.tasks_estimate} tâche(s) de taille moyenne` : ''}`
+    : 'Estimation en tokens disponible après quelques tâches.';
+  return `<section class="sect"><div class="secthead"><h3>⏳ Reste de la semaine</h3></div>
+    <div class="weekcard ${incite ? 'incite' : ''}">
+      ${meter('Semaine', w.utilization, `${Math.round(w.utilization * 100)} %`, `Limite hebdomadaire : ${Math.round(w.utilization * 100)} % utilisée`)}
+      <div class="wkline"><span>Réinitialisation dans <b>${fmtLeft(w.hours_left)}</b></span><span>${est}</span></div>
+      ${incite ? `<div class="wkincite">Il reste ${Math.round(w.remaining * 100)} % de ta semaine : sans activité, ces tokens seront perdus.</div>` : ''}
+      ${state.hard?.enabled ? '' : `<button class="btn ${incite ? '' : 'ghost'}" data-hard="on" data-hours="${Math.max(1, Math.min(336, Math.ceil(w.hours_left)))}">☠ Utiliser le reste avec le mode hard</button>`}
+      <div class="hint">Estimation prudente : le budget est déduit des tokens consommés par les tâches du cockpit cette semaine.</div>
+    </div></section>`;
+}
+
+/** Une ligne de la carte Autonomie : état, périmètre, compteurs et bouton. */
+function autoRow({ icon, title, on, chips, text, button }) {
+  return `<div class="arow ${on ? 'on' : ''}"><div class="ahead"><span class="aicon">${icon}</span><b>${title}</b>
+      <span class="badge ${on ? 'on' : ''}">${on ? 'Actif' : 'Inactif'}</span></div>
+    ${chips ? `<div class="chips">${chips}</div>` : ''}<div class="hint">${text}</div><div class="abtn">${button}</div></div>`;
+}
+
+function autonomyHtml(name) {
+  const a = state.autopilot, h = state.hard;
+  const chip = (t) => `<span class="chip">${t}</span>`;
+  const scope = (ids) => (ids?.length ? ids.map((id) => chip(esc(name(id)))).join('') : chip('tous les projets'));
+  const auto = autoRow({
+    icon: '🤖', title: 'Full auto', on: !!a?.enabled,
+    chips: a?.enabled ? scope(a.projects) + chip(`${a.max_parallel || 1} de front`) + chip(`${a.launched_today}/${a.max_per_day} aujourd'hui`)
+      + chip(`seuil ${Math.round(a.threshold * 100)} %`) + chip(`jusqu'au ${esc(fmtWhen(a.until))}`) : '',
+    text: a?.enabled ? 'Enchaîne le travail resté en plan puis les propositions, repart après chaque réinitialisation. Les validations restent demandées.'
+      : `${a?.stopped ? `Arrêté : ${esc(a.stopped)}. ` : ''}Enchaîne seul le travail resté en plan puis les propositions. Tu choisis les projets et vois ce qu'il compte faire avant d'armer.`,
+    button: a?.enabled ? '<button class="btn ghost" data-auto="off">Désarmer</button>' : '<button class="btn" data-auto="on">🤖 Armer le full auto…</button>',
+  });
+  const hard = autoRow({
+    icon: '☠', title: 'Mode hard', on: !!h?.enabled,
+    chips: h?.enabled ? scope(h.projects) + chip(`jusqu'au ${esc(fmtWhen(h.until))}`) + (a?.enabled ? chip('full auto armé') : chip('sans full auto')) : '',
+    text: h?.enabled ? 'Plus aucune validation, questions tranchées par Claude. Un compte rendu est dressé ci-dessous.'
+      : 'Pleine autonomie : validations approuvées, questions tranchées par Claude, full auto armé par défaut, compte rendu à la fin.',
+    button: h?.enabled ? '<button class="btn ghost" data-hard="off">Désactiver</button>' : '<button class="btn" data-hard="on">☠ Activer le mode hard…</button>',
+  });
+  return `<section class="sect"><div class="secthead"><h3>⚡ Autonomie</h3></div><div class="autocard">${auto}${hard}</div></section>`;
+}
+
 function memoryHtml() {
-  const m = state.memory, a = state.autopilot;
+  const m = state.memory;
   if (!m) return '';
   const name = (id) => state.projects.find((p) => p.id === id)?.name || m.projects.find((p) => p.id === id)?.name || id || 'Auto';
-  const until = a?.enabled ? new Date(a.until * 1000).toLocaleDateString('fr-FR', { weekday: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : '';
-  const auto = a?.enabled
-    ? `<div class="hint">🤖 Full auto armé jusqu'à ${esc(until)} · ${a.launched_today}/${a.max_per_day} tâche(s) aujourd'hui · seuil de session ${Math.round(a.threshold * 100)} %</div>
-       <button class="btn ghost" data-auto="off">Désarmer</button>`
-    : `<div class="hint">${a?.stopped ? `Arrêté : ${esc(a.stopped)}. ` : ''}Claude enchaîne les propositions ci-dessous seul, une tâche à la fois, tant que l'usage de la session reste sous le seuil et reprend après chaque réinitialisation. Les validations sans réponse sont refusées.</div>
-       <button class="btn" data-auto="on">🤖 Armer le full auto</button>`;
   const projects = m.projects.map((p) => `<article class="follow ${p.active ? '' : 'ask'}"><div class="fhead"><b>${esc(p.name || p.id)}</b>
       <span class="muted" data-ago="${Number(p.updated)}"></span><span>${p.active ? `⚙ ${p.active} en cours` : p.status === 'en_pause' ? '⏸ en pause' : ''}</span></div>
       ${p.summary ? `<div class="hint">${esc(p.summary)}</div>` : ''}</article>`).join('');
@@ -1339,32 +1383,21 @@ function memoryHtml() {
       <div class="hint">${esc(x.instruction.replace(/\n\n\(Tâche lancée par le mode full auto[^)]*\)/, '').slice(0, 220))}</div>
       <div class="fhead"><button class="btn" data-prop="lancer" data-id="${esc(x.id)}">▶ Lancer</button>
         <button class="btn ghost" data-prop="ignorer" data-id="${esc(x.id)}">Ignorer</button></div></article>`).join('');
-  const hard = state.hard?.enabled
-    ? `<div class="hint">☠ Mode hard actif${state.hard.projects?.length ? ` sur ${state.hard.projects.map((id) => esc(name(id))).join(', ')}` : ''} jusqu'à ${esc(new Date(state.hard.until * 1000).toLocaleString('fr-FR', { weekday: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))} : plus aucune validation n'est demandée.</div>
-       <button class="btn ghost" data-hard="off">Désactiver le mode hard</button>`
-    : `<div class="hint">Mode hard : pleine autonomie. Claude ne demande plus rien (validations approuvées, questions tranchées par lui), mène plusieurs projets de front en enchaînant les propositions, et dresse un compte rendu de ce qui a été fait. Seuls les refus absolus de la politique restent.</div>
-       <button class="btn ghost" data-hard="on">☠ Activer le mode hard</button>`;
-  return `<section class="sect"><div class="secthead"><h3>Mode hard</h3></div>${hard}</section>${reportHtml()}
-    <section class="sect"><div class="secthead"><h3>Mémoire · ${m.projects.length} projet(s)</h3></div>
-    <div class="follows">${projects || '<div class="emptyd">Les projets apparaissent ici après leur première tâche terminée.</div>'}</div></section>
+  return `${weekHtml()}${autonomyHtml(name)}${reportHtml()}
     <section class="sect"><div class="secthead"><h3>Propositions · ${m.proposals.length}</h3><button type="button" class="btn ghost" data-prop="ajouter">＋ Ajouter</button></div>
-    ${auto}<div class="follows">${proposals || '<div class="emptyd">Rien en attente : les prochaines étapes des tâches terminées arrivent ici, et le full auto en génère quand la file est vide.</div>'}</div></section>`;
+    <div class="follows">${proposals || '<div class="emptyd">Rien en attente : les prochaines étapes des tâches terminées arrivent ici, et le full auto en génère quand la file est vide.</div>'}</div></section>
+    <section class="sect"><div class="secthead"><h3>Mémoire · ${m.projects.length} projet(s)</h3></div>
+    <div class="follows">${projects || '<div class="emptyd">Les projets apparaissent ici après leur première tâche terminée.</div>'}</div></section>`;
 }
 
 async function autoToggle(on) {
-  if (!on) { await api('autopilote', { enabled: false }); return poll(); }
-  const days = Number(prompt('Combien de jours le full auto peut-il avancer ? (1 à 14)', '3'));
-  if (!days) return;
-  const max = Number(prompt('Combien de tâches par jour au plus ?', '12'));
-  if (!max) return;
-  const parallel = Number(prompt('Combien de projets mener de front au maximum ? (1 à 6)', '1'));
-  if (!parallel) return;
-  await api('autopilote', { enabled: true, days, max_per_day: max, max_parallel: parallel });
+  if (on) return openHardDialog('auto');
+  await api('autopilote', { enabled: false });
   poll();
 }
 
-async function hardToggle(on) {
-  if (on) return openHardDialog();
+async function hardToggle(on, hours = 0) {
+  if (on) return openHardDialog('hard', hours);
   await api('mode_hard', { enabled: false });
   state.reportAt = 0;
   poll();
@@ -1372,8 +1405,26 @@ async function hardToggle(on) {
 
 const hardChosen = () => [...document.querySelectorAll('#hardProjects input:checked')].map((i) => i.value);
 
-/** Dialogue du mode hard : projets concernés, durée, parallélisme, et aperçu de ce que Claude compte faire. */
-function openHardDialog() {
+/** Dialogue commun au full auto et au mode hard : projets concernés, durée, parallélisme, plafonds, et aperçu de ce que Claude compte faire. */
+const DIALOG_MODES = {
+  hard: { title: '☠ Mode hard', go: '☠ Activer le mode hard', hours: 8, perDay: 40, threshold: 95,
+    intro: 'Pleine autonomie : plus aucune validation, questions tranchées par Claude, compte rendu à la fin. Choisis les projets concernés ; les autres ne sont pas touchés.' },
+  auto: { title: '🤖 Full auto', go: '🤖 Armer le full auto', hours: 24, perDay: 12, threshold: 85,
+    intro: 'Claude enchaîne seul les propositions et reprend le travail resté en plan, tant que l\'usage de la session reste sous le seuil, et repart après chaque réinitialisation. Les validations restent demandées (refusées au bout de 15 min sans réponse). Choisis les projets concernés.' },
+};
+let dialogMode = 'hard';
+
+function openHardDialog(mode = 'hard', hours = 0) {
+  dialogMode = mode;
+  const m = DIALOG_MODES[mode];
+  $('#hardTitle').textContent = m.title;
+  $('#hardIntro').textContent = m.intro;
+  $('#hardGo').textContent = m.go;
+  $('#hardHours').value = hours || m.hours;
+  $('#hardPerDay').value = m.perDay;
+  $('#hardThreshold').value = m.threshold;
+  $('#hardAutoRow').classList.toggle('hidden', mode !== 'hard');
+  $('#hardAuto').checked = true;  // le mode hard arme le full auto par défaut
   const list = state.projects;
   $('#hardProjects').innerHTML = list.length ? list.map((p) => `<label class="check"><input type="checkbox" value="${esc(p.id)}" ${p.online ? 'checked' : ''}>
       <span>${esc(p.name || p.id)}</span><span class="off">${p.online ? '● pod en ligne' : '○ pod hors ligne'}</span></label>`).join('')
@@ -1382,6 +1433,14 @@ function openHardDialog() {
   $('#hardGo').disabled = false;
   $('#hardDlg').showModal();
   refreshHardPreview();
+}
+
+/** Estimation en tokens du plan affiché, rapportée à ce qu'il reste de la semaine. */
+function tokenLine(r) {
+  const t = r.tokens || {};
+  const est = t.plan ? `≈ ${fmtTokens(t.plan)} tokens pour ${r.total} tâche(s) (≈ ${fmtTokens(t.avg_task)} par tâche)` : '';
+  const left = t.remaining ? `${est ? ' · ' : ''}il reste ≈ ${fmtTokens(t.remaining)} cette semaine (${Math.round(t.remaining_ratio * 100)} %)` : '';
+  return est || left ? `<div class="muted">💰 ${est}${left}</div>` : '';
 }
 
 let hardPreviewTimer = 0;
@@ -1402,21 +1461,35 @@ function refreshHardPreview() {
         ${r.plan.length ? `<ol>${lines}</ol>${r.total > r.plan.length ? `<div class="muted">… et ${r.total - r.plan.length} de plus</div>` : ''}
           <div class="muted">Dans l'ordre : d'abord le travail resté en plan (le plus ancien en premier), puis les propositions.</div>`
         : '<div class="muted">Rien en mémoire pour ces projets : Claude proposera d\'abord des tâches à partir de l\'historique de chaque projet.</div>'}
+        ${tokenLine(r)}
         ${offline.length ? `<div class="muted">⏸ Hors ligne, donc à l'arrêt tant que leur pod ne revient pas : ${offline.map((p) => `${esc(p.name)}${p.waiting ? ` (${p.waiting} tâche(s) en attente depuis ${ago(p.waiting_since)})` : ''}`).join(', ')}.</div>` : ''}`;
     } catch (e) { $('#hardPreview').textContent = e.message; }
   }, 250);
 }
 
 $('#hardProjects').addEventListener('change', refreshHardPreview);
+const hardSelect = (pick) => {
+  document.querySelectorAll('#hardProjects input').forEach((i) => { i.checked = pick(state.projects.find((p) => p.id === i.value)); });
+  refreshHardPreview();
+};
+$('#hardAll').addEventListener('click', () => hardSelect(() => true));
+$('#hardOnline').addEventListener('click', () => hardSelect((p) => !!p?.online));
+$('#hardNone').addEventListener('click', () => hardSelect(() => false));
 $('#hardForm').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   const projects = hardChosen();
   const hours = Number($('#hardHours').value), parallel = Number($('#hardParallel').value);
+  const body = { enabled: true, hours, max_parallel: parallel, projects, max_per_day: Number($('#hardPerDay').value) || undefined,
+    threshold: (Number($('#hardThreshold').value) || 85) / 100 };
   if (!projects.length || !hours || !parallel) return;
-  if (!confirm(`Activer le mode hard pendant ${hours} h sur ${projects.length} projet(s), ${parallel} de front ?\nClaude ne te demandera plus rien : validations approuvées (écrire n'importe où dans le pod, pousser sur main, cluster, sudo), questions tranchées par lui, propositions enchaînées. Un compte rendu sera dressé. Seuls les outils interdits (deny) restent bloqués.`)) return;
+  const hard = dialogMode === 'hard';
+  const sure = hard
+    ? `Activer le mode hard pendant ${hours} h sur ${projects.length} projet(s), ${parallel} de front${$('#hardAuto').checked ? ', full auto armé' : ', sans full auto'} ?\nClaude ne te demandera plus rien : validations approuvées (écrire n'importe où dans le pod, pousser sur main, cluster, sudo), questions tranchées par lui. Un compte rendu sera dressé. Seuls les outils interdits (deny) restent bloqués.`
+    : `Armer le full auto pendant ${hours} h sur ${projects.length} projet(s), ${parallel} de front, ${body.max_per_day || 12} tâche(s) par jour au plus ?`;
+  if (!confirm(sure)) return;
   $('#hardGo').disabled = true;
   try {
-    await api('mode_hard', { enabled: true, hours, max_parallel: parallel, projects });
+    await api(hard ? 'mode_hard' : 'autopilote', hard ? { ...body, auto: $('#hardAuto').checked } : body);
     $('#hardDlg').close();
     state.reportAt = 0;
     poll();
@@ -1668,6 +1741,7 @@ async function poll() {
     state.memory = s.memory || null;
     state.autopilot = s.autopilot || null;
     state.hard = s.hard || null;
+    state.week = s.week || null;
     renderUsageBar();
     renderPip();
     updateTrust();
@@ -1801,7 +1875,7 @@ async function onClick(ev) {
       if (b.dataset.nextRun) b.disabled = true;
       await runNextStep(b.dataset.nextEdit || b.dataset.nextRun, Number(b.dataset.i), !!b.dataset.nextRun);
     } else if (b.dataset.hard) {
-      await hardToggle(b.dataset.hard === 'on');
+      await hardToggle(b.dataset.hard === 'on', Number(b.dataset.hours) || 0);
     } else if (b.dataset.auto) {
       await autoToggle(b.dataset.auto === 'on');
     } else if (b.dataset.prop) {

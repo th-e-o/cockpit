@@ -285,7 +285,30 @@ section.flash > .task { animation: flash 1.4s ease-out; }
 .brecent .rinst { flex: 1; min-width: 0; font-size: 13px; }
 .brecent:hover .rinst { color: var(--accent); }
 
+/* ---------- Autonomie : full auto, mode hard, reste de la semaine */
+.autocard { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 300px), 1fr)); gap: 10px; }
+.arow { display: flex; flex-direction: column; gap: 8px; background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--line);
+  border-radius: var(--radius); padding: 12px 14px; }
+.arow.on { border-left-color: var(--ok); background: color-mix(in srgb, var(--ok) 7%, var(--panel)); }
+.ahead { display: flex; align-items: center; gap: 8px; font-size: 14px; }
+.ahead .badge { margin-left: auto; }
+.badge { font-size: 11px; font-weight: 600; padding: 2px 9px; border-radius: 99px; background: var(--panel2); color: var(--muted); border: 1px solid var(--line); }
+.badge.on { background: color-mix(in srgb, var(--ok) 18%, var(--panel)); color: var(--ok); border-color: color-mix(in srgb, var(--ok) 40%, var(--line)); }
+.chips { display: flex; flex-wrap: wrap; gap: 5px; }
+.chip { font-size: 11.5px; padding: 2px 8px; border-radius: 99px; background: var(--panel2); border: 1px solid var(--line); color: var(--text); }
+.abtn { margin-top: auto; }
+.weekcard { display: flex; flex-direction: column; gap: 8px; background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px 14px; }
+.weekcard.incite { border-color: var(--accent); box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent); }
+.weekcard .meter { grid-template-columns: 72px minmax(40px, 1fr) auto; }
+.wkline { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 4px 14px; font-size: 13px; }
+.wkincite { font-size: 13px; font-weight: 600; color: var(--accent); }
+
 /* ---------- Mode hard */
+.hardsel { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 12.5px; }
+.hardsel .btn { padding: 3px 10px; font-size: 12.5px; }
+#hardProjects .check { cursor: pointer; }
+#hardProjects .check:hover { background: var(--panel2); }
+#hardGo:disabled { opacity: .5; }
 #hardDlg { width: min(94vw, 560px); }
 #hardProjects .check { padding: 8px 10px; border-bottom: 1px solid var(--line); }
 #hardProjects .check:last-child { border-bottom: 0; }

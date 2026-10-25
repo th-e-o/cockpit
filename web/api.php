@@ -37,6 +37,8 @@ const AUTO_PAR_JOUR = 12;               // full auto : tâches lancées par jour
 const AUTO_JOURS_MAX = 14;              // full auto : durée maximale d'un armement
 const AUTO_ECHECS_MAX = 3;              // full auto : arrêt après autant d'erreurs de suite
 const ALERTES_MAX = 10;
+const INCITATION_VERIF = 600;           // secondes entre deux vérifications du reste de la semaine
+const INCITATION_PALIERS = [[48, 0.20], [12, 0.10]];  // [heures avant la réinitialisation, part restante minimale]
 const AUTO_PARALLELE_MAX = 6;           // full auto : projets menés de front, au plus
 const HARD_REPONSES_MAX = 4;            // mode hard : réponses automatiques aux questions de Claude, par conversation
 const HARD_HEURES_MAX = 336;            // mode hard : durée maximale d'un armement (14 jours)
@@ -573,6 +575,69 @@ function autopilote_lire(): array {
     return $a;
 }
 
+/** Dernier état d'usage du forfait publié par un pod en ligne (limites de session et de semaine). */
+function usage_courant(): ?array {
+    $meilleur = null;
+    foreach (q('SELECT etat FROM workers WHERE etat IS NOT NULL AND vu_le > ?', [time() - 3600])->fetchAll(PDO::FETCH_COLUMN) as $e) {
+        $u = (json_decode($e, true) ?: [])['usage'] ?? null;
+        if ($u && !empty($u['limits']) && (!$meilleur || ($u['ts'] ?? 0) > ($meilleur['ts'] ?? 0))) $meilleur = $u;
+    }
+    return $meilleur;
+}
+
+/** Ce qu'il reste de la limite de la semaine et une estimation en tokens : le budget est déduit des tokens consommés par les tâches
+ * du cockpit pendant la semaine divisés par la part d'usage correspondante (estimation prudente : l'usage hors cockpit n'est pas compté). */
+function estimation_semaine(bool $cache = true): ?array {
+    if ($cache && ($c = json_decode(reglage('estimation_semaine') ?? '', true)) && time() - $c['calcule'] < 60) return $c['data'];
+    $sem = null;
+    foreach ((usage_courant()['limits'] ?? []) as $l) if (($l['type'] ?? '') === 'seven_day') $sem = $l;
+    $res = null;
+    if ($sem && isset($sem['utilization']) && !empty($sem['resets_at']) && (int)$sem['resets_at'] > time()) {
+        $consomme = 0;
+        $n = 0;
+        foreach (q("SELECT extra FROM taches WHERE cree_le >= ? AND extra LIKE '%\"tokens\"%'", [(int)$sem['resets_at'] - 7 * 86400])->fetchAll(PDO::FETCH_COLUMN) as $e) {
+            $t = (int)((json_decode($e, true) ?: [])['tokens']['total'] ?? 0);
+            if ($t > 0) { $consomme += $t; $n++; }
+        }
+        $util = (float)$sem['utilization'];
+        $budget = $util >= 0.03 && $consomme > 0 ? (int)round($consomme / $util) : null;
+        $reste = $budget !== null ? (int)round($budget * (1 - $util)) : null;
+        $moyenne = $n ? (int)round($consomme / $n) : null;
+        $res = ['utilization' => $util, 'remaining' => max(0.0, 1 - $util), 'resets_at' => (int)$sem['resets_at'],
+                'hours_left' => max(0.0, round(((int)$sem['resets_at'] - time()) / 3600, 1)), 'used_tokens' => $consomme, 'budget_tokens' => $budget,
+                'remaining_tokens' => $reste, 'avg_task_tokens' => $moyenne, 'tasks_estimate' => $reste !== null && $moyenne ? intdiv($reste, $moyenne) : null];
+    }
+    if ($res) reglage('estimation_semaine', json_encode(['calcule' => time(), 'data' => $res]));
+    return $res;
+}
+
+function tokens_lisibles(int $n): string {
+    return $n >= 1_000_000 ? str_replace('.', ',', (string)round($n / 1_000_000, 1)) . ' M' : ($n >= 1000 ? round($n / 1000) . ' k' : (string)$n);
+}
+
+/** Incitation : s'il reste de la limite de la semaine à l'approche de sa réinitialisation, ces tokens seront perdus : on propose le mode hard. */
+function incitation_hard(): void {
+    if (time() - (int)(reglage('incitation_verif') ?? 0) < INCITATION_VERIF) return;
+    $e = hard_lire()['enabled'] ? null : estimation_semaine(false);
+    if (!$e) return;  // mode hard déjà actif, ou pas encore d'usage publié : on revérifie au prochain poll (lecture légère)
+    reglage('incitation_verif', (string)time());
+    $etat = json_decode(reglage('incitation') ?? '', true) ?: [];
+    if (($etat['reset'] ?? 0) !== $e['resets_at']) $etat = ['reset' => $e['resets_at'], 'envoyees' => []];
+    $palier = null;
+    foreach (INCITATION_PALIERS as [$heures, $min]) {  // du plus large au plus serré : on garde le plus serré qui s'applique
+        if ($e['hours_left'] <= $heures && $e['remaining'] >= $min) $palier = $heures;
+    }
+    if ($palier !== null && !in_array($palier, $etat['envoyees'], true)) {
+        foreach (INCITATION_PALIERS as [$heures]) if ($heures >= $palier) $etat['envoyees'][] = $heures;
+        $reste = round($e['remaining'] * 100);
+        $quand = $e['hours_left'] >= 24 ? round($e['hours_left'] / 24, 1) . ' j' : round($e['hours_left']) . ' h';
+        $tokens = $e['remaining_tokens'] !== null ? ' (≈ ' . tokens_lisibles($e['remaining_tokens']) . ' de tokens' . ($e['tasks_estimate'] ? ', ≈ ' . $e['tasks_estimate'] . ' tâches' : '') . ')' : '';
+        alerte_ajouter('incitation-hard', "☠ Il reste $reste % de la semaine",
+            "Ta limite hebdomadaire se réinitialise dans $quand : il reste$tokens à dépenser, sinon ils sont perdus. Active le mode hard pour les utiliser.");
+    }
+    reglage('incitation', json_encode($etat));
+}
+
 /** Mode hard : plus aucune validation demandée à l'utilisateur (seuls les refus « deny » de la politique restent). */
 function hard_lire(): array {
     $h = json_decode(reglage('mode_hard') ?? '', true) ?: [];
@@ -653,7 +718,11 @@ function hard_apercu(array $portee): array {
         $projets[] = ['id' => $p['id'], 'name' => $p['name'] ?? $p['id'], 'online' => $p['online'], 'pod' => $p['worker_name'] ?? '',
                       'summary' => $memoire[$p['id']]['summary'] ?? '', 'waiting' => (int)$att['n'], 'waiting_since' => (int)$att['depuis']];
     }
-    return ['plan' => array_slice($plan, 0, 14), 'total' => count($plan), 'projects' => $projets];
+    $sem = estimation_semaine();
+    $moy = $sem['avg_task_tokens'] ?? null;
+    return ['plan' => array_slice($plan, 0, 14), 'total' => count($plan), 'projects' => $projets,
+            'tokens' => ['avg_task' => $moy, 'plan' => $moy ? $moy * count($plan) : null, 'remaining' => $sem['remaining_tokens'] ?? null,
+                         'remaining_ratio' => $sem['remaining'] ?? null, 'hours_left' => $sem['hours_left'] ?? null]];
 }
 
 /** Mode hard : Claude a posé des questions et personne ne peut répondre : il décide seul et continue. */
@@ -801,6 +870,7 @@ switch ($route) {
             'memory' => memoire_publique(),
             'autopilot' => autopilote_lire(),
             'hard' => hard_lire(),
+            'week' => estimation_semaine(),
         ]);
 
     case 'diff': // diffs par fichier des modifications d'une tâche
@@ -1148,6 +1218,7 @@ switch ($route) {
             $etat = json_encode($in['state'], JSON_UNESCAPED_UNICODE);
             if (strlen($etat) <= 64000) q('UPDATE workers SET etat = ? WHERE id = ?', [$etat, $wid]);
         }
+        incitation_hard();  // après l'enregistrement de l'état : l'usage du forfait vient de ce pod
         if (!empty($in['hello'])) {
             // Ce worker vient de (re)démarrer : ce qu'il exécutait est perdu.
             foreach (q("SELECT id FROM taches WHERE livree = 1 AND worker_id = ? AND statut NOT IN ('done','error','cancelled','needs_project')", [$wid])->fetchAll(PDO::FETCH_COLUMN) as $id) {
@@ -1426,9 +1497,9 @@ switch ($route) {
             $a['enabled'] = false;
             $a['stopped'] = 'désarmé depuis le téléphone';
         } else {
-            $jours = max(1, min(AUTO_JOURS_MAX, (int)($in['days'] ?? 3)));
+            $heures = isset($in['hours']) ? (int)$in['hours'] : (int)($in['days'] ?? 3) * 24;
             $a['enabled'] = true;
-            $a['until'] = time() + $jours * 86400;
+            $a['until'] = time() + max(1, min(AUTO_JOURS_MAX * 24, $heures)) * 3600;
             $a['since'] = time();
             $a['failures'] = 0;
             $a['stopped'] = '';
@@ -1453,11 +1524,14 @@ switch ($route) {
             $h['until'] = time() + max(1, min(HARD_HEURES_MAX, (int)($in['hours'] ?? 8))) * 3600;
             // Les validations déjà en attente sont approuvées : le mode s'applique tout de suite
             q("UPDATE validations SET decision = 'approve' WHERE decision IS NULL");
-            // Pleine autonomie : le full auto est armé pour la même durée, sur plusieurs projets de front
-            $a = ['enabled' => true, 'until' => $h['until'], 'since' => time(), 'failures' => 0, 'stopped' => '', 'threshold' => 0.95,
-                  'max_per_day' => 40, 'projects' => $h['projects'],
-                  'max_parallel' => max(1, min(AUTO_PARALLELE_MAX, (int)($in['max_parallel'] ?? 3)))] + autopilote_lire();
-            autopilote_ecrire($a);
+            // Le full auto est armé par défaut, pour la même durée, sur les mêmes projets (auto = false : validations seules)
+            if (!isset($in['auto']) || !empty($in['auto'])) {
+                $a = ['enabled' => true, 'until' => $h['until'], 'since' => time(), 'failures' => 0, 'stopped' => '',
+                      'threshold' => max(0.3, min(0.95, (float)($in['threshold'] ?? 0.95))), 'projects' => $h['projects'],
+                      'max_per_day' => max(1, min(50, (int)($in['max_per_day'] ?? 40))),
+                      'max_parallel' => max(1, min(AUTO_PARALLELE_MAX, (int)($in['max_parallel'] ?? 3)))] + autopilote_lire();
+                autopilote_ecrire($a);
+            }
         }
         reglage('mode_hard', json_encode($h));
         q('INSERT INTO audit(donnees, ts) VALUES(?, ?)', [json_encode(['ts' => date('Y-m-d\TH:i:s'), 'event' => 'mode_hard', 'enabled' => $h['enabled'], 'until' => $h['until'], 'projects' => $h['projects']]), time()]);
