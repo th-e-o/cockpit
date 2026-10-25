@@ -1443,6 +1443,27 @@ switch ($route) {
         $pdo->exec('PRAGMA wal_checkpoint(TRUNCATE)');
         $sauvegarde = 'cockpit.db.sauvegarde-' . date('Ymd-His');
         if (!copy(__DIR__ . '/data/cockpit.db', __DIR__ . '/data/' . $sauvegarde)) erreur('sauvegarde impossible : base laissée telle quelle', 500);
+        if (!empty($in['reconstruire'])) {
+            // Table dont l'arbre est abîmé (VACUUM conserve les rowid) : copie des lignes lisibles, recréation, réinsertion.
+            $t = (string)$in['reconstruire'];
+            $schema = $pdo->query('SELECT sql FROM sqlite_master WHERE type = \'table\' AND name = ' . $pdo->quote($t))->fetchColumn() ?: erreur('table inconnue', 404);
+            $index = $pdo->query('SELECT sql FROM sqlite_master WHERE type = \'index\' AND sql IS NOT NULL AND tbl_name = ' . $pdo->quote($t))->fetchAll(PDO::FETCH_COLUMN);
+            $liste = '"' . implode('","', array_column($pdo->query("PRAGMA table_info(\"$t\")")->fetchAll(), 'name')) . '"';
+            try {
+                $pdo->exec('BEGIN IMMEDIATE');
+                $pdo->exec("CREATE TEMP TABLE reparation AS SELECT $liste FROM \"$t\"");
+                $n = (int)$pdo->query('SELECT COUNT(*) FROM reparation')->fetchColumn();
+                $pdo->exec("DROP TABLE \"$t\"");
+                $pdo->exec($schema);
+                foreach ($index as $sql) $pdo->exec($sql);
+                $pdo->exec("INSERT INTO \"$t\" ($liste) SELECT $liste FROM reparation");
+                $pdo->exec('COMMIT');
+            } catch (Throwable $e) {
+                try { $pdo->exec('ROLLBACK'); } catch (Throwable) {}
+                repondre(['reconstruite' => false, 'erreur' => $e->getMessage(), 'sauvegarde' => $sauvegarde], 500);
+            }
+            repondre(['reconstruite' => $t, 'lignes' => $n, 'apres' => $controle(), 'sauvegarde' => $sauvegarde]);
+        }
         try {
             $pdo->exec('REINDEX');
             $pdo->exec('VACUUM');
