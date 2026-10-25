@@ -1,7 +1,6 @@
 """Barre d'usage du forfait Claude et recherche dans les dépôts GitHub de l'utilisateur (API simulées)."""
 
 import asyncio
-import time
 
 import httpx
 import pytest
