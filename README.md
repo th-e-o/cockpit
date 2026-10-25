@@ -170,7 +170,9 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
 - **Réveil des pods** : quand le full auto ou le mode hard est armé, l'orchestrateur relance (`kubectl exec`) le worker des pods
   de projet **prêts mais muets** (un worker s'arrête définitivement quand le relais le croit remplacé, et rien ne le relançait)
   qui ont du travail (tâches en attente, propositions), au plus une fois toutes les 10 min par projet. Il ne crée ni ne remplace
-  aucun service : un pod absent ou arrêté n'est pas relancé (l'erreur s'affiche). La carte *Autonomie* montre en direct les
+  aucun service : un pod absent ou arrêté n'est pas relancé (l'erreur s'affiche) ; les secrets dont le worker a besoin (clé du worker, jeton Claude), absents de
+  l'environnement du pod après son démarrage, sont transmis par l'orchestrateur sur l'entrée standard de `kubectl exec` (jamais en
+  argument, jamais écrits sur disque), et le réveil ne répond « relancé » qu'après avoir vérifié que le worker tourne. La carte *Autonomie* montre en direct les
   tâches automatiques en cours, la raison d'une attente et les pods relancés.
 - **Reste de la semaine et incitation** (tableau de bord, *⏳ Reste de la semaine*) : jauge hebdomadaire, temps avant la
   réinitialisation et **estimation en tokens** de ce qu'il reste à dépenser (budget déduit des tokens des tâches du cockpit

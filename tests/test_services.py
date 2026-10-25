@@ -163,17 +163,35 @@ def test_reveiller_worker(monkeypatch):
         {"metadata": {"name": "cockpit-lexipix-vscode-python-0"}, "spec": {"containers": [{"name": "vscode-python"}]},
          "status": {"phase": "Running", "containerStatuses": [{"ready": True}]}}]}
 
-    async def run(*cmd, timeout=300):
+    stdins = []
+
+    async def run(*cmd, timeout=300, stdin=None):
         calls.append(cmd)
+        stdins.append(stdin)
         return json.dumps(pods) if cmd[1] == "get" else "relancé"
 
     monkeypatch.setattr(svc, "_run", run)
     monkeypatch.setattr(svc, "namespace", lambda: "user-test")
+    monkeypatch.setenv("COCKPIT_WORKER_KEY", "cle-secrete-du-worker")
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "jeton-secret")
     assert asyncio.run(svc.reveiller_worker("lexipix")) == "relancé"
     get, ex = calls
+    # Les secrets passent par l'entrée standard : jamais dans les arguments de la commande
+    assert stdins[1] == b"cle-secrete-du-worker\njeton-secret\n" and "-i" in ex
+    assert "cle-secrete" not in " ".join(ex) and "jeton-secret" not in " ".join(ex)
     assert "app.kubernetes.io/instance=cockpit-lexipix" in get and "user-test" in get
-    assert ex[:4] == ("kubectl", "exec", "-n", "user-test") and "cockpit-lexipix-vscode-python-0" in ex and "PROJET=lexipix" in ex
+    assert ex[:5] == ("kubectl", "exec", "-i", "-n", "user-test") and "cockpit-lexipix-vscode-python-0" in ex and "PROJET=lexipix" in ex
     assert ex[ex.index("-c") + 1] == "vscode-python" and "helm" not in " ".join(ex)
+    # Sans clé de worker côté orchestrateur : rien n'est lancé dans le pod
+    calls.clear()
+    monkeypatch.delenv("COCKPIT_WORKER_KEY")
+    try:
+        asyncio.run(svc.reveiller_worker("lexipix"))
+        raise AssertionError("clé absente")
+    except svc.ServiceError as e:
+        assert "clé du worker" in str(e)
+    assert all(c[1] != "exec" for c in calls)
+    monkeypatch.setenv("COCKPIT_WORKER_KEY", "cle-secrete-du-worker")
     # Nom invalide : aucune commande lancée ; pod pas prêt : erreur claire
     calls.clear()
     for bad in ("Lexi pix", "a;rm -rf ~", ""):

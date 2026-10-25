@@ -126,10 +126,11 @@ def git_values() -> dict[str, str]:
     return {k: env[v] for k, v in keys.items() if env.get(v)}
 
 
-async def _run(*cmd: str, timeout: float = 300) -> str:
-    proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+async def _run(*cmd: str, timeout: float = 300, stdin: bytes | None = None) -> str:
+    proc = await asyncio.create_subprocess_exec(*cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+                                                stdin=asyncio.subprocess.PIPE if stdin is not None else None)
     try:
-        out, _ = await asyncio.wait_for(proc.communicate(), timeout)
+        out, _ = await asyncio.wait_for(proc.communicate(stdin), timeout)
     except asyncio.TimeoutError:
         proc.kill()
         raise ServiceError(f"{cmd[0]} : délai dépassé")
@@ -235,11 +236,17 @@ def nom_depuis_depot(url: str) -> str:
     return re.sub(r"-+", "-", re.sub(r"[^a-z0-9-]", "-", base)).strip("-")[:30].strip("-") or "projet"
 
 
-# Relance du worker dans un pod de projet : l'environnement de scripts/onyxia-init.sh n'existe plus après le démarrage du pod.
+# Relance du worker dans un pod de projet. Les secrets (clé du worker, jeton Claude) ne sont plus dans l'environnement du pod une fois
+# son script d'init terminé et le pod n'a pas Vault CLI : l'orchestrateur, qui les a, les transmet sur l'entrée standard (jamais en
+# argument de commande, jamais écrits sur disque). Le script vérifie que le worker tourne bien après son démarrage.
 _WAKE_SCRIPT = (
     'cd "$HOME/work/.cockpit" || { echo "cockpit absent du pod"; exit 3; }; '
     'pgrep -f "[c]ockpit.worker run" >/dev/null && { echo "déjà actif"; exit 0; }; '  # [c] : ne se reconnaît pas lui-même
-    'COCKPIT_ROLE=projet COCKPIT_AUTO_UPDATE=1 COCKPIT_WORKER_ID="$HOSTNAME" COCKPIT_WORKER_NAME="$PROJET" ./run.sh >/dev/null 2>&1; echo "relancé"'
+    'IFS= read -r COCKPIT_WORKER_KEY; IFS= read -r CLAUDE_CODE_OAUTH_TOKEN; export COCKPIT_WORKER_KEY; '
+    '[ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && export CLAUDE_CODE_OAUTH_TOKEN; '
+    'COCKPIT_ROLE=projet COCKPIT_AUTO_UPDATE=1 COCKPIT_WORKER_ID="$HOSTNAME" COCKPIT_WORKER_NAME="$PROJET" ./run.sh >/dev/null 2>&1; sleep 6; '
+    'if pgrep -f "[c]ockpit.worker run" >/dev/null; then echo "relancé"; '
+    'else echo "le worker s\'est arrêté au démarrage : $(grep -vE \'^[|]\' data/worker.log | tail -n 2 | tr \'\\n\' \' \')"; exit 4; fi'
 )
 
 
@@ -255,9 +262,13 @@ async def reveiller_worker(nom: str) -> str:
                 and all(c.get("ready") for c in i["status"]["containerStatuses"])), None)
     if not pod:
         raise ServiceError(f"aucun pod prêt pour {PREFIX}{nom} (service absent, arrêté ou en démarrage)")
+    key = os.environ.get("COCKPIT_WORKER_KEY", "").strip()
+    if not key:
+        raise ServiceError("clé du worker introuvable dans l'environnement de l'orchestrateur : impossible de la transmettre au pod")
+    secrets_in = f"{key}\n{os.environ.get('CLAUDE_CODE_OAUTH_TOKEN', '').strip()}\n".encode()
     container = pod["spec"]["containers"][0]["name"]
-    return await _run("kubectl", "exec", "-n", ns, pod["metadata"]["name"], "-c", container, "--",
-                      "env", f"PROJET={nom}", "bash", "-c", _WAKE_SCRIPT, timeout=120)
+    return await _run("kubectl", "exec", "-i", "-n", ns, pod["metadata"]["name"], "-c", container, "--",
+                      "env", f"PROJET={nom}", "bash", "-c", _WAKE_SCRIPT, timeout=120, stdin=secrets_in)
 
 
 async def arreter(nom: str) -> str:
