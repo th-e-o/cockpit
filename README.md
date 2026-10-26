@@ -284,6 +284,8 @@ en même temps, qui les a arrêtés pour toujours) a conduit à ces garde-fous :
 - Une tâche en cours est perdue si le worker redémarre : elle passe en erreur et ses validations expirent.
 - Un worktree part du dernier commit : les modifications non commitées du dossier principal n'y sont pas.
   Les nouveaux fichiers de plus de 5 Mo (données, modèles) sont ignorés par le résumé des modifications.
+- Ce qu'il reste à faire pour une vraie mise en production (CI de tests, sécurité, sauvegardes, supervision…) :
+  [docs/mise-en-production.md](docs/mise-en-production.md).
 
 ## Tests
 
