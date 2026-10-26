@@ -109,6 +109,34 @@ répondu, fais le travail (ou transmets un cahier des charges complet, réponses
 simple, avance directement sans poser de question.
 """
 
+MEMORY_FILE = "CLAUDE.md"
+MEMORY_MIN = 150  # caractères : en dessous, la mémoire du projet est considérée comme absente
+
+MEMORY_INIT_APPEND = """
+MÉMOIRE DU PROJET ABSENTE : ce projet n'a pas de CLAUDE.md (ou il est vide). C'est la PREMIÈRE chose à faire, avant la demande de
+l'utilisateur : Cockpit lit ce fichier au début de chaque tâche pour savoir par où partir. Explore d'abord le dépôt (README, manifestes
+de dépendances, arborescence, tests, historique git récent) puis écris CLAUDE.md à la racine du projet, concis (moins de 150 lignes),
+en français, avec ces sections : Objectif · Stack et structure · Commandes (installer, lancer, tester, linter) · Conventions ·
+État actuel · Prochaines étapes (3 à 6 pistes concrètes par ordre de priorité, pour que Cockpit puisse repartir seul). N'invente
+rien : écris « à préciser » quand tu ne sais pas. Si le dépôt est vide ou presque, déduis l'objectif et la stack visés de la
+description du projet et de la demande de l'utilisateur. Cette étape ne compte pas comme le travail demandé : fais-la d'abord,
+puis traite la demande. Ne pousse pas ce fichier sur main.
+"""
+
+MEMORY_UPKEEP_APPEND = """
+Mémoire du projet : CLAUDE.md est lu au début de chaque tâche. Si ton travail change l'objectif, la structure, les commandes ou
+l'état d'avancement, mets à jour CLAUDE.md (surtout « État actuel » et « Prochaines étapes ») avant de terminer ; sinon ne le touche pas.
+"""
+
+
+def memory_missing(project_cwd: str) -> bool:
+    """La mémoire du projet (CLAUDE.md à la racine de son dossier principal) est absente ou vide."""
+    try:
+        return len(Path(project_cwd, MEMORY_FILE).read_text().strip()) < MEMORY_MIN
+    except OSError:
+        return True
+
+
 HARD_APPEND = """
 MODE HARD : l'utilisateur n'est pas là et personne ne répondra. Ne pose AUCUNE question (n'appelle pas poser_question,
 ne termine pas ta réponse par une question) et n'attends aucune confirmation. Quand une information te manque,
@@ -598,6 +626,7 @@ class Runner:
             append += PREVIEW_APPEND.format(**self.preview)
         if not self.services and delegate:
             append += PROJECT_APPEND.format(project=project.id)
+        append += MEMORY_INIT_APPEND if memory_missing(project.cwd) else MEMORY_UPKEEP_APPEND  # le dossier principal, pas le worktree
         if self.is_hard(project.id):
             append += HARD_APPEND
         elif not task.context and not task.parent and not task.reply_to_task:  # première demande d'une conversation

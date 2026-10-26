@@ -223,3 +223,28 @@ def test_mode_hard_limite_aux_projets_choisis(tmp_path):
     assert call("git push origin main")["hookSpecificOutput"]["permissionDecision"] == "allow" and len(asked) == 1
     runner.hard_projects = set()  # sans périmètre : tous les projets
     assert runner.is_hard("n'importe-lequel")
+
+
+def test_memoire_du_projet_premiere_chose_a_faire(tmp_path):
+    """Sans CLAUDE.md (ou presque vide), l'agent doit d'abord créer la mémoire du projet ; avec, il la tient à jour."""
+    from cockpit.agent import MEMORY_MIN, memory_missing
+
+    projet = tmp_path / "projet"
+    projet.mkdir()
+    assert memory_missing(str(projet)) and memory_missing(str(tmp_path / "absent"))
+    (projet / "CLAUDE.md").write_text("# Projet\n")
+    assert memory_missing(str(projet))  # trop court : considérée comme absente
+    runner = Runner(Store(tmp_path / "data"), POLICY)
+    task = Task(id="t", instruction="x", conversation="c")
+    opts = lambda: runner._options(task, Project(id="p", name="P", cwd=str(projet)), str(projet), None, set()).system_prompt["append"]  # noqa: E731
+    sans = opts()
+    assert "MÉMOIRE DU PROJET ABSENTE" in sans and "PREMIÈRE chose à faire" in sans and "Prochaines étapes" in sans
+    assert "mets à jour CLAUDE.md" not in sans
+    (projet / "CLAUDE.md").write_text("# Projet\n" + "Une ligne utile sur le projet. " * (MEMORY_MIN // 20))
+    avec = opts()
+    assert not memory_missing(str(projet)) and "MÉMOIRE DU PROJET ABSENTE" not in avec and "mets à jour CLAUDE.md" in avec
+    # Une tâche lancée dans un worktree vérifie la mémoire du dossier principal du projet, pas celle du worktree
+    wt = tmp_path / "wt"
+    wt.mkdir()
+    task.worktree = {"branch": "cockpit/c", "path": str(wt), "state": "active"}
+    assert "MÉMOIRE DU PROJET ABSENTE" not in runner._options(task, Project(id="p", name="P", cwd=str(projet)), str(wt), None, set()).system_prompt["append"]

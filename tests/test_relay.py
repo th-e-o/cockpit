@@ -981,3 +981,40 @@ def test_sauvegarde_quotidienne_de_la_base(relay_neuf):
     assert copie.execute("PRAGMA integrity_check").fetchone()[0] == "ok"
     assert copie.execute("SELECT COUNT(*) FROM workers").fetchone()[0] >= 1
     assert call(p, "moi").json()["worker_online"] is True
+
+
+def test_memoire_de_projet_premiere_chose_a_faire(relay_neuf):
+    """Un projet sans mémoire (CLAUDE.md vide ou trop court) : l'autonomie la crée en premier, une fois par jour, avant tout le reste."""
+    p = paired_phone(relay_neuf)
+    wpoll(relay_neuf, "pod-me", False, [{"id": "me1", "name": "Un"}, {"id": "me2", "name": "Deux"}, {"id": "me3", "name": "Trois"}], hello=True)
+    longue = "# Projet\n" + "Une ligne utile sur le projet. " * 10
+    pub = lambda projet, contenu: worker_call(relay_neuf, "w_memoire", {"project": projet, "content": contenu, "hash": "h", "worker_id": "pod-me"})  # noqa: E731
+    pub("me1", "")        # absente
+    pub("me2", "# Deux")  # trop courte : absente
+    pub("me3", longue)    # présente
+    mem = {x["id"]: x for x in call(p, "etat").json()["memory"]["projects"]}
+    assert set(mem) == {"me1", "me2", "me3"}  # tous les projets ont une entrée, même sans tâche terminée
+    assert [mem[i]["memory"]["state"] for i in ("me1", "me2", "me3")] == ["absente", "absente", "ok"]
+    assert mem["me3"]["memory"]["lines"] >= 2 and mem["me1"]["status"] == "nouveau"
+    # Aperçu : la mémoire d'abord, seulement pour les projets qui en manquent
+    call(p, "proposition", {"action": "ajouter", "titre": "Idée me3", "instruction": "Avance.", "project": "me3"})
+    plan = call(p, "hard_apercu").json()["plan"]
+    assert [x["kind"] for x in plan][:2] == ["memoire", "memoire"] and {x["project"] for x in plan[:2]} == {"me1", "me2"}
+    assert plan[2]["kind"] == "proposition"
+    # À la demande : refus si la mémoire existe, création sinon, pas de doublon pendant qu'elle se crée
+    assert call(p, "memoire_init", {"project": "me3"}).status_code == 409
+    assert call(p, "memoire_init", {"project": "inconnu"}).status_code == 404
+    manuel = call(p, "memoire_init", {"project": "me2"}).json()
+    assert manuel["ok"] and call(p, "memoire_init", {"project": "me2"}).status_code == 409
+    tache = [x for x in wpoll(relay_neuf, "pod-me", False)["tasks"] if x["id"] == manuel["task_id"]][0]
+    assert "CLAUDE.md" in tache["instruction"] and "Prochaines étapes" in tache["instruction"] and tache["project"] == "me2"
+    # Autonomie : la mémoire de me1 passe avant la proposition de me3 ; me2 vient d'être tentée (une fois par jour)
+    call(p, "autopilote", {"enabled": True, "hours": 2, "max_parallel": 3})
+    premiere = worker_call(relay_neuf, "w_auto_tache", {}).json()
+    assert premiere["titre"] == "Mémoire du projet : Un"
+    suivante = worker_call(relay_neuf, "w_auto_tache", {}).json()
+    assert suivante["titre"] == "Idée me3"  # me2 : déjà tentée aujourd'hui ; me1 : sa tâche est en cours
+    assert [x["project"] for x in call(p, "hard_apercu").json()["plan"] if x["kind"] == "memoire"] == []
+    # Une fois la mémoire écrite par l'agent (publiée par le worker), l'état passe à ok
+    pub("me1", longue)
+    assert {x["id"]: x["memory"]["state"] for x in call(p, "etat").json()["memory"]["projects"]}["me1"] == "ok"

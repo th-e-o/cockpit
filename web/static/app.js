@@ -1498,9 +1498,22 @@ function memoryHtml() {
   const m = state.memory;
   if (!m) return '';
   const name = (id) => state.projects.find((p) => p.id === id)?.name || m.projects.find((p) => p.id === id)?.name || id || 'Auto';
-  const projects = m.projects.map((p) => `<article class="follow ${p.active ? '' : 'ask'}"><div class="fhead"><b>${esc(p.name || p.id)}</b>
-      <span class="muted" data-ago="${Number(p.updated)}"></span><span>${p.active ? `⚙ ${p.active} en cours` : p.status === 'en_pause' ? '⏸ en pause' : ''}</span></div>
-      ${p.summary ? `<div class="hint">${esc(p.summary)}</div>` : ''}</article>`).join('');
+  const memoryLine = (p) => {
+    const mm = p.memory;
+    if (!mm) return '';
+    if (mm.state === 'ok') {
+      return `<div class="memline ok">🧠 Mémoire · ${plural(mm.lines, 'ligne')}${mm.updated ? ` · ${ago(mm.updated)}` : ''}
+        <button class="btn ghost" data-memory="${esc(p.id)}">Voir / modifier</button></div>`;
+    }
+    if (mm.state === 'absente') {
+      return `<div class="memline bad">⚠ Pas de mémoire : c'est la première chose que Claude fera sur ce projet.
+        <button class="btn" data-memo-init="${esc(p.id)}">🧠 Créer maintenant</button></div>`;
+    }
+    return '<div class="memline">🧠 Mémoire pas encore lue (pod hors ligne ?)</div>';
+  };
+  const projects = m.projects.map((p) => `<article class="follow ${p.memory?.state === 'absente' ? 'ask' : p.active ? '' : 'ask'}"><div class="fhead"><b>${esc(p.name || p.id)}</b>
+      <span class="muted">${p.updated ? `<span data-ago="${Number(p.updated)}"></span>` : ''}</span><span>${p.active ? `⚙ ${p.active} en cours` : p.status === 'en_pause' ? '⏸ en pause' : p.status === 'nouveau' ? '✨ nouveau' : ''}</span></div>
+      ${memoryLine(p)}${p.summary ? `<div class="hint">${esc(p.summary)}</div>` : ''}</article>`).join('');
   const proposals = m.proposals.map((x) => `<article class="follow"><div class="fhead"><b>${esc(x.titre)}</b><span class="muted">${esc(name(x.project))}</span></div>
       <div class="hint">${esc(x.instruction.replace(/\n\n\(Tâche lancée par le mode full auto[^)]*\)/, '').slice(0, 220))}</div>
       <div class="fhead"><button class="btn" data-prop="lancer" data-id="${esc(x.id)}">▶ Lancer</button>
@@ -1509,7 +1522,7 @@ function memoryHtml() {
     <section class="sect"><div class="secthead"><h3>Propositions · ${m.proposals.length}</h3><button type="button" class="btn ghost" data-prop="ajouter">＋ Ajouter</button></div>
     <div class="follows">${proposals || '<div class="emptyd">Rien en attente : les prochaines étapes des tâches terminées arrivent ici, et le full auto en génère quand la file est vide.</div>'}</div></section>
     <section class="sect"><div class="secthead"><h3>Mémoire · ${m.projects.length} projet(s)</h3></div>
-    <div class="follows">${projects || '<div class="emptyd">Les projets apparaissent ici après leur première tâche terminée.</div>'}</div></section>`;
+    <div class="follows">${projects || '<div class="emptyd">Aucun projet connu.</div>'}</div></section>`;
 }
 
 async function autoToggle(on) {
@@ -1575,7 +1588,7 @@ function refreshHardPreview() {
     try {
       const r = await api('hard_apercu', undefined, `&projects=${encodeURIComponent(ids.join(','))}`);
       const name = (id) => r.projects.find((p) => p.id === id)?.name || id || 'Auto';
-      const kind = { reprise: '↻ reprise', proposition: '💡' };
+      const kind = { memoire: '🧠 mémoire', reprise: '↻ reprise', proposition: '💡' };
       const offline = r.projects.filter((p) => !p.online);
       const lines = r.plan.map((x) => `<li>${kind[x.kind] || ''} <b>${esc(name(x.project))}</b> — ${esc(x.titre)}${x.online ? '' : ' <span class="muted">(pod hors ligne : en attente)</span>'}
         <span class="muted">· ${ago(x.since)}</span></li>`).join('');
@@ -1925,6 +1938,9 @@ async function onClick(ev) {
       $('#cmdRows').insertAdjacentHTML('beforeend', commandRow());
     } else if ('delCmd' in b.dataset) {
       b.closest('.cmdrow').remove();
+    } else if (b.dataset.memoInit) {
+      b.disabled = true;
+      try { await api('memoire_init', { project: b.dataset.memoInit }); await poll(); } catch (e) { alert(e.message); b.disabled = false; }
     } else if (b.dataset.memory) {
       await openMemory(b.dataset.memory);
     } else if (b.dataset.img) {

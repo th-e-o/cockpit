@@ -21,7 +21,7 @@ from pathlib import Path
 
 from . import apercu, github, gitstate, usage
 from . import services as svc
-from .agent import Runner
+from .agent import MEMORY_FILE, Runner
 from .autopilote import Autopilot
 from .podstate import PodState
 from .policy import Policy
@@ -38,7 +38,7 @@ WORKER_NAME = os.environ.get("COCKPIT_WORKER_NAME") or WORKER_ID
 # « orchestrateur » : route les instructions sans projet et gère les services ; « projet » : pod d'un seul projet.
 ORCHESTRATOR = os.environ.get("COCKPIT_ROLE", "orchestrateur") != "projet"
 KEY_FILE = DATA / "worker_key"
-MEMORY_FILE, MEMORY_MAX = "CLAUDE.md", 50_000
+MEMORY_MAX = 50_000
 # Pods de projet (scripts/onyxia-init.sh) : le cockpit se met à jour seul, entre deux tâches
 AUTO_UPDATE = os.environ.get("COCKPIT_AUTO_UPDATE") == "1"
 UPDATE_EVERY = int(os.environ.get("COCKPIT_UPDATE_EVERY", "600"))

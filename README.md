@@ -157,6 +157,14 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
   tâches par jour) fait enchaîner ces propositions à l'orchestrateur, une tâche à la fois, tant que la session reste sous
   le seuil d'usage (85 %) ; il reprend après chaque réinitialisation et se désarme après 3 erreurs de suite. Même
   politique que le reste : une validation sans réponse est refusée au bout de 15 min, jamais approuvée d'office.
+- **Mémoire de projet toujours présente** : chaque projet a un `CLAUDE.md` (lu par Claude au début de chaque tâche). S'il manque
+  (absent ou de moins de 150 caractères), **c'est la première chose faite** : tout agent qui démarre sur le projet doit d'abord
+  explorer le dépôt et écrire la mémoire (objectif, stack et structure, commandes, conventions, état actuel, prochaines étapes pour
+  que Cockpit sache par où repartir), puis traiter la demande ; le full auto et le mode hard lancent en priorité absolue une tâche
+  « Mémoire du projet » (une tentative par jour et par projet), avant les reprises et les propositions, et l'aperçu la montre en tête
+  du plan. Quand la mémoire existe, l'agent la tient à jour si son travail change l'objectif, les commandes ou l'état d'avancement.
+  Dans le tableau de bord, la section *Mémoire* liste tous les projets avec l'état de leur mémoire (🧠 lignes, ⚠ absente avec le
+  bouton *Créer maintenant*, ou « pas encore lue » si le pod est hors ligne).
 - **Gérer les projets** (☰ → *🗂 Gérer les projets*) : *Supprimer* retire un projet du cockpit : liste, état de mémoire, propositions,
   mémoire (CLAUDE.md publié) et commandes rapides ; un périmètre du full auto ou du mode hard réduit à ce seul projet est désarmé.
   Le pod, le dépôt git et le service Onyxia **ne sont pas touchés** (le pod continue d'annoncer le projet, qui reste masqué).

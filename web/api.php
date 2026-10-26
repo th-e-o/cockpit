@@ -37,6 +37,8 @@ const AUTO_PAR_JOUR = 12;               // full auto : tâches lancées par jour
 const AUTO_JOURS_MAX = 14;              // full auto : durée maximale d'un armement
 const AUTO_ECHECS_MAX = 3;              // full auto : arrêt après autant d'erreurs de suite
 const ALERTES_MAX = 10;
+const MEMOIRE_MIN = 150;                // caractères : en deçà, la mémoire du projet (CLAUDE.md) est considérée comme absente
+const MEMOIRE_INIT_DELAI = 86400;       // une création automatique de la mémoire par jour et par projet, au plus
 const POLL_BATTEMENT = 10;              // secondes entre deux mises à jour de « vu_le » d'un pod (une écriture, pas deux par seconde)
 const ENTRETIEN_PERIODE = 1800;         // secondes entre deux entretiens de la base (checkpoint, contrôle, sauvegarde)
 const SAUVEGARDES_GARDEES = 3;
@@ -559,15 +561,50 @@ function memoire_tache_terminee(string $id): void {
     memoire_ecrire($m);
 }
 
+/** Instruction de la tâche qui écrit la mémoire d'un projet : la première chose à faire quand il n'en a pas. */
+const MEMOIRE_INSTRUCTION = "Crée la mémoire de ce projet : le fichier CLAUDE.md à la racine du dépôt, que Cockpit lira au début de chaque tâche "
+    . "pour savoir par où partir. Explore d'abord le dépôt (README, manifestes de dépendances, arborescence, tests, historique git récent), "
+    . "puis écris un document concis en français (moins de 150 lignes) avec les sections : Objectif · Stack et structure · Commandes "
+    . "(installer, lancer, tester, linter) · Conventions · État actuel · Prochaines étapes (3 à 6 pistes concrètes par ordre de priorité). "
+    . "N'invente rien : écris « à préciser » quand tu ne sais pas. Si le dépôt est vide ou presque, déduis l'objectif et la stack visés de la "
+    . "description du projet. Ne modifie aucun autre fichier et ne pousse rien sur main.";
+
+/** État de la mémoire d'un projet (CLAUDE.md publié par son worker) : ok, absente (vide ou trop courte) ou inconnue (pas encore publiée). */
+function memoire_projet_etat(string $id): array {
+    $m = json_decode(reglage("memoire:$id") ?? '', true);
+    if (!$m) return ['state' => 'inconnue', 'size' => 0, 'lines' => 0, 'updated' => 0];
+    $c = trim((string)($m['content'] ?? ''));
+    return ['state' => mb_strlen($c) < MEMOIRE_MIN ? 'absente' : 'ok', 'size' => mb_strlen($c),
+            'lines' => $c === '' ? 0 : substr_count($c, "\n") + 1, 'updated' => (int)($m['maj'] ?? 0)];
+}
+
+/** Projets (de la liste donnée, ou tous) dont la mémoire est absente et que la création automatique n'a pas déjà tentée aujourd'hui. */
+function projets_sans_memoire(array $portee = []): array {
+    $out = [];
+    foreach (projets() as $p) {
+        if ($portee && !in_array($p['id'], $portee, true)) continue;
+        if (memoire_projet_etat($p['id'])['state'] !== 'absente') continue;
+        if (time() - (int)(reglage('memoire_init:' . $p['id']) ?? 0) < MEMOIRE_INIT_DELAI) continue;
+        $out[] = $p;
+    }
+    return $out;
+}
+
 function memoire_publique(): array {
     $m = memoire_lire();
+    // Tous les projets connus ont une entrée (même sans tâche terminée) : leur mémoire doit toujours exister
+    $connus = array_column($m['projects'], 'id');
+    foreach (projets() as $p) {
+        if (!in_array($p['id'], $connus, true)) $m['projects'][] = ['id' => $p['id'], 'name' => $p['name'] ?? $p['id'], 'updated' => 0, 'summary' => '', 'new' => true];
+    }
     $actives = [];
     foreach (q("SELECT projet, COUNT(*) n FROM taches WHERE projet IS NOT NULL AND statut IN ('pending','routing','queued','running','waiting_approval')
                 GROUP BY projet")->fetchAll() as $r) $actives[$r['projet']] = (int)$r['n'];
     $projets = [];
     foreach ($m['projects'] as $p) {
         $p['active'] = $actives[$p['id']] ?? 0;
-        $p['status'] = $p['active'] || time() - (int)$p['updated'] < PROJET_EN_COURS * 86400 ? 'en_cours' : 'en_pause';
+        $p['status'] = $p['active'] || time() - (int)$p['updated'] < PROJET_EN_COURS * 86400 ? 'en_cours' : (empty($p['new']) ? 'en_pause' : 'nouveau');
+        $p['memory'] = memoire_projet_etat($p['id']);
         $projets[] = $p;
     }
     usort($projets, fn($a, $b) => [$b['active'] > 0, $b['updated']] <=> [$a['active'] > 0, $a['updated']]);
@@ -763,6 +800,8 @@ function hard_apercu(array $portee): array {
     $m = memoire_lire();
     $resumes = taches_a_reprendre($portee);
     $plan = [];
+    foreach (projets_sans_memoire($portee) as $pm) $plan[] = ['kind' => 'memoire', 'project' => $pm['id'], 'titre' => 'Créer la mémoire du projet (CLAUDE.md)',
+                                                              'since' => time(), 'online' => $pm['online'], 'detail' => 'memoire'];
     foreach ($resumes as $r) $plan[] = ['kind' => 'reprise', 'project' => $r['project'], 'titre' => mb_substr(preg_replace('/\s+/', ' ', $r['instruction']), 0, 90),
                                          'since' => $r['created'], 'online' => true, 'detail' => $r['kind']];
     $projets = [];
@@ -1637,6 +1676,18 @@ switch ($route) {
         if (count($occupes) >= $max) $refus(count($occupes) . ' tâche(s) automatique(s) déjà en cours (maximum ' . $max . ')');
         $portee = $a['projects'] ?: [];
         $enLigne = array_column(array_filter(projets(), fn($p) => $p['online']), 'id');
+        // 0. Un projet sans mémoire : sa mémoire est la première chose à faire (Cockpit doit savoir sur quoi partir)
+        foreach (projets_sans_memoire($portee) as $pm) {
+            if (!$pm['online'] || in_array($pm['id'], $occupes, true)) continue;
+            reglage('memoire_init:' . $pm['id'], (string)time());
+            $id = creer_tache_racine(MEMOIRE_INSTRUCTION, $pm['id'], ['auto' => true, 'memoire_init' => true]);
+            $a['launched_today']++;
+            $a['total']++;
+            $a['last'] = time();
+            autopilote_ecrire($a);
+            valider();
+            repondre(['task_id' => $id, 'titre' => 'Mémoire du projet : ' . ($pm['name'] ?? $pm['id'])]);
+        }
         // 1. Le travail resté en plan d'abord, du plus ancien au plus récent
         foreach (taches_a_reprendre($portee) as $r) {
             if (in_array($r['project'], $occupes, true)) continue;
@@ -1745,6 +1796,16 @@ switch ($route) {
         exiger_session();
         $portee = array_values(array_filter(array_map('trim', explode(',', (string)($_GET['projects'] ?? '')))));
         repondre(hard_apercu($portee));
+
+    case 'memoire_init': // lance la création de la mémoire d'un projet (CLAUDE.md)
+        exiger_session();
+        $id = (string)($in['project'] ?? '');
+        current(array_filter(projets(), fn($p) => $p['id'] === $id)) ?: erreur('projet inconnu', 404);
+        if (memoire_projet_etat($id)['state'] === 'ok' && empty($in['force'])) erreur('ce projet a déjà une mémoire', 409);
+        $enCours = (int)q("SELECT COUNT(*) FROM taches WHERE projet = ? AND extra LIKE '%\"memoire_init\":true%' AND statut IN ('pending','routing','queued','running','waiting_approval')", [$id])->fetchColumn();
+        if ($enCours) erreur('la mémoire de ce projet est déjà en cours de création', 409);
+        reglage('memoire_init:' . $id, (string)time());
+        repondre(['ok' => true, 'task_id' => creer_tache_racine(MEMOIRE_INSTRUCTION, $id, ['memoire_init' => true])]);
 
     case 'projet_supprimer': // retire un projet du cockpit (le pod, le dépôt et le service Onyxia ne sont pas touchés)
         exiger_session();
