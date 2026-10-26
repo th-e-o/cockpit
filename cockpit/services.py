@@ -24,7 +24,8 @@ APERCU_PORT = 5000
 CHART = "vscode-python"
 CHART_VERSION = "2.6.6"
 CHART_REPO = "https://inseefrlab.github.io/helm-charts-interactive-services"
-INIT_SCRIPT = "https://raw.githubusercontent.com/th-e-o/cockpit/main/scripts/onyxia-init.sh"
+GIT_CACHE_DEFAUT = "86400"  # secondes de conservation du token git dans le pod
+INIT_SCRIPT ="https://raw.githubusercontent.com/th-e-o/cockpit/main/scripts/onyxia-init.sh"
 VAULT_SECRET = "Claude"
 SERVER_NAME = "services"
 TOOL_PREFIX = f"mcp__{SERVER_NAME}__"
@@ -123,7 +124,11 @@ def git_values() -> dict[str, str]:
     env = os.environ
     keys = {"name": "GIT_USER_NAME", "email": "GIT_USER_MAIL", "token": "GIT_PERSONAL_ACCESS_TOKEN",
             "cache": "GIT_CREDENTIALS_CACHE_DURATION"}
-    return {k: env[v] for k, v in keys.items() if env.get(v)}
+    out = {k: env[v] for k, v in keys.items() if env.get(v)}
+    # Un cache à 0 s oublie le token aussitôt : le pod n'aurait alors aucun identifiant pour git push/clone.
+    if out.get("token") and int(out.get("cache", "0").strip() or 0) <= 0:
+        out["cache"] = GIT_CACHE_DEFAUT
+    return out
 
 
 async def _run(*cmd: str, timeout: float = 300, stdin: bytes | None = None) -> str:

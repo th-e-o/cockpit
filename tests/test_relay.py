@@ -1018,3 +1018,22 @@ def test_memoire_de_projet_premiere_chose_a_faire(relay_neuf):
     # Une fois la mémoire écrite par l'agent (publiée par le worker), l'état passe à ok
     pub("me1", longue)
     assert {x["id"]: x["memory"]["state"] for x in call(p, "etat").json()["memory"]["projects"]}["me1"] == "ok"
+
+
+def test_reprise_manuelle_d_une_tache_en_pause(relay_neuf):
+    """Limite du forfait : la tâche en pause ne bloque pas le projet ; « Reprendre » crée la suite et annule l'ancienne."""
+    p = paired_phone(relay_neuf)
+    wpoll(relay_neuf, "pod-rp", True, [{"id": "rp1", "name": "Un"}], hello=True)
+    t = call(p, "tache", {"instruction": "gros chantier", "project": "rp1"}).json()
+    wpoll(relay_neuf, "pod-rp", True)
+    assert call(p, "reprendre", {"task_id": t["id"]}).status_code == 409  # pas encore en pause
+    worker_call(relay_neuf, "w_evenements", {"worker_id": "pod-rp", "events": [
+        {"kind": "task", "task_id": t["id"], "task": {"status": "paused", "project": "rp1", "resume_at": int(time.time()) + 3600,
+                                                      "result": "⏸ Mise en pause"}}]})
+    st = last_status(p)[t["id"]]
+    assert st["status"] == "paused" and st["resume_at"] > time.time()
+    r = call(p, "reprendre", {"task_id": t["id"]}).json()
+    assert r["task_id"] and r["task_id"] != t["id"]
+    st = last_status(p)
+    assert st[t["id"]]["status"] == "cancelled" and st[r["task_id"]]["status"] == "pending"
+    assert call(p, "reprendre", {"task_id": t["id"]}).status_code == 409  # déjà reprise

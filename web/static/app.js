@@ -31,7 +31,7 @@ const REPRISE_AUTO = 2 * 3600; // à l'ouverture, la dernière conversation cont
 const STATUS = {
   pending: 'en attente', routing: 'routage…', queued: 'en file', running: 'en cours',
   waiting_approval: 'validation requise', needs_project: 'projet à choisir',
-  done: 'terminé', error: 'erreur', cancelled: 'annulé',
+  done: 'terminé', error: 'erreur', cancelled: 'annulé', paused: 'en pause',
 };
 const ACTIVE = new Set(['pending', 'routing', 'queued', 'running', 'waiting_approval']);
 const isStandalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
@@ -370,6 +370,7 @@ function taskHtml(e) {
   body += blocked.map((x) => `<div class="blocked">⛔ ${esc(x.tool)} : ${esc(x.text)}</div>`).join('');
   body += [...e.approvals.values()].map(approvalHtml).join('');
   if (lastText) body += `<div class="text">${md(lastText)}</div>`;
+  if (t.status === 'paused') body += `<div class="hint">⏸ En pause : limite d'usage atteinte${t.resume_at ? ` · reprise ${esc(resetLabel(t.resume_at))}` : ''} (reprise automatique si le full auto ou le mode hard est armé, ou avec le bouton ▶ Reprendre).</div>`;
   if (t.status === 'pending' && t.waiting_project) body += `<div class="hint">⏳ En attente du pod « ${esc(t.project)} » : la tâche partira dès que son worker sera connecté (1 à 3 min après le lancement).</div>`;
   else if (t.status === 'pending' && !state.workerOnline) body += '<div class="hint">Le worker Onyxia est hors ligne : la tâche partira dès sa reconnexion.</div>';
   if (t.status === 'needs_project') {
@@ -390,6 +391,7 @@ function taskHtml(e) {
       ${costPill(t)}
       ${t.group ? `<span class="pill var" title="variantes de la même demande, à comparer">🧬 Variante ${variantIndex(t)}</span>` : ''}
       ${ACTIVE.has(t.status) ? `<button class="btn ghost" data-cancel="${esc(t.id)}">Arrêter</button>`
+        : t.status === 'paused' ? `<button class="btn" data-resume="${esc(t.id)}">▶ Reprendre</button>`
         : t.id !== state.replyTo && t.kind !== 'service' ? `<button class="btn ghost" data-reply="${esc(t.id)}">Répondre</button>` : ''}
     </div><div class="log">${body}</div>`;
 }
@@ -1169,7 +1171,7 @@ function recentRow(e) {
   const t = e.task;
   const { c } = changesOf(e);
   const proj = state.projects.find((p) => p.id === t.project);
-  const icon = { done: '✅', error: '❌', cancelled: '⏹', needs_project: '❓' }[t.status] || '•';
+  const icon = { done: '✅', error: '❌', cancelled: '⏹', needs_project: '❓', paused: '⏸' }[t.status] || '•';
   return `<button class="recent" data-jump="${esc(t.id)}"><span class="ri">${icon}</span>
     <span class="rbody"><span class="rinst">${esc(t.instruction || '')}</span>
       <span class="rmeta">${esc(proj?.name || t.project || '')}${c && (c.file_count || c.commits?.length) ? ` · ${changesLine(c)}` : ''}${t.worktree ? ' · 🌿' : ''}</span></span>
@@ -1216,7 +1218,7 @@ function bilanCard(b, p) {
     const i = f.path.lastIndexOf('/');
     return `<div class="tfile"><span class="fp"><span class="dir">${esc(f.path.slice(0, i + 1))}</span>${esc(f.path.slice(i + 1))}</span><span class="muted">×${f.count}</span></div>`;
   }).join('')}` : '';
-  const icon = { done: '✅', error: '❌', cancelled: '⏹', needs_project: '❓' };
+  const icon = { done: '✅', error: '❌', cancelled: '⏹', needs_project: '❓', paused: '⏸' };
   const recent = p.recent.map((t) => `<button class="brecent" data-jump="${esc(t.id)}"><span>${icon[t.status] || '◐'}</span>
     <span class="rinst">${esc(t.instruction)}</span><span class="rtime" data-ago="${t.updated}"></span></button>`).join('');
   return `<article class="bcard">
@@ -1791,7 +1793,7 @@ function pipHtml() {
     <div class="lstep">${e.task.status === 'running' ? '<span class="spin"></span>' : ''}<span>${esc(currentStep(e))}</span></div></div>`).join('');
   html += finished.map((e) => {
     const { c } = changesOf(e);
-    const icon = { done: '✅', error: '❌', cancelled: '⏹', needs_project: '❓' }[e.task.status] || '•';
+    const icon = { done: '✅', error: '❌', cancelled: '⏹', needs_project: '❓', paused: '⏸' }[e.task.status] || '•';
     return `<div class="pipcard done">${icon} ${where(e)}${c && (c.file_count || c.commits?.length) ? `<div class="rmeta">${changesLine(c)}</div>` : ''}</div>`;
   }).join('');
   if (!approvals.length && !questions.length && !active.length && !finished.length) html += '<div class="emptyd">Rien à faire pour l\'instant 👌</div>';
@@ -1924,6 +1926,10 @@ async function onClick(ev) {
     if (b.dataset.approve || b.dataset.deny) {
       b.parentElement.querySelectorAll('button').forEach((x) => (x.disabled = true));
       await api('decider', { approval_id: b.dataset.approve || b.dataset.deny, decision: b.dataset.approve ? 'approve' : 'deny' });
+      poll();
+    } else if (b.dataset.resume) {
+      b.disabled = true;
+      await api('reprendre', { task_id: b.dataset.resume });
       poll();
     } else if (b.dataset.cancel) {
       await api('annuler', { task_id: b.dataset.cancel });

@@ -498,6 +498,7 @@ class Runner:
         self.main_users: dict[str, int] = {}  # tâches affectées au dossier principal, par projet
         self.workspaces: dict[str, str] = {}  # "conversation:projet" -> worktree ("" : dossier principal)
         self.running: set[str] = set()  # tâches dont l'agent tourne
+        self.limited: dict[str, int] = {}  # task_id -> heure de réinitialisation, pour les tâches arrêtées par la limite du forfait
         self.clients: dict[str, ClaudeSDKClient] = {}  # task_id -> client actif
         # Création de tâches filles (fournie par le worker) : async (parent, [{"instruction", "projet"}]) -> [ids]
         self.spawn_tasks = None
@@ -773,6 +774,11 @@ class Runner:
                 self.running.discard(task.id)
                 if late := self.steers.pop(task.id, None):  # arrivé après la dernière réponse de l'agent
                     self.store.publish("message", {"task_id": task.id, "type": "steer_late", "text": "\n".join(late)})
+            if (reset := self.limited.pop(task.id, None)) is not None and task.status != "cancelled" and final.get("status") != "done":
+                # Limite du forfait : pas d'échec, la tâche est suspendue et reprise après la réinitialisation (mode hard / full auto)
+                at = reset if reset > time.time() else int(time.time()) + 3600
+                final = {"status": "paused", "resume_at": at,
+                         "result": f"⏸ Mise en pause : limite du forfait atteinte, reprise après la réinitialisation ({time.strftime('%H:%M', time.localtime(at))})."}
             final["duration_s"] = duration
             if tokens:
                 final["tokens"] = {**tokens, "total": sum(tokens.values())}
@@ -916,8 +922,12 @@ class Runner:
             info = msg.rate_limit_info
             if self.on_rate_limit:
                 self.on_rate_limit(info)
-            if info.status == "rejected":  # limite du forfait atteinte : la tâche attend ou échoue
+            if info.status == "rejected":  # limite du forfait atteinte : la tâche est interrompue puis mise en pause
                 pub(type="rate_limited", resets_at=info.resets_at, kind=info.rate_limit_type)
+                if task.id not in self.limited:
+                    self.limited[task.id] = int(info.resets_at or 0)
+                    if client := self.clients.get(task.id):
+                        self._spawn(client.interrupt())
         elif isinstance(msg, ResultMessage):
             self.store.save_session(task.project, msg.session_id)
             if task.conversation and msg.session_id:

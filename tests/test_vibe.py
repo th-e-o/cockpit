@@ -6,6 +6,7 @@ import http.server
 import json
 import subprocess
 import threading
+import time
 from pathlib import Path
 
 import httpx
@@ -369,3 +370,26 @@ def test_fusion_d_une_pull_request(monkeypatch):
         asyncio.run(github.fusionner_pr("https://github.com/a/b/pull/4"))
     with pytest.raises(github.GitHubError, match="invalide"):
         asyncio.run(github.fusionner_pr("https://evil.com/a/b/pull/3"))
+
+
+def test_limite_du_forfait_met_la_tache_en_pause(repo, tmp_path, monkeypatch):
+    from claude_agent_sdk import RateLimitEvent
+    from claude_agent_sdk.types import RateLimitInfo
+    reset = int(time.time()) + 1800
+
+    class LimitedClient(FakeClient):
+        async def receive_response(self):
+            yield RateLimitEvent(rate_limit_info=RateLimitInfo(status="rejected", resets_at=reset, rate_limit_type="five_hour"),
+                                 uuid="u", session_id="s")
+            yield ResultMessage(subtype="error", duration_ms=1000, duration_api_ms=1, is_error=True, num_turns=1,
+                                session_id="s", total_cost_usd=0.0, result="limite atteinte")
+
+    monkeypatch.setattr(agent_mod, "ClaudeSDKClient", LimitedClient)
+    FakeClient.gates, FakeClient.queries, FakeClient.options = {}, [], []
+    store = Store(tmp_path / "data")
+    runner = Runner(store, POLICY)
+    task = Task(id="t", instruction="gros chantier", conversation="t")
+    store.tasks["t"] = task
+    asyncio.run(runner.run(task, Project(id="p", name="P", cwd=str(repo))))
+    assert task.status == "paused" and task.resume_at == reset and "pause" in task.result
+    assert "t" not in runner.limited

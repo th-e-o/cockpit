@@ -207,3 +207,15 @@ def test_reveiller_worker(monkeypatch):
         raise AssertionError("pod pas prêt")
     except svc.ServiceError as e:
         assert "aucun pod prêt" in str(e)
+
+
+def test_git_values_cache_jamais_a_zero(monkeypatch):
+    """Un cache de 0 s ferait oublier le token git aussitôt : on le remplace par la durée par défaut."""
+    monkeypatch.setenv("GIT_PERSONAL_ACCESS_TOKEN", "x")
+    for valeur in ("0", ""):
+        monkeypatch.setenv("GIT_CREDENTIALS_CACHE_DURATION", valeur)
+        assert svc.git_values()["cache"] == svc.GIT_CACHE_DEFAUT
+    monkeypatch.setenv("GIT_CREDENTIALS_CACHE_DURATION", "600")
+    assert svc.git_values()["cache"] == "600"
+    monkeypatch.delenv("GIT_CREDENTIALS_CACHE_DURATION")
+    assert svc.git_values()["cache"] == svc.GIT_CACHE_DEFAUT

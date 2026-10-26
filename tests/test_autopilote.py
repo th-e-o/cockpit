@@ -6,7 +6,7 @@ import time
 import pytest
 
 from cockpit import usage
-from cockpit.autopilote import Autopilot, parse_proposals, usage_blocks
+from cockpit.autopilote import Autopilot, median_cost, parse_proposals, usage_blocks
 
 
 def limits(util, resets_at, kind="five_hour", status=None):
@@ -62,6 +62,35 @@ def test_le_forfait_bloque_le_full_auto():
     u2 = usage.Usage()
     u2.update(limits(0.99, None, "seven_day"), "api")
     assert "semaine" in usage_blocks(u2, {"threshold": 0.85})
+
+
+def test_pres_de_la_limite_on_ne_lance_pas_une_tache_qui_serait_coupee():
+    u = usage.Usage()
+    u.update(limits(0.90, None), "api")
+    assert usage_blocks(u, {"threshold": 0.95}, 0.05) is None  # 90 % + 5 % tient
+    assert "ne tiendrait pas" in usage_blocks(u, {"threshold": 0.95}, 0.10)
+    assert usage_blocks(u, {"threshold": 0.95}, 0.0) is None  # coût inconnu : seuil seul
+    assert median_cost([]) == 0.05 and median_cost([0.0, 0.02, 0.10, 0.04]) == 0.04
+
+
+def test_aucune_tache_lancee_si_elle_ne_tient_pas():
+    class R:
+        launched = 0
+        async def projet_etat(self, project="", limit=8):
+            if not project:
+                return {"projects": [{"id": "a", "online": True}]}
+            return {"tasks": [{"status": "done", "session_delta": 0.10}]}
+        async def reveil(self):
+            return []
+        async def auto_tache(self):
+            R.launched += 1
+            return {"task_id": "t"}
+    u = usage.Usage()
+    u.update(limits(0.92, None), "api")
+    a = Autopilot(R(), u)
+    a.config = {"enabled": True, "threshold": 0.95, "max_parallel": 3}
+    asyncio.run(a.tick())
+    assert R.launched == 0 and "ne tiendrait pas" in a.waiting
 
 
 def test_propositions_generees_filtrees():

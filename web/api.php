@@ -402,7 +402,7 @@ function tache_publique(array $t): array {
         'waiting_project' => !empty($t['attente_projet']),
         'model_used' => $extra['model_used'] ?? null, 'models' => $extra['models'] ?? [], 'model_auto' => $extra['model_auto'] ?? null,
         'question' => $extra['question'] ?? null,
-        'tokens' => $extra['tokens'] ?? null, 'session_delta' => $extra['session_delta'] ?? null,
+        'tokens' => $extra['tokens'] ?? null, 'session_delta' => $extra['session_delta'] ?? null, 'resume_at' => $extra['resume_at'] ?? null,
         'auto' => !empty($extra['auto']),
     ];
 }
@@ -784,13 +784,17 @@ function taches_a_reprendre(array $portee = []): array {
     $enLigne = array_column(array_filter(projets(), fn($p) => $p['online']), 'id');
     $out = [];
     $lignes = q("SELECT * FROM taches WHERE action IS NULL AND projet IS NOT NULL AND cree_le > ? AND (extra IS NULL OR extra NOT LIKE '%\"repris\":true%')
-                 AND ((statut = 'error' AND resultat LIKE 'Interrompue%') OR (statut IN ('pending','queued','routing') AND livree = 1 AND maj_le < ?))
+                 AND ((statut = 'error' AND resultat LIKE 'Interrompue%') OR statut = 'paused' OR (statut IN ('pending','queued','routing') AND livree = 1 AND maj_le < ?))
                  ORDER BY cree_le ASC, rowid ASC LIMIT 60", [time() - 7 * 86400, time() - 1800])->fetchAll();
     foreach ($lignes as $t) {
         if ($portee && !in_array($t['projet'], $portee, true)) continue;
         if (!in_array($t['projet'], $enLigne, true)) continue; // un pod hors ligne ne peut rien reprendre
+        if ($t['statut'] === 'paused') { // en pause (limite du forfait) : reprise seulement après la réinitialisation
+            $x = json_decode($t['extra'] ?? '', true) ?: [];
+            if ((int)($x['resume_at'] ?? 0) > time()) continue;
+        }
         $out[] = ['id' => $t['id'], 'project' => $t['projet'], 'instruction' => $t['instruction'], 'created' => (int)$t['cree_le'],
-                  'kind' => $t['statut'] === 'error' ? 'interrompue' : 'bloquee'];
+                  'kind' => ['error' => 'interrompue', 'paused' => 'pausee'][$t['statut']] ?? 'bloquee'];
     }
     return $out;
 }
@@ -1249,6 +1253,22 @@ switch ($route) {
         }
         repondre(['ok' => true]);
 
+    case 'reprendre': // reprise manuelle d'une tâche en pause (limite du forfait), sans attendre le full auto ni le mode hard
+        exiger_session();
+        $orig = q('SELECT * FROM taches WHERE id = ?', [(string)($in['task_id'] ?? '')])->fetch() ?: erreur('tâche introuvable', 404);
+        if ($orig['statut'] !== 'paused') erreur('cette tâche n\'est pas en pause', 409);
+        debut();
+        $x = json_decode($orig['extra'] ?? '', true) ?: [];
+        $x['repris'] = true;
+        q("UPDATE taches SET statut = 'cancelled', annulation = 1, resultat = ?, extra = ?, maj_le = ? WHERE id = ?",
+          ['Reprise manuelle après la pause due à la limite du forfait.', json_encode($x, JSON_UNESCAPED_UNICODE), time(), $orig['id']]);
+        evenement_tache($orig['id']);
+        $id = creer_tache_suite($orig, "Ce travail a été mis en pause par la limite du forfait. Reprends-le là où il s'est arrêté : "
+            . "vérifie d'abord l'état du dépôt (git status, git log, branche en cours), puis mène-le à son terme. Instruction d'origine :\n\n" . $orig['instruction'],
+            !empty($x['auto']) ? ['auto' => true, 'reprise_de' => $orig['id']] : ['reprise_de' => $orig['id']]);
+        valider();
+        repondre(['task_id' => $id]);
+
     case 'choisir_projet':
         exiger_session();
         $projet = (string)($in['project'] ?? '');
@@ -1460,7 +1480,7 @@ switch ($route) {
                 'tests' => $p['tests'], 'question' => $p['question']['text'] ?? null, 'waiting_pod' => $p['waiting_project'],
                 'pull_requests' => array_values(array_map(fn($e) => ['url' => $e['url'] ?? '', 'title' => $e['title'] ?? ''],
                     array_filter($evts, fn($e) => ($e['type'] ?? '') === 'pr'))),
-                'ci' => $ci ? (end($ci)['state'] ?? null) : null, 'model' => $p['model_used']];
+                'ci' => $ci ? (end($ci)['state'] ?? null) : null, 'model' => $p['model_used'], 'session_delta' => $p['session_delta'] ?? null];
         }
         repondre(['project' => $projet, 'known' => (bool)$info, 'online' => $info['online'] ?? false,
                   'pod' => $info['worker_name'] ?? null, 'tasks' => $taches]);
@@ -1517,7 +1537,7 @@ switch ($route) {
                     $t = $evt['task'];
                     $avant = q('SELECT statut FROM taches WHERE id = ?', [$tacheId])->fetchColumn();
                     $extra = json_decode((string)q('SELECT extra FROM taches WHERE id = ?', [$tacheId])->fetchColumn(), true) ?: [];
-                    foreach (['changes', 'worktree', 'duration_s', 'next_steps', 'tests', 'model_used', 'models', 'model_auto', 'question', 'tokens', 'session_delta'] as $k) if (isset($t[$k])) $extra[$k] = $t[$k];
+                    foreach (['changes', 'worktree', 'duration_s', 'next_steps', 'tests', 'model_used', 'models', 'model_auto', 'question', 'tokens', 'session_delta', 'resume_at'] as $k) if (isset($t[$k])) $extra[$k] = $t[$k];
                     q('UPDATE taches SET statut = ?, projet = COALESCE(?, projet), raison_routage = ?, resultat = ?, cout = ?, maj_le = ?,
                        session = COALESCE(?, session), extra = ? WHERE id = ?',
                       [$t['status'], $t['project'] ?? null, (string)($t['route_reason'] ?? ''), (string)($t['result'] ?? ''),
@@ -1695,12 +1715,14 @@ switch ($route) {
             $x = json_decode($orig['extra'] ?? '', true) ?: [];
             $x['repris'] = true;
             q('UPDATE taches SET extra = ? WHERE id = ?', [json_encode($x, JSON_UNESCAPED_UNICODE), $orig['id']]);
-            if ($r['kind'] === 'bloquee') {
+            if ($r['kind'] === 'bloquee' || $r['kind'] === 'pausee') {
                 q("UPDATE taches SET statut = 'cancelled', annulation = 1, resultat = ?, maj_le = ? WHERE id = ?",
-                  ['Relancée par le mode hard : restée sans avancer après sa transmission au pod.', time(), $orig['id']]);
+                  [$r['kind'] === 'pausee' ? 'Reprise automatique après la pause due à la limite du forfait.'
+                      : 'Relancée par le mode hard : restée sans avancer après sa transmission au pod.', time(), $orig['id']]);
                 evenement_tache($orig['id']);
             }
-            $id = creer_tache_suite($orig, "Ce travail a été interrompu avant la fin (redémarrage ou arrêt du pod). Reprends-le là où il s'est arrêté : "
+            $id = creer_tache_suite($orig, ($r['kind'] === 'pausee' ? "Ce travail a été mis en pause par la limite du forfait, qui vient de se réinitialiser."
+                    : "Ce travail a été interrompu avant la fin (redémarrage ou arrêt du pod).") . " Reprends-le là où il s'est arrêté : "
                 . "vérifie d'abord l'état du dépôt (git status, git log, branche en cours), puis mène-le à son terme. Instruction d'origine :\n\n" . $orig['instruction'],
                 ['auto' => true, 'reprise_de' => $orig['id']]);
             $a['launched_today']++;

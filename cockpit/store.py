@@ -44,6 +44,7 @@ class Task:
     question: dict | None = None  # question(s) posée(s) à l'utilisateur {text, options, items?, detected?}
     reply_to_task: str | None = None  # tâche à laquelle répond celle-ci (suite de conversation)
     tokens: dict | None = None  # {input, output, cache_read, cache_write, total} consommés par la tâche
+    resume_at: int | None = None  # tâche en pause (limite du forfait) : heure de réinitialisation après laquelle elle est reprise
     session_delta: float | None = None  # part de la session de 5 h consommée pendant la tâche (0-1, approximative)
 
 
