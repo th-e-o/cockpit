@@ -208,6 +208,11 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
   - **compte rendu** (tableau de bord, *📋 Compte rendu*) : par projet, ce qui a été fait (résultat, fichiers, commits, branche,
     tests), les questions tranchées, le nombre de validations passées automatiquement et les opérations sensibles ; une
     notification annonce la fin du mode, et le compte rendu reste consultable ensuite.
+  - **Limite du forfait** : le full auto et le mode hard ne lancent une tâche que si elle tient dans la session de 5 h restante
+    (coût = médiane de la part de session des 10 dernières tâches terminées, 5 % sans mesure ; plafond 98 %, additionné pour
+    les projets de front) et attendent sinon la réinitialisation. Une tâche déjà en cours que la limite atteint est
+    interrompue et **mise en pause** (⏸, pas une erreur : elle ne compte pas dans les 3 échecs de suite) ; après la
+    réinitialisation, elle est reprise dans sa conversation avec les travaux restés en plan (ou à la main, avec le bouton *▶ Reprendre* de la tâche).
   Seuls les outils en `deny` de `config/policy.yaml` restent bloqués. À n'activer que sur des pods dont tu acceptes les risques.
 - **Réinitialisation des tokens** : notification « 🔄 Tokens réinitialisés » quand la session de 5 h ou une limite
   hebdomadaire se renouvelle après avoir dépassé 80 % (`COCKPIT_RESET_NOTIFY_MIN`).
