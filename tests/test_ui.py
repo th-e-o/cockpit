@@ -707,7 +707,7 @@ def test_questions_de_claude(relay):
 
 def test_inciter_a_economiser(relay):
     """Consommation visible (carte, tableau de bord) et conseils sous la saisie pour économiser les tokens."""
-    from test_relay import call, paired_phone, wpoll
+    from test_relay import paired_phone
 
     p = paired_phone(relay)
     t1 = seed_dashboard(relay, p)
