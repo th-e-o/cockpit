@@ -273,6 +273,16 @@ function exiger_worker(): void {
     $GLOBALS['worker_authentifie'] = true;
 }
 
+/** Clé d'API d'un outil externe (ex. bot Telegram) : ne permet que d'ajouter des propositions (« proposition_api »). */
+function exiger_cle_api(): void {
+    global $CONFIG;
+    $cle = preg_replace('/^Bearer\s+/i', '', $_SERVER['HTTP_AUTHORIZATION'] ?? $_SERVER['REDIRECT_HTTP_AUTHORIZATION'] ?? '');
+    $empreinte = $cle === '' ? '' : h($cle);
+    foreach ($CONFIG['api_cles_sha256'] ?? [] as $connue) if (hash_equals($connue, $empreinte)) return;
+    limiter_echecs();
+    echec('clé d\'API invalide');
+}
+
 // ---------------------------------------------------------------- WebAuthn (passkeys)
 
 function nouveau_defi(string $type): string {
@@ -1622,6 +1632,19 @@ switch ($route) {
         memoire_ecrire($m);
         valider();
         repondre(['ok' => true, 'task_id' => $tache ?? null]);
+
+    case 'proposition_api': // ajout d'une proposition par un outil externe (clé d'API) : rien n'est lancé, elle attend dans la file
+        exiger_cle_api();
+        $projet = $in['project'] ?? null;
+        if ($projet !== null && !in_array($projet, array_column(projets(), 'id'), true)) erreur('projet inconnu');
+        $source = preg_replace('/[^\w-]/u', '', (string)($in['source'] ?? '')) ?: 'api';
+        debut();
+        $m = memoire_lire();
+        $n = memoire_proposer($m, $projet, [['titre' => $in['titre'] ?? '', 'instruction' => $in['instruction'] ?? '']], mb_substr($source, 0, 30));
+        if (!$n) { annuler(); erreur('proposition vide, trop longue ou déjà présente'); }
+        memoire_ecrire($m);
+        valider();
+        repondre(['ok' => true, 'id' => proposition_id($projet, (string)$in['titre'])]);
 
     case 'autopilote': // arme ou désarme le mode full auto
         exiger_session();
