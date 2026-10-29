@@ -18,8 +18,8 @@ spec:
         fsGroup: 100
       containers:
         - name: worker
-          image: docker.io/theossp/cockpit-runner:latest
-          imagePullPolicy: Always
+          image: docker.io/theossp/cockpit-runner   # tag fixé dans kustomization.yaml
+          imagePullPolicy: IfNotPresent
           env:
             - { name: PROJECT_ID, value: cockpit }                  # projet par défaut du runner, [a-z0-9-]{1,30}
             - { name: GIT_REPOSITORY, value: "https://github.com/th-e-o/cockpit.git" }  # vide = dossier vide
