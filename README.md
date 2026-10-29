@@ -124,6 +124,8 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
     t'attend.
   - *Commandes rapides* (puces au-dessus de la saisie, ✎ pour les modifier, communes ou par projet) et *mémoire du
     projet* (🧠 : le `CLAUDE.md`, lu par Claude au début de chaque tâche, modifiable depuis le téléphone).
+- **Flux des projets** (création, dépôts, délégation, suivi des pods, états et limites) :
+  [docs/flux-projets.md](docs/flux-projets.md).
 - **Pods de projet** : leur agent transmet à l'orchestrateur ce qui sort de son projet (nouveau projet, nouveau
   pod : `confier_au_projet(projet="orchestrateur")`). Le cockpit de ces pods se met à jour seul (git pull puis
   redémarrage du worker, toutes les 10 min, seulement entre deux tâches ; `COCKPIT_AUTO_UPDATE`).

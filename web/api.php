@@ -47,6 +47,7 @@ const INCITATION_PALIERS = [[48, 0.20], [12, 0.10]];  // [heures avant la réini
 const AUTO_PARALLELE_MAX = 6;           // full auto : projets menés de front, au plus
 const HARD_REPONSES_MAX = 4;            // mode hard : réponses automatiques aux questions de Claude, par conversation
 const HARD_HEURES_MAX = 336;            // mode hard : durée maximale d'un armement (14 jours)
+const ATTENTE_PROJET_MAX = 1800;        // tâche confiée à un pod qui ne se connecte pas : en erreur après 30 min
 
 /** Règles « Toujours autoriser » pour les workers : [{tool, pattern}]. */
 function regles(): array {
@@ -865,6 +866,19 @@ function autopilote_tache_terminee(string $statut): void {
     if ($arret) alerte_ajouter('auto-arret', '⏸ Full auto arrêté', AUTO_ECHECS_MAX . ' tâches de suite en erreur : le mode a été désarmé.');
 }
 
+/** Tâches confiées à un pod qui ne s'est pas connecté à temps (quota, échec helm, nom erroné…) : en erreur. */
+function expirer_attentes_projet(): void {
+    $ids = q("SELECT id FROM taches WHERE attente_projet = 1 AND statut = 'pending' AND cree_le < ?",
+             [time() - ATTENTE_PROJET_MAX])->fetchAll(PDO::FETCH_COLUMN);
+    foreach ($ids as $id) {
+        q("UPDATE taches SET statut = 'error', attente_projet = NULL, maj_le = ?, resultat = ? WHERE id = ?",
+          [time(), 'Expirée : le pod du projet ne s\'est pas connecté au bout de ' . intdiv(ATTENTE_PROJET_MAX, 60)
+                   . ' min (pod non démarré, quota atteint, ou nom différent de celui du service). Relance la demande une fois le pod en ligne.', $id]);
+        evenement_tache($id);
+    }
+    if ($ids) notifier();
+}
+
 // ---------------------------------------------------------------- routes
 
 $route = $_GET['r'] ?? '';
@@ -965,6 +979,7 @@ switch ($route) {
     // ----- téléphone
     case 'etat':
         exiger_session();
+        expirer_attentes_projet();
         $depuis = (int)($_GET['since'] ?? 0);
         if ($depuis > 0) {
             $evts = q('SELECT id, donnees FROM evenements WHERE id > ? ORDER BY id LIMIT 1000', [$depuis])->fetchAll();
@@ -1366,6 +1381,7 @@ switch ($route) {
                 inserer_evenement($v['tache_id'], ['kind' => 'approval', 'task_id' => $v['tache_id'], 'approval' => $a]);
             }
         }
+        expirer_attentes_projet();
         // Tâches à livrer : celles de ce worker, et (orchestrateur) celles sans worker, à router.
         $mienne = $orchestrateur ? '(worker_id = ? OR (worker_id IS NULL AND attente_projet IS NULL))' : 'worker_id = ?';
         $fin = microtime(true) + ($in['wait'] ?? LONG_POLL);
