@@ -31,7 +31,11 @@ def test_valeurs_helm():
     v = svc.helm_values(p, {"url": "https://vault", "token": "s.tok", "mount": "onyxia-kv", "directory": "user-x"})
     assert v["kubernetes"]["role"] == "view"  # jamais admin pour un projet
     assert v["git"]["repository"] == GOOD["depot_git"]
-    assert v["init"] == {"personalInit": svc.INIT_SCRIPT, "personalInitArgs": "test"}
+    assert v["init"] == {"personalInit": svc.INIT_SCRIPT.format(ref="main"), "personalInitArgs": "test main"}
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    assert svc.helm_values(p, {}, ref=sha)["init"] == {
+        "personalInit": f"https://raw.githubusercontent.com/th-e-o/cockpit/{sha}/scripts/onyxia-init.sh",
+        "personalInitArgs": f"test {sha}"}
     assert v["resources"]["limits"]["nvidia.com/gpu"] == "1" and v["persistence"]["size"] == "10Gi"
     assert v["vault"]["secret"] == "Claude" and v["vault"]["token"] == "s.tok"
     assert "vault" not in svc.helm_values(p, {})
@@ -39,6 +43,17 @@ def test_valeurs_helm():
     assert g["token"] == "ghp_x" and g["name"] == "Théo" and g["repository"] == GOOD["depot_git"]
     args = svc.helm_args(p, "ns", "/tmp/v.yaml")
     assert args[:4] == ["helm", "upgrade", "--install", "cockpit-test"] and "s.tok" not in " ".join(args)
+
+
+def test_version_cockpit(monkeypatch):
+    sha = "0123456789abcdef0123456789abcdef01234567"
+    monkeypatch.setenv("COCKPIT_VERSION", sha)
+    assert svc.version_cockpit() == sha
+    monkeypatch.setenv("COCKPIT_VERSION", "dev")  # image construite à la main : on lit le clone, sinon main
+    v = svc.version_cockpit()
+    assert v == "main" or svc._SHA.match(v)
+    monkeypatch.setattr(svc, "ROOT", Path("/nexiste/pas"))
+    assert svc.version_cockpit() == "main"
 
 
 def test_arret_limite_aux_releases_du_cockpit(monkeypatch):

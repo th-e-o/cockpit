@@ -39,7 +39,7 @@ WORKER_NAME = os.environ.get("COCKPIT_WORKER_NAME") or WORKER_ID
 ORCHESTRATOR = os.environ.get("COCKPIT_ROLE", "orchestrateur") != "projet"
 KEY_FILE = DATA / "worker_key"
 MEMORY_MAX = 50_000
-# Pods de projet (scripts/onyxia-init.sh) : le cockpit se met à jour seul, entre deux tâches
+# Mise à jour automatique depuis main, entre deux tâches : désactivée par défaut (les pods tournent sur une version figée)
 AUTO_UPDATE = os.environ.get("COCKPIT_AUTO_UPDATE") == "1"
 UPDATE_EVERY = int(os.environ.get("COCKPIT_UPDATE_EVERY", "600"))
 PR_SYNC_EVERY = int(os.environ.get("COCKPIT_PR_SYNC_EVERY", "120"))

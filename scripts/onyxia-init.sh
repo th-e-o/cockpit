@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Script de démarrage d'un service de projet (chart Onyxia, init.personalInit ; $1 = identifiant du projet).
-# Clone le cockpit dans ~/work/.cockpit, déclare le dépôt du service comme unique projet et lance le worker.
+# Script de démarrage d'un service de projet (chart Onyxia, init.personalInit ;
+# $1 = identifiant du projet, $2 = commit du cockpit, celui de l'orchestrateur qui lance le service).
+# Installe le cockpit à ce commit dans ~/work/.cockpit, déclare le dépôt du service comme unique projet et lance le worker.
 # Prérequis : le secret Onyxia « Claude » contient CLAUDE_CODE_OAUTH_TOKEN et COCKPIT_WORKER_KEY (lus par run.sh).
 set -euo pipefail
 
 PROJECT_ID="${1:?identifiant du projet attendu}"
 [[ "$PROJECT_ID" =~ ^[a-z0-9-]{1,30}$ ]] || { echo "identifiant de projet invalide" >&2; exit 1; }
+REF="${2:-main}"
+[[ "$REF" =~ ^([0-9a-f]{40}|main)$ ]] || { echo "commit du cockpit invalide" >&2; exit 1; }
 REPO="${GIT_REPOSITORY:-}"
 WORK="${HOME:-/home/onyxia}/work"
 COCKPIT="$WORK/.cockpit"
@@ -27,11 +30,10 @@ curl -fsSL "${COCKPIT_CLAUDE_INIT_URL:-https://raw.githubusercontent.com/th-e-o/
   || echo "script_init a échoué : poursuite sans l'installation de Claude" >&2
 export PATH="$HOME/.local/bin:$PATH"
 
-if [ -d "$COCKPIT/.git" ]; then
-  git -C "$COCKPIT" pull -q --ff-only || true
-else
-  git clone -q --depth 1 https://github.com/th-e-o/cockpit.git "$COCKPIT"
-fi
+# Version figée : le pod tourne sur le commit de l'orchestrateur, pas sur le main du moment
+[ -d "$COCKPIT/.git" ] || git clone -q --depth 1 https://github.com/th-e-o/cockpit.git "$COCKPIT"
+git -C "$COCKPIT" fetch -q --depth 1 origin "$REF"
+git -C "$COCKPIT" checkout -q --detach FETCH_HEAD
 cd "$COCKPIT"
 
 cat > config/projects.yaml <<YAML
@@ -42,14 +44,15 @@ projects:
     description: ${REPO:+Dépôt $REPO}${REPO:-Nouveau projet $PROJECT_ID}
 YAML
 
-[ -x .venv/bin/python ] || { uv venv -q .venv && uv pip install -q --python .venv/bin/python -r requirements.txt; }
+[ -x .venv/bin/python ] || uv venv -q .venv
+uv pip install -q --python .venv/bin/python -r requirements.txt   # le commit a pu changer les dépendances
 # Dépendances système du navigateur des captures d'écran (non bloquant : sans sudo, les captures seront indisponibles)
 sudo -n "$COCKPIT/.venv/bin/python" -m playwright install-deps chromium >/dev/null 2>&1 \
   || sudo -n apt-get install -y -qq libnss3 libatk1.0-0 libatk-bridge2.0-0 libgbm1 libxkbcommon0 libasound2 >/dev/null 2>&1 || true
 
 # Un worker de projet n'orchestre rien ; son identité est celle du pod.
 export COCKPIT_ROLE=projet
-export COCKPIT_AUTO_UPDATE=1   # le cockpit de ce pod se met à jour seul (git pull), entre deux tâches
+export COCKPIT_AUTO_UPDATE="${COCKPIT_AUTO_UPDATE:-0}"   # pas de mise à jour automatique depuis main (1 pour la rétablir)
 export COCKPIT_WORKER_ID="${HOSTNAME:-$PROJECT_ID}"
 export COCKPIT_WORKER_NAME="$PROJECT_ID"
 exec ./run.sh
