@@ -12,6 +12,7 @@ import json
 import os
 import re
 import secrets
+import subprocess
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,7 +26,9 @@ CHART = "vscode-python"
 CHART_VERSION = "2.6.6"
 CHART_REPO = "https://inseefrlab.github.io/helm-charts-interactive-services"
 GIT_CACHE_DEFAUT = "86400"  # secondes de conservation du token git dans le pod
-INIT_SCRIPT ="https://raw.githubusercontent.com/th-e-o/cockpit/main/scripts/onyxia-init.sh"
+INIT_SCRIPT = "https://raw.githubusercontent.com/th-e-o/cockpit/{ref}/scripts/onyxia-init.sh"
+ROOT = Path(__file__).resolve().parent.parent
+_SHA = re.compile(r"^[0-9a-f]{40}$")
 VAULT_SECRET = "Claude"
 SERVER_NAME = "services"
 TOOL_PREFIX = f"mcp__{SERVER_NAME}__"
@@ -74,8 +77,23 @@ class Launch:
         return self
 
 
-def helm_values(p: Launch, vault: dict[str, str], git: dict[str, str] | None = None, ingress: dict | None = None) -> dict:
-    """Valeurs du chart `vscode-python` pour un pod de projet : rôle `view`, clone du dépôt, init du worker."""
+def version_cockpit() -> str:
+    """Commit du cockpit que fait tourner l'orchestrateur (image : COCKPIT_VERSION ; clone : HEAD), « main » à défaut.
+    Les pods de projet démarrent sur ce même commit : ni `main` du moment, ni mise à jour automatique."""
+    if _SHA.match(v := os.environ.get("COCKPIT_VERSION", "")):
+        return v
+    try:
+        out = subprocess.run(["git", "-C", str(ROOT), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10)
+        if _SHA.match(v := out.stdout.strip()):
+            return v
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return "main"
+
+
+def helm_values(p: Launch, vault: dict[str, str], git: dict[str, str] | None = None, ingress: dict | None = None,
+                ref: str = "main") -> dict:
+    """Valeurs du chart `vscode-python` pour un pod de projet : rôle `view`, clone du dépôt, init du worker au commit `ref`."""
     limits = {"cpu": p.cpu, "memory": p.memoire}
     if p.gpu:
         limits["nvidia.com/gpu"] = "1"
@@ -84,7 +102,7 @@ def helm_values(p: Launch, vault: dict[str, str], git: dict[str, str] | None = N
         # Identité et token git de l'utilisateur (Onyxia les injecte lui-même ; ici, ceux de l'orchestrateur) :
         # commits signés à son nom, clone des dépôts privés et push.
         "git": {**(git or {}), "enabled": True, "repository": p.depot_git, "branch": p.branche},
-        "init": {"personalInit": INIT_SCRIPT, "personalInitArgs": p.nom},
+        "init": {"personalInit": INIT_SCRIPT.format(ref=ref), "personalInitArgs": f"{p.nom} {ref}"},
         "resources": {"requests": {"cpu": p.cpu, "memory": p.memoire}, "limits": limits},
         "persistence": {"enabled": True, "size": p.disque},
     }
@@ -213,7 +231,7 @@ async def lancer(p: Launch) -> str:
     fd, path = tempfile.mkstemp(suffix=".yaml")  # 0600 : contient le jeton Vault
     try:
         with os.fdopen(fd, "w") as f:  # contient aussi le token git
-            yaml.safe_dump(helm_values(p, vault_values(), git_values(), ingress), f)
+            yaml.safe_dump(helm_values(p, vault_values(), git_values(), ingress, version_cockpit()), f)
         await _run(*helm_args(p, ns, path))
     finally:
         os.unlink(path)
@@ -249,7 +267,7 @@ _WAKE_SCRIPT = (
     'pgrep -f "[c]ockpit.worker run" >/dev/null && { echo "déjà actif"; exit 0; }; '  # [c] : ne se reconnaît pas lui-même
     'IFS= read -r COCKPIT_WORKER_KEY; IFS= read -r CLAUDE_CODE_OAUTH_TOKEN; export COCKPIT_WORKER_KEY; '
     '[ -n "$CLAUDE_CODE_OAUTH_TOKEN" ] && export CLAUDE_CODE_OAUTH_TOKEN; '
-    'COCKPIT_ROLE=projet COCKPIT_AUTO_UPDATE=1 COCKPIT_WORKER_ID="$HOSTNAME" COCKPIT_WORKER_NAME="$PROJET" ./run.sh >/dev/null 2>&1; sleep 6; '
+    'COCKPIT_ROLE=projet COCKPIT_AUTO_UPDATE=0 COCKPIT_WORKER_ID="$HOSTNAME" COCKPIT_WORKER_NAME="$PROJET" ./run.sh >/dev/null 2>&1; sleep 6; '
     'if pgrep -f "[c]ockpit.worker run" >/dev/null; then echo "relancé"; '
     'else echo "le worker s\'est arrêté au démarrage : $(grep -vE \'^[|]\' data/worker.log | tail -n 2 | tr \'\\n\' \' \')"; exit 4; fi'
 )

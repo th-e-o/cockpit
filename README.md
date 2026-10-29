@@ -125,8 +125,10 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
   - *Commandes rapides* (puces au-dessus de la saisie, ✎ pour les modifier, communes ou par projet) et *mémoire du
     projet* (🧠 : le `CLAUDE.md`, lu par Claude au début de chaque tâche, modifiable depuis le téléphone).
 - **Pods de projet** : leur agent transmet à l'orchestrateur ce qui sort de son projet (nouveau projet, nouveau
-  pod : `confier_au_projet(projet="orchestrateur")`). Le cockpit de ces pods se met à jour seul (git pull puis
-  redémarrage du worker, toutes les 10 min, seulement entre deux tâches ; `COCKPIT_AUTO_UPDATE`).
+  pod : `confier_au_projet(projet="orchestrateur")`). Le cockpit de ces pods tourne sur le **même commit que
+  l'orchestrateur** qui les a lancés (`scripts/onyxia-init.sh <projet> <commit>`), et non sur le `main` du moment : un commit
+  poussé sur le dépôt public ne s'exécute pas tout seul dans les pods. `COCKPIT_AUTO_UPDATE=1` rétablit la mise à jour
+  automatique depuis `main` (git pull puis redémarrage du worker, toutes les 10 min, entre deux tâches).
 - **Nouveau projet** (dans une *Nouvelle conversation*, sur *Auto*) : l'orchestrateur crée le dépôt GitHub, lance
   le pod dessus et lui confie la demande.
 - **Ouvrir un pod** : bouton *🖥 Ouvrir VSCode* sur la carte du pod (adresse trouvée par son worker dans l'ingress
