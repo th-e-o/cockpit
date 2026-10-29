@@ -3,7 +3,7 @@ name: Déploiement OVH
 on:
   push:
     branches: [main]
-    paths: ['web/**', 'config/worker_key.sha256', 'scripts/**', '.github/workflows/**']
+    paths: ['web/**', 'config/worker_key.sha256', 'config/api_keys.sha256', 'scripts/**', '.github/workflows/**']
   workflow_dispatch:
 
 concurrency: deploiement-ovh-cockpit

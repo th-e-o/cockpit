@@ -27,6 +27,11 @@ worker n'est connue du relais que par son empreinte, versionnée dans `config/wo
 
 Chaque `git push` sur `main` qui touche `web/` redéploie le relais (*Actions → Déploiement OVH*).
 
+**Clés d'API (facultatif)** : un outil externe (ex. un bot Telegram) peut ajouter des propositions avec
+`POST api.php?r=proposition_api` (en-tête `Authorization: Bearer <clé>`, corps JSON `{titre, instruction, project?, source?}`).
+Il ne peut rien faire d'autre : la proposition attend dans la file comme une proposition ajoutée à la main.
+`./run.sh cle-api` crée une clé et ajoute son empreinte à `config/api_keys.sha256` (une par ligne) ; pour révoquer, retirer la ligne.
+
 ### 2. OVH : rien à faire
 Le cockpit est déployé dans `www/cockpit/` et servi sur **https://deltastat.fr/cockpit/**, car la formule
 d'hébergement n'autorise pas de domaine rattaché supplémentaire. Les deux projets restent indépendants : chaque

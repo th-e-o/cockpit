@@ -26,6 +26,7 @@ PHP = os.environ.get("COCKPIT_PHP") or shutil.which("php")
 pytestmark = pytest.mark.skipif(not PHP, reason="PHP introuvable (définir COCKPIT_PHP)")
 
 KEY = "cle-de-test-du-worker"
+CLE_API = "cle-de-test-du-bot"
 b64u = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=").decode()
 b64u_dec = lambda s: base64.urlsafe_b64decode(s + "=" * (-len(s) % 4))
 
@@ -52,6 +53,7 @@ def lancer_relais():
     origin = f"http://localhost:{port}"
     (web / "config.php").write_text(
         f"<?php return ['worker_cle_sha256' => '{hashlib.sha256(KEY.encode()).hexdigest()}',"
+        f" 'api_cles_sha256' => ['{hashlib.sha256(CLE_API.encode()).hexdigest()}'],"
         f" 'hote' => 'localhost', 'origine' => '{origin}', 'base' => '/cockpit/', 'debug' => true];"
     )
     proc = subprocess.Popen([PHP, "-S", f"127.0.0.1:{port}", "-t", str(docroot)],
@@ -730,6 +732,25 @@ def test_memoire_propositions_et_full_auto(relay_neuf):
             {"kind": "task", "task_id": auto["task_id"], "task": {"status": "error", "project": "fa", "result": "raté"}}]})
     assert call(p, "etat").json()["autopilot"]["enabled"] is False
     assert any("Full auto" in a["titre"] for a in call(p, "resume").json()["alerts"])
+
+
+def test_proposition_par_cle_api(relay_neuf):
+    p = paired_phone(relay_neuf)
+    idee = {"titre": "POC Telegram", "instruction": "Code ceci.", "source": "telegram"}
+    # Sans clé, avec une mauvaise clé, ou avec la clé du worker : refusé
+    assert httpx.post(relay_neuf["base"] + "/api.php", params={"r": "proposition_api"}, json=idee).status_code == 401
+    assert worker_call(relay_neuf, "proposition_api", idee, key="mauvaise").status_code == 401
+    assert worker_call(relay_neuf, "proposition_api", idee).status_code == 401
+    # La clé d'API ne donne accès à rien d'autre
+    assert worker_call(relay_neuf, "w_poll", {"wait": 0}, key=CLE_API).status_code == 401
+    r = worker_call(relay_neuf, "proposition_api", idee, key=CLE_API)
+    assert r.status_code == 200 and r.json()["ok"]
+    mem = call(p, "etat").json()["memory"]
+    assert [(x["id"], x["titre"], x["source"], x["project"]) for x in mem["proposals"]] == [(r.json()["id"], "POC Telegram", "telegram", None)]
+    # Doublon et projet inconnu refusés ; rien n'est lancé
+    assert worker_call(relay_neuf, "proposition_api", idee, key=CLE_API).status_code == 400
+    assert worker_call(relay_neuf, "proposition_api", {**idee, "titre": "Autre", "project": "nope"}, key=CLE_API).status_code == 400
+    assert last_status(p) == {}
 
 
 def test_alerte_reinitialisation_des_tokens(relay):

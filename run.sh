@@ -5,6 +5,7 @@
 #   ./run.sh init     génère la clé du worker (une seule fois)
 #   ./run.sh logs     suit le journal ; ./run.sh stop arrête le worker
 #   ./run.sh usage    usage du forfait Claude tel que le lit le cockpit (diagnostic)
+#   ./run.sh cle-api  crée une clé d'API pour un outil externe (ajout de propositions seulement)
 set -euo pipefail
 cd "$(dirname "$0")"
 [ -x .venv/bin/python ] || { uv venv -q .venv && uv pip install -q --python .venv/bin/python -r requirements.txt; }
@@ -30,6 +31,11 @@ case "${1:-start}" in
   pair) exec $PY -m cockpit.worker pair ;;
   logs) exec tail -f data/worker.log ;;
   usage) exec $PY -m cockpit.usage ;;   # diagnostic de la barre d'usage (jamais le jeton)
+  cle-api)  # la clé n'est affichée qu'une fois ; seule son empreinte est versionnée
+    cle="$($PY -c 'import secrets; print(secrets.token_urlsafe(32))')"
+    printf '%s' "$cle" | sha256sum | cut -d' ' -f1 >> config/api_keys.sha256
+    echo "Clé d'API : $cle"
+    echo "Empreinte ajoutée à config/api_keys.sha256 : versionne-la et pousse sur main pour la déployer." ;;
   stop) pkill -f "cockpit.worker run" && echo "Worker arrêté." || echo "Aucun worker actif." ;;
   fg)   exec $PY -m cockpit.worker run ;;
   start)
