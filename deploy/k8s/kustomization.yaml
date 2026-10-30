@@ -6,4 +6,4 @@ resources:
 # Revenir à une version précédente = remettre son tag ici (ou annuler le commit).
 images:
   - name: docker.io/theossp/cockpit-runner
-    newTag: 5303dad79f496f7469b3ac87fb3be3eacea3e613
+    newTag: 35c1123f2bf588b1d3ff8dbf5b5eabe73eacdbd2
