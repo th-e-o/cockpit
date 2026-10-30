@@ -829,10 +829,10 @@ def test_theme_et_repartition(relay):
         page, errors = browser_page(p, browser, relay, viewport={"width": 1440, "height": 900}, color_scheme="light")
         page.wait_for_selector("#splitter")
         bg = lambda: page.evaluate("getComputedStyle(document.body).backgroundColor")  # noqa: E731
-        assert bg() == "rgb(246, 246, 244)"  # auto : suit le système (clair)
+        assert bg() == "rgb(246, 247, 249)"  # auto : suit le système (clair)
         page.click("#menuBtn")
         page.click("[data-theme-set='dark']")
-        assert bg() == "rgb(15, 17, 21)" and page.get_attribute("html", "data-theme") == "dark"
+        assert bg() == "rgb(11, 12, 16)" and page.get_attribute("html", "data-theme") == "dark"
         assert page.get_attribute("[data-theme-set='dark']", "aria-pressed") == "true"
         page.click("#menuDlg [data-close]")
         # Largeur du fil : glisser la séparation
@@ -845,7 +845,7 @@ def test_theme_et_repartition(relay):
         page.screenshot(path=SHOTS / "21-sombre-large.png")
         page.reload()
         page.wait_for_selector("#splitter")
-        assert bg() == "rgb(15, 17, 21)"  # thème mémorisé, appliqué avant l'affichage
+        assert bg() == "rgb(11, 12, 16)"  # thème mémorisé, appliqué avant l'affichage
         assert abs(page.locator("#chat").bounding_box()["width"] - 900) < 12  # largeur mémorisée
         page.dblclick("#splitter")
         assert page.locator("#chat").bounding_box()["width"] < 700  # largeur par défaut
@@ -856,6 +856,6 @@ def test_theme_et_repartition(relay):
         assert page.is_visible("#dash")
         page.click("#menuBtn")
         page.click("[data-theme-set='light']")
-        assert bg() == "rgb(246, 246, 244)"
+        assert bg() == "rgb(246, 247, 249)"
         assert not errors, errors
         browser.close()
