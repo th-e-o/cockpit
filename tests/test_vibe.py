@@ -319,6 +319,37 @@ def test_choix_automatique_du_modele(tmp_path, monkeypatch):
     assert manual.model == "standard" and manual.model_auto is None and len(seen) == 4
 
 
+def test_routage_et_modele_en_un_appel(tmp_path, monkeypatch):
+    """« Modèle auto » sur Auto : le routeur choisit le projet et le modèle dans le même appel ; le pod ne rappelle pas Haiku."""
+    from cockpit import router
+
+    calls = []
+
+    async def ask(system, prompt):
+        calls.append(system)
+        return ('{"project": "pay", "confidence": 0.9, "reason": "paiement",'
+                ' "model": "standard", "model_reason": "lancer les tests"}')
+
+    monkeypatch.setattr(router, "_ask_haiku", ask)
+    projects = {"pay": Project(id="pay", name="Pay", cwd=""), "doc": Project(id="doc", name="Doc", cwd="")}
+    r = asyncio.run(router.route("lance les tests du paiement", projects, with_model=True))
+    assert (r.project, r.model, r.model_reason) == ("pay", "standard", "lancer les tests")
+    assert len(calls) == 1 and "EN CAS DE DOUTE" in calls[0] and '"model_reason"' in calls[0]
+    # Sans with_model (modèle choisi à la main) : prompt de routage seul, modèle ignoré
+    r = asyncio.run(router.route("lance les tests du paiement", projects))
+    assert r.model is None and "EN CAS DE DOUTE" not in calls[1]
+
+    store = Store(tmp_path / "data")
+    runner = Runner(store, POLICY)
+    t = Task(id="h", instruction="lance les tests", model_hint={"choice": "standard", "reason": "lancer les tests"})
+    asyncio.run(runner.choose_model(t, projects["pay"]))
+    assert t.model == "standard" and t.model_auto == {"choice": "standard", "reason": "lancer les tests"}
+    assert len(calls) == 2  # aucun appel au sélecteur
+    bad = Task(id="b", instruction="x", model_hint={"choice": "inconnu"})
+    asyncio.run(runner.choose_model(bad, projects["pay"]))
+    assert len(calls) == 3  # indice invalide : le sélecteur est appelé
+
+
 def test_tokens_et_part_de_session(repo, tmp_path, fake, monkeypatch):
     """Tokens cumulés sur les tours d'une tâche, et part de la session de 5 h relue juste après."""
     store = Store(tmp_path / "data")

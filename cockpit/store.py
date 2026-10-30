@@ -36,6 +36,7 @@ class Task:
     next_steps: list[dict] | None = None  # prochaines étapes proposées par l'agent [{titre, instruction}]
     model: str | None = None  # rapide | standard | approfondi (None : choisi automatiquement avant l'exécution)
     model_auto: dict | None = None  # choix automatique du modèle {choice, reason}
+    model_hint: dict | None = None  # modèle déjà choisi par l'orchestrateur avec le projet {choice, reason} (sélecteur évité)
     isolate: bool = False  # variante : toujours dans un worktree dédié
     group: str | None = None  # variantes d'une même demande (id de la première)
     tests: dict | None = None  # résultat des tests lancés après la tâche {ok, command, duration_s}

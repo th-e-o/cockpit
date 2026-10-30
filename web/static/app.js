@@ -1847,7 +1847,9 @@ async function poll() {
   polling = true;
   clearTimeout(pollTimer);
   try {
-    const s = await api('etat', undefined, `&since=${state.lastId}`);
+    // h : empreintes des blocs déjà reçus ; le relais n'envoie que ceux qui ont changé (les autres sont absents de s)
+    const s = await api('etat', undefined, `&since=${state.lastId}&h=${encodeURIComponent(state.etatH || '')}`);
+    state.etatH = s.h || '';
     state.replay = state.lastId === 0;
     const touched = new Set();
     let prMerged = false;
@@ -1865,7 +1867,7 @@ async function poll() {
       if (last?.created && Date.now() / 1000 - last.created < REPRISE_AUTO) setReplyTo(last.id);
     }
     followConversation();
-    if (JSON.stringify(s.projects) !== JSON.stringify(state.projects)) { state.projects = s.projects; renderProjects(); }
+    if ('projects' in s && JSON.stringify(s.projects) !== JSON.stringify(state.projects)) { state.projects = s.projects; renderProjects(); }
     if (s.worker_online !== state.workerOnline) {
       state.workerOnline = s.worker_online;
       state.order.forEach((id) => touched.add(id));
@@ -1874,13 +1876,13 @@ async function poll() {
     $('#conn').title = s.worker_online ? 'worker Onyxia connecté' : 'worker Onyxia hors ligne';
     render(touched);
     if (state.pendingJump && document.getElementById(`t-${state.pendingJump}`)) { jumpTo(state.pendingJump); state.pendingJump = null; }
-    state.workers = s.workers || [];
-    state.trust = s.trust || {};
-    state.memory = s.memory || null;
-    state.autopilot = s.autopilot || null;
-    state.hard = s.hard || null;
-    state.week = s.week || null;
-    state.deleted = s.deleted_projects || {};
+    if ('workers' in s) state.workers = s.workers || [];
+    if ('trust' in s) state.trust = s.trust || {};
+    if ('memory' in s) state.memory = s.memory || null;
+    if ('autopilot' in s) state.autopilot = s.autopilot || null;
+    if ('hard' in s) state.hard = s.hard || null;
+    if ('week' in s) state.week = s.week || null;
+    if ('deleted_projects' in s) state.deleted = s.deleted_projects || {};
     renderUsageBar();
     renderPip();
     updateTrust();

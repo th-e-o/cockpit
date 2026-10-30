@@ -46,9 +46,10 @@ class Relay:
             body["wait"] = wait
         return await self.call("w_poll", body)
 
-    async def affecter(self, task_id: str, project: str) -> str:
-        """Confie une tâche au worker qui héberge le projet ; renvoie l'id de ce worker."""
-        return (await self.call("w_affecter", {"task_id": task_id, "project": project}))["worker"]
+    async def affecter(self, task_id: str, project: str, model_hint: dict | None = None) -> str:
+        """Confie une tâche au worker qui héberge le projet (avec le modèle déjà choisi au routage) ; renvoie l'id de ce worker."""
+        body = {"task_id": task_id, "project": project} | ({"model_hint": model_hint} if model_hint else {})
+        return (await self.call("w_affecter", body))["worker"]
 
     async def creer_taches(self, parent: str, tasks: list[dict], defer: bool = False) -> list[str]:
         """Crée des tâches filles (une conversation chacune) ; le relais les livre au worker de leur projet.

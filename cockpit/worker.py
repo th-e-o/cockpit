@@ -483,13 +483,15 @@ class Worker:
             return
         if project_id not in self.projects:
             self.store.task_update(task, status="routing")
-            r = await route(self.routing_text(task), self.all_projects or self.projects)
+            r = await route(self.routing_text(task), self.all_projects or self.projects, with_model=not task.model)
             self.store.audit("route", task=task.id, project=r.project, confidence=r.confidence, reason=r.reason)
             if r.project is None:
                 self.store.task_update(task, status="needs_project", route_reason=r.reason)
                 return
             self.store.task_update(task, route_reason=f"{r.reason} ({r.confidence:.0%})")
             project_id = r.project
+            if r.model:
+                task.model_hint = {"choice": r.model, "reason": r.model_reason}
             if project_id not in self.projects:
                 await self.hand_over(task, project_id)
                 return
@@ -498,7 +500,7 @@ class Worker:
     async def hand_over(self, task: Task, project_id: str) -> None:
         """Projet hébergé par un autre worker : le relais lui réaffecte la tâche."""
         try:
-            target = await self.relay.affecter(task.id, project_id)
+            target = await self.relay.affecter(task.id, project_id, task.model_hint)
         except Exception as e:
             self.store.task_update(task, status="error", result=f"Réaffectation impossible : {e}")
             return
@@ -515,6 +517,7 @@ class Worker:
             task = Task(id=t["id"], instruction=t["instruction"], project=t.get("project"),
                         conversation=t.get("conversation"), context=t.get("context") or [],
                         resume_session=t.get("resume_session"), parent=t.get("parent"), model=t.get("model"),
+                        model_hint=t.get("model_hint"),
                         isolate=bool(t.get("isolate")), group=t.get("group"), reply_to_task=t.get("reply_to"))
             self.store.tasks[task.id] = task
             if t.get("action"):

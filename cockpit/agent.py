@@ -32,7 +32,7 @@ import base64
 from . import apercu, github, gitstate, projet
 from . import services as svc
 from .policy import ALLOW, DENY, Policy
-from .router import Project, choose_model
+from .router import MODEL_CHOICES, Project, choose_model
 from .store import Approval, Store, Task, new_id
 
 SYSTEM_APPEND = """
@@ -692,9 +692,13 @@ class Runner:
         """« Modèle auto » : le sélecteur (Haiku) choisit le niveau de modèle selon la demande (Opus pour le code)."""
         if task.model:
             return
-        context = "\n".join(f"- {c['instruction'][:300]}" + (f" → {c['result'][:200]}" if c.get("result") else "")
-                            for c in task.context[-4:])
-        choice, reason = await choose_model(task.instruction, context, f"{project.name} — {project.description}"[:300])
+        hint = task.model_hint or {}
+        if hint.get("choice") in MODEL_CHOICES:  # déjà choisi par l'orchestrateur, dans l'appel de routage
+            choice, reason = hint["choice"], str(hint.get("reason", ""))[:200]
+        else:
+            context = "\n".join(f"- {c['instruction'][:300]}" + (f" → {c['result'][:200]}" if c.get("result") else "")
+                                for c in task.context[-4:])
+            choice, reason = await choose_model(task.instruction, context, f"{project.name} — {project.description}"[:300])
         task.model = choice
         self.store.task_update(task, model_auto={"choice": choice, "reason": reason})
         self.store.audit("model_choice", task=task.id, project=project.id, model=choice, reason=reason)
