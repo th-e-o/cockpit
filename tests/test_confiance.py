@@ -1,4 +1,4 @@
-"""Validations de routine auto-approuvées (trust.default), jamais les opérations sensibles."""
+"""Validations auto-approuvées (trust.default) : grande liberté, sauf ce qui détruit sans retour."""
 
 import asyncio
 import time
@@ -22,17 +22,24 @@ CWD = "/home/onyxia/work/projet"
     ("Bash", {"command": "make build"}, True),                       # commande non répertoriée
     ("Bash", {"command": "pytest > rapport.txt"}, True),             # redirection
     ("Write", {"file_path": CWD + "/.env"}, True),                   # fichier sensible, mais dans le projet
-    ("Bash", {"command": "git push origin main"}, False),
-    ("Bash", {"command": "git push --force origin feat"}, False),
-    ("Bash", {"command": "helm upgrade x y"}, False),
+    ("Bash", {"command": "git push origin main"}, True),
+    ("Bash", {"command": "helm upgrade x y"}, True),
+    ("Bash", {"command": "kubectl apply -f deploy.yaml"}, True),
+    ("Bash", {"command": "sudo apt install x"}, True),
+    ("Bash", {"command": "git reset --hard HEAD~3"}, True),
+    ("Bash", {"command": "mc cp data.csv s3/bucket/"}, True),
+    ("Bash", {"command": "curl -X POST https://api.exemple.fr"}, True),
+    ("Bash", {"command": "git push --force origin feat"}, False),    # réécrit l'historique distant
+    ("Bash", {"command": "git push origin --delete feat"}, False),
+    ("Bash", {"command": "helm uninstall mlflow"}, False),            # supprime un service et son stockage
     ("Bash", {"command": "echo $(kubectl delete pod x)"}, False),    # caché dans une substitution
-    ("Bash", {"command": "sudo apt install x"}, False),
-    ("Bash", {"command": "git reset --hard HEAD~3"}, False),
     ("Bash", {"command": "mc rm -r s3/bucket"}, False),
+    ("Bash", {"command": "vault kv get onyxia-kv/x"}, False),
     ("Bash", {"command": "rm -rf ~"}, False),                        # refus (deny) : jamais
-    ("Write", {"file_path": "/opt/x"}, False),                       # hors du projet
+    ("Write", {"file_path": "/opt/x"}, False),                       # hors de ~/work et /tmp
+    ("Write", {"file_path": "/home/onyxia/work/autre/a.py"}, True),  # autre dossier de l'espace de travail
     ("Write", {"file_path": "/tmp/clone/x"}, True),                  # fichiers temporaires : sans risque
-    ("Write", {"file_path": CWD + "/.github/workflows/ci.yml"}, False),
+    ("Write", {"file_path": CWD + "/.github/workflows/ci.yml"}, True),
     ("Edit", {"file_path": CWD + "/.git/config"}, False),
     ("mcp__services__lancer_service", {"nom": "x"}, True),           # lancer un pod : routine
     ("mcp__services__arreter_service", {"nom": "x"}, False),         # supprime le stockage : toujours demandé
@@ -45,10 +52,11 @@ def test_regles(tool, inp, trusted):
     assert POLICY.trusted(tool, inp, CWD) is trusted
 
 
-def test_hors_du_projet_toujours_demande():
-    """Par défaut, la routine est automatique, mais pas l'écriture dans un autre projet de ~/work."""
+def test_hors_de_l_espace_de_travail_demande():
+    """Par défaut, tout ~/work est libre ; le reste du système de fichiers est demandé (ou refusé)."""
     assert POLICY.trust_default is True
-    assert POLICY.trusted("Write", {"file_path": "/home/onyxia/work/autre-projet/a.py"}, CWD) is False
+    assert POLICY.trusted("Write", {"file_path": "/home/onyxia/work/autre-projet/a.py"}, CWD) is True
+    assert POLICY.trusted("Write", {"file_path": "/home/onyxia/.bashrc"}, CWD) is False
 
 
 def hook(runner, task, cwd):
@@ -79,8 +87,8 @@ def test_decision_de_l_agent(tmp_path):
     assert call("pip install y")["hookSpecificOutput"]["permissionDecision"] == "allow" and asked == ["pip install x"]
     assert [e["type"] for e in task.events][-1] == "trusted"
     assert '"policy": "trust"' in (tmp_path / "data" / "audit.jsonl").read_text()
-    assert call("git push origin main")["hookSpecificOutput"]["permissionDecision"] == "deny"
-    assert asked[-1] == "git push origin main"
+    assert call("git push --force origin feat")["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert asked[-1] == "git push --force origin feat"
 
 
 def test_routine_automatique_par_defaut(tmp_path):
@@ -99,7 +107,7 @@ def test_routine_automatique_par_defaut(tmp_path):
     pre = hook(runner, task, str(tmp_path))
     call = lambda cmd: asyncio.run(pre({"tool_name": "Bash", "tool_input": {"command": cmd}, "tool_use_id": cmd}, cmd, None))
     assert call("pip install rich")["hookSpecificOutput"]["permissionDecision"] == "allow" and asked == []
-    assert call("helm upgrade x y")["hookSpecificOutput"]["permissionDecision"] == "deny" and asked == ["helm upgrade x y"]
+    assert call("helm uninstall x")["hookSpecificOutput"]["permissionDecision"] == "deny" and asked == ["helm uninstall x"]
 
 
 def test_regles_toujours_autoriser():
@@ -152,11 +160,11 @@ def test_mode_hard_aucune_validation_sauf_refus(tmp_path):
     store.tasks["t"] = task
     pre = hook(runner, task, str(tmp_path))
     call = lambda cmd: asyncio.run(pre({"tool_name": "Bash", "tool_input": {"command": cmd}, "tool_use_id": cmd}, cmd, None))
-    assert call("git push origin main")["hookSpecificOutput"]["permissionDecision"] == "deny" and asked == ["git push origin main"]
+    assert call("git push --force origin feat")["hookSpecificOutput"]["permissionDecision"] == "deny" and asked == ["git push --force origin feat"]
     runner.hard = True
-    for cmd in ("git push origin main", "sudo apt install x", "helm upgrade x y"):
+    for cmd in ("git push --force origin feat", "helm uninstall x", "mc rm -r s3/b"):
         assert call(cmd)["hookSpecificOutput"]["permissionDecision"] == "allow", cmd
-    assert asked == ["git push origin main"]  # plus aucune demande
+    assert asked == ["git push --force origin feat"]  # plus aucune demande
     assert '"policy": "hard"' in (tmp_path / "data" / "audit.jsonl").read_text()
     assert call("rm -rf ~")["hookSpecificOutput"]["permissionDecision"] == "deny"  # refus absolu de la politique
 
@@ -207,9 +215,9 @@ def test_mode_hard_limite_aux_projets_choisis(tmp_path):
     call = lambda cmd: asyncio.run(pre({"tool_name": "Bash", "tool_input": {"command": cmd}, "tool_use_id": cmd}, cmd, None))
     runner.hard, runner.hard_projects = True, {"autre"}
     assert runner.is_hard("autre") and not runner.is_hard("p")
-    assert call("git push origin main")["hookSpecificOutput"]["permissionDecision"] == "deny" and asked == ["git push origin main"]
+    assert call("git push --force origin feat")["hookSpecificOutput"]["permissionDecision"] == "deny" and asked == ["git push --force origin feat"]
     runner.hard_projects = {"p", "autre"}
-    assert call("git push origin main")["hookSpecificOutput"]["permissionDecision"] == "allow" and len(asked) == 1
+    assert call("git push --force origin feat")["hookSpecificOutput"]["permissionDecision"] == "allow" and len(asked) == 1
     runner.hard_projects = set()  # sans périmètre : tous les projets
     assert runner.is_hard("n'importe-lequel")
 
