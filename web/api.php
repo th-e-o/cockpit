@@ -42,6 +42,8 @@ const MEMOIRE_INIT_DELAI = 86400;       // une création automatique de la mémo
 const POLL_BATTEMENT = 10;              // secondes entre deux mises à jour de « vu_le » d'un pod (une écriture, pas deux par seconde)
 const ENTRETIEN_PERIODE = 1800;         // secondes entre deux entretiens de la base (checkpoint, contrôle, sauvegarde)
 const SAUVEGARDES_GARDEES = 3;
+const ETAT_BLOCS = ['projects', 'workers', 'trust', 'memory', 'autopilot', 'hard', 'week', 'deleted_projects'];
+const SCHEMA_VERSION = 1;               // à incrémenter à chaque changement de schéma dans migrer()
 const INCITATION_VERIF = 600;           // secondes entre deux vérifications du reste de la semaine
 const INCITATION_PALIERS = [[48, 0.20], [12, 0.10]];  // [heures avant la réinitialisation, part restante minimale]
 const AUTO_PARALLELE_MAX = 6;           // full auto : projets menés de front, au plus
@@ -55,8 +57,8 @@ function regles(): array {
 
 /** Conversations en mode confiance : {conversation: fin (horodatage)}. */
 function confiances(): array {
-    q('DELETE FROM confiances WHERE jusqua <= ?', [time()]);
-    return array_map('intval', q('SELECT conversation, jusqua FROM confiances')->fetchAll(PDO::FETCH_KEY_PAIR));
+    // Lecture seule (appelée à chaque rafraîchissement) : les lignes expirées sont purgées par entretien_base()
+    return array_map('intval', q('SELECT conversation, jusqua FROM confiances WHERE jusqua > ?', [time()])->fetchAll(PDO::FETCH_KEY_PAIR));
 }
 
 $CONFIG = require __DIR__ . '/config.php';
@@ -91,7 +93,18 @@ function db(): PDO {
         PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
         PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
     ]);
-    $pdo->exec('PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;');
+    $pdo->exec('PRAGMA busy_timeout=5000; PRAGMA foreign_keys=ON;');
+    // Schéma créé et migré seulement quand sa version change (PRAGMA user_version), et non à chaque requête
+    if ((int)$pdo->query('PRAGMA user_version')->fetchColumn() < SCHEMA_VERSION) migrer($pdo);
+    return $pdo;
+}
+
+/** Création et migrations du schéma. Le mode WAL est persistant (enregistré dans le fichier de la base). Le verrou
+ * d'écriture et la seconde lecture de la version évitent que deux requêtes simultanées migrent en même temps. */
+function migrer(PDO $pdo): void {
+    $pdo->exec('PRAGMA journal_mode=WAL');
+    $pdo->exec('BEGIN IMMEDIATE');
+    if ((int)$pdo->query('PRAGMA user_version')->fetchColumn() >= SCHEMA_VERSION) { $pdo->exec('COMMIT'); return; }
     $pdo->exec(<<<SQL
 CREATE TABLE IF NOT EXISTS taches (
     id TEXT PRIMARY KEY, instruction TEXT NOT NULL, projet TEXT, nouvelle_session INTEGER NOT NULL DEFAULT 0,
@@ -128,9 +141,10 @@ SQL);
     // action : tâche exécutée directement par le worker, sans agent (lancement d'un pod depuis le téléphone).
     // attente_projet : tâche confiée à un projet dont le pod démarre (livrée quand son worker se connecte) ;
     // modele : rapide|standard|approfondi ; isoler : variante (worktree dédié) ; groupe : variantes d'une même demande ;
-    // recadrages : messages envoyés pendant la tâche, à livrer au worker.
+    // recadrages : messages envoyés pendant la tâche, à livrer au worker ;
+    // modele_auto : niveau de modèle choisi par l'orchestrateur en même temps que le projet {choice, reason}.
     foreach (['worker_id', 'conversation', 'suite_de', 'session', 'extra', 'parent', 'action_worktree', 'action',
-              'modele', 'isoler', 'groupe', 'recadrages', 'attente_projet'] as $c) {
+              'modele', 'isoler', 'groupe', 'recadrages', 'attente_projet', 'modele_auto'] as $c) {
         if (!in_array($c, $colonnes, true)) $pdo->exec("ALTER TABLE taches ADD COLUMN $c TEXT");
     }
     // Clé d'appairage à saisir (ordinateur sans appareil photo) : même ligne que le jeton du lien QR.
@@ -140,7 +154,8 @@ SQL);
     $colonnesW = array_column($pdo->query('PRAGMA table_info(workers)')->fetchAll(), 'name');
     if (!in_array('etat', $colonnesW, true)) $pdo->exec('ALTER TABLE workers ADD COLUMN etat TEXT');
     if (!in_array('apparu_le', $colonnesW, true)) $pdo->exec('ALTER TABLE workers ADD COLUMN apparu_le INTEGER NOT NULL DEFAULT 0');
-    return $pdo;
+    $pdo->exec('PRAGMA user_version = ' . SCHEMA_VERSION);
+    $pdo->exec('COMMIT');
 }
 
 /** Transactions d'écriture : BEGIN IMMEDIATE prend le verrou d'écriture d'emblée. Une transaction DEFERRED qui passe de
@@ -645,7 +660,9 @@ function usage_courant(): ?array {
 /** Ce qu'il reste de la limite de la semaine et une estimation en tokens : le budget est déduit des tokens consommés par les tâches
  * du cockpit pendant la semaine divisés par la part d'usage correspondante (estimation prudente : l'usage hors cockpit n'est pas compté). */
 function estimation_semaine(bool $cache = true): ?array {
-    if ($cache && ($c = json_decode(reglage('estimation_semaine') ?? '', true)) && time() - $c['calcule'] < 60) return $c['data'];
+    // Cache d'une minute dans un fichier : la route « etat » (lecture) ne prend jamais le verrou d'écriture de la base
+    $fichier = __DIR__ . '/data/cache-estimation.json';
+    if ($cache && ($c = json_decode((string)@file_get_contents($fichier), true)) && time() - $c['calcule'] < 60) return $c['data'];
     $sem = null;
     foreach ((usage_courant()['limits'] ?? []) as $l) if (($l['type'] ?? '') === 'seven_day') $sem = $l;
     $res = null;
@@ -664,7 +681,11 @@ function estimation_semaine(bool $cache = true): ?array {
                 'hours_left' => max(0.0, round(((int)$sem['resets_at'] - time()) / 3600, 1)), 'used_tokens' => $consomme, 'budget_tokens' => $budget,
                 'remaining_tokens' => $reste, 'avg_task_tokens' => $moyenne, 'tasks_estimate' => $reste !== null && $moyenne ? intdiv($reste, $moyenne) : null];
     }
-    if ($res) reglage('estimation_semaine', json_encode(['calcule' => time(), 'data' => $res]));
+    if ($res) {
+        $tmp = $fichier . '.' . bin2hex(random_bytes(4));
+        if (@file_put_contents($tmp, json_encode(['calcule' => time(), 'data' => $res])) !== false) @rename($tmp, $fichier);
+        else @unlink($tmp);
+    }
     return $res;
 }
 
@@ -718,6 +739,7 @@ function entretien_base(): void {
     if (time() - (int)(reglage('entretien') ?? 0) < ENTRETIEN_PERIODE) return;
     reglage('entretien', (string)time());
     $pdo = db();
+    q('DELETE FROM confiances WHERE jusqua <= ?', [time()]);
     try { $pdo->query('PRAGMA wal_checkpoint(PASSIVE)')->fetchAll(); } catch (Throwable) {}
     try {
         $controle = $pdo->query('PRAGMA quick_check(1)')->fetchColumn();
@@ -973,12 +995,10 @@ switch ($route) {
                          (SELECT id FROM taches ORDER BY cree_le DESC LIMIT ' . TACHES_VISIBLES . ') ORDER BY id')->fetchAll();
         }
         $dernier = $evts ? (int)end($evts)['id'] : max($depuis, (int)q('SELECT COALESCE(MAX(id), 0) FROM evenements')->fetchColumn());
-        repondre([
-            'events' => array_map(fn($e) => evenement_public($e['donnees']), $evts),
-            'last_id' => $dernier,
+        // Blocs du tableau de bord : seuls ceux qui ont changé depuis le dernier appel sont renvoyés. Le téléphone renvoie
+        // les empreintes reçues (paramètre h, dans l'ordre de ETAT_BLOCS) et garde sa copie des blocs omis.
+        $blocs = [
             'projects' => projets(),
-            'worker_online' => worker_en_ligne(),
-            'pending' => (int)q('SELECT COUNT(*) FROM validations WHERE decision IS NULL')->fetchColumn(),
             'workers' => workers_publics(),
             'trust' => (object)confiances(),
             'memory' => memoire_publique(),
@@ -986,7 +1006,21 @@ switch ($route) {
             'hard' => hard_lire(),
             'week' => estimation_semaine(),
             'deleted_projects' => (object)projets_supprimes(),
-        ]);
+        ];
+        $connues = explode('.', (string)($_GET['h'] ?? ''));
+        $empreintes = [];
+        $sortie = [];
+        foreach (ETAT_BLOCS as $i => $cle) {
+            $empreintes[$i] = substr(md5(json_encode($blocs[$cle], JSON_UNESCAPED_UNICODE)), 0, 10);
+            if (($connues[$i] ?? '') !== $empreintes[$i]) $sortie[$cle] = $blocs[$cle];
+        }
+        repondre([
+            'events' => array_map(fn($e) => evenement_public($e['donnees']), $evts),
+            'last_id' => $dernier,
+            'worker_online' => worker_en_ligne(),
+            'pending' => (int)q('SELECT COUNT(*) FROM validations WHERE decision IS NULL')->fetchColumn(),
+            'h' => implode('.', $empreintes),
+        ] + $sortie);
 
     case 'diff': // diffs par fichier des modifications d'une tâche
         exiger_session();
@@ -1421,6 +1455,7 @@ switch ($route) {
                 'resume_session' => $t['conversation'] ? session_conversation($t) : null, 'parent' => $t['parent'] ?? null,
                 'action' => empty($t['action']) ? null : json_decode($t['action'], true),
                 'model' => $t['modele'] ?? null, 'isolate' => !empty($t['isoler']), 'group' => $t['groupe'] ?? null,
+                'model_hint' => empty($t['modele_auto']) ? null : json_decode($t['modele_auto'], true),
                 'reply_to' => $t['suite_de'] ?? null], $taches),
             'autopilot' => autopilote_lire(),
             'hard' => hard_lire()['enabled'],
@@ -1439,8 +1474,13 @@ switch ($route) {
         $id = (string)($in['task_id'] ?? '');
         $projet = (string)($in['project'] ?? '');
         $cible = worker_du_projet($projet) ?? erreur('projet inconnu');
-        $st = q("UPDATE taches SET projet = ?, worker_id = ?, livree = 0, statut = 'pending', maj_le = ?
-                 WHERE id = ? AND statut NOT IN ('done','error','cancelled')", [$projet, $cible, time(), $id]);
+        // Modèle choisi par l'orchestrateur en même temps que le projet : le pod du projet n'a pas à refaire l'appel
+        $indice = (array)($in['model_hint'] ?? []);
+        $modeleAuto = in_array($indice['choice'] ?? null, MODELES, true)
+            ? json_encode(['choice' => $indice['choice'], 'reason' => mb_substr((string)($indice['reason'] ?? ''), 0, 200)], JSON_UNESCAPED_UNICODE)
+            : null;
+        $st = q("UPDATE taches SET projet = ?, worker_id = ?, livree = 0, statut = 'pending', maj_le = ?, modele_auto = ?
+                 WHERE id = ? AND statut NOT IN ('done','error','cancelled')", [$projet, $cible, time(), $modeleAuto, $id]);
         if (!$st->rowCount()) erreur('tâche introuvable ou terminée', 404);
         evenement_tache($id);
         repondre(['ok' => true, 'worker' => $cible]);

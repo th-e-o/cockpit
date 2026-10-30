@@ -608,6 +608,52 @@ def test_vibe_coding(relay):
     assert fail["checks"] == ["tests"] and fail["sha"] == "abc1234"
 
 
+def test_etat_ne_renvoie_que_les_blocs_modifies(relay):
+    """Le téléphone renvoie les empreintes reçues : seuls les blocs du tableau de bord qui ont changé repartent."""
+    p = paired_phone(relay)
+    wpoll(relay, "pod-h", False, [{"id": "eh", "name": "EH"}], hello=True)
+    s1 = call(p, "etat").json()
+    assert {"projects", "workers", "memory", "hard"} <= s1.keys() and len(s1["h"].split(".")) == 8
+    s2 = call(p, "etat", since=s1["last_id"], h=s1["h"]).json()
+    assert not {"projects", "trust", "memory", "autopilot", "hard", "week", "deleted_projects"} & s2.keys()
+    assert {"events", "last_id", "worker_online", "pending", "h"} <= s2.keys()
+    # Un nouveau projet renvoie les blocs qui le listent (projets, pods, mémoire), pas les autres
+    wpoll(relay, "pod-h2", False, [{"id": "eh2", "name": "EH2"}], hello=True)
+    s3 = call(p, "etat", since=s2["last_id"], h=s2["h"]).json()
+    assert "eh2" in {x["id"] for x in s3["projects"]}
+    assert not {"trust", "autopilot", "hard", "deleted_projects"} & s3.keys()
+    # Empreintes inconnues ou absentes : tout est renvoyé
+    assert "memory" in call(p, "etat", h="x.y").json()
+
+
+def test_schema_migre_une_seule_fois(relay):
+    """La version du schéma est enregistrée dans la base : les requêtes suivantes ne refont pas les migrations."""
+    import sqlite3
+    call(paired_phone(relay), "etat")
+    db = sqlite3.connect(Path(relay["docroot"]) / "cockpit" / "data" / "cockpit.db")
+    assert db.execute("PRAGMA user_version").fetchone()[0] >= 1
+    assert db.execute("PRAGMA journal_mode").fetchone()[0] == "wal"
+    assert "modele_auto" in {r[1] for r in db.execute("PRAGMA table_info(taches)")}
+
+
+def test_modele_choisi_au_routage_transmis_au_pod(relay):
+    """L'orchestrateur choisit le modèle en routant : le pod du projet le reçoit avec la tâche, sans le refaire."""
+    p = paired_phone(relay)
+    wpoll(relay, "orch-m", True, [{"id": "mo-orch", "name": "Orch"}], hello=True)
+    wpoll(relay, "pod-m", False, [{"id": "mo-a", "name": "A"}], hello=True)
+    t = call(p, "tache", {"instruction": "route-moi"}).json()
+    assert [x["id"] for x in wpoll(relay, "orch-m", True)["tasks"]] == [t["id"]]
+    hint = {"choice": "rapide", "reason": "simple lecture"}
+    assert worker_call(relay, "w_affecter", {"task_id": t["id"], "project": "mo-a", "model_hint": hint}).status_code == 200
+    [livree] = wpoll(relay, "pod-m", False)["tasks"]
+    assert livree["model_hint"] == hint and livree["model"] is None
+    # Indice invalide : ignoré
+    t2 = call(p, "tache", {"instruction": "route-moi aussi"}).json()
+    wpoll(relay, "orch-m", True)
+    worker_call(relay, "w_affecter", {"task_id": t2["id"], "project": "mo-a", "model_hint": {"choice": "max"}})
+    assert wpoll(relay, "pod-m", False)["tasks"][0]["model_hint"] is None
+
+
 def test_mode_confiance(relay):
     """Confiance par conversation et pour une durée limitée : validée, transmise au worker et au téléphone, journalisée."""
     p = paired_phone(relay)

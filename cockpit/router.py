@@ -28,6 +28,8 @@ class Route:
     project: str | None
     confidence: float
     reason: str
+    model: str | None = None  # niveau de modèle choisi dans le même appel (with_model), sinon None
+    model_reason: str = ""
 
 
 def load_projects(path: str | Path) -> dict[str, Project]:
@@ -61,22 +63,15 @@ chercher dans les dépôts de l'utilisateur et ouvrir un pod dessus.
 Mets project=null si l'instruction est ambiguë ou ne correspond à aucun projet."""
 
 
-async def llm_route(instruction: str, projects: dict[str, Project]) -> Route:
+async def llm_route(instruction: str, projects: dict[str, Project], with_model: bool = False) -> Route:
     catalog = "\n".join(
         f"- {p.id}: {p.name} — {p.description.strip()} (mots-clés: {', '.join(p.keywords)})"
         for p in projects.values()
     )
-    options = ClaudeAgentOptions(
-        model="haiku",
-        system_prompt=ROUTER_PROMPT.format(catalog=catalog),
-        tools=[],
-        max_turns=1,
-        setting_sources=[],
-    )
-    text = ""
-    async for msg in query(prompt=f"Instruction : {instruction}", options=options):
-        if isinstance(msg, AssistantMessage):
-            text += "".join(b.text for b in msg.content if isinstance(b, TextBlock))
+    system = ROUTER_PROMPT.format(catalog=catalog)
+    if with_model:  # un seul appel pour le projet et le modèle (« Modèle auto ») : une latence et un coût en moins
+        system += ROUTER_MODEL_PROMPT
+    text = await _ask_haiku(system, f"Instruction : {instruction}")
     m = re.search(r"\{.*\}", text, re.S)
     if not m:
         raise ValueError(f"réponse du routeur illisible : {text[:200]}")
@@ -84,14 +79,17 @@ async def llm_route(instruction: str, projects: dict[str, Project]) -> Route:
     pid = data.get("project")
     if pid not in projects:
         pid = None
-    return Route(pid, float(data.get("confidence", 0)), data.get("reason", ""))
+    model = data.get("model") if with_model and data.get("model") in MODEL_CHOICES else None
+    return Route(pid, float(data.get("confidence", 0)), data.get("reason", ""),
+                 model, str(data.get("model_reason", ""))[:200] if model else "")
 
 
-async def route(instruction: str, projects: dict[str, Project]) -> Route:
+async def route(instruction: str, projects: dict[str, Project], with_model: bool = False) -> Route:
+    """Projet de l'instruction ; avec with_model, aussi le niveau de modèle quand le routeur LLM répond (sinon None)."""
     if len(projects) == 1:
         return Route(next(iter(projects)), 1.0, "projet unique")
     try:
-        r = await llm_route(instruction, projects)
+        r = await llm_route(instruction, projects, with_model)
     except Exception as e:  # le routeur LLM ne doit jamais bloquer le cockpit
         r = keyword_route(instruction, projects)
         r.reason = f"{r.reason} (repli : {e})"
@@ -102,8 +100,7 @@ async def route(instruction: str, projects: dict[str, Project]) -> Route:
 
 # ---------------------------------------------------------------- choix du modèle (sélecteur « Modèle auto »)
 
-MODEL_PROMPT = """Tu choisis le modèle Claude qui traitera une demande de développement envoyée depuis un téléphone.
-L'utilisateur écrit son code avec Opus : c'est la règle, les autres modèles sont des exceptions.
+MODEL_RULES = """L'utilisateur écrit son code avec Opus : c'est la règle, les autres modèles sont des exceptions.
 
 - "approfondi" (Opus) : TOUT ce qui écrit, modifie, corrige ou refactorise du code, même une petite retouche ;
   conception, architecture, nouveau projet ou nouvelle fonctionnalité ; débogage ; analyse de données ou de code
@@ -116,9 +113,19 @@ L'utilisateur écrit son code avec Opus : c'est la règle, les autres modèles s
   consigne déjà claire (le travail sera fait là-bas), répondre « oui » à une question de confirmation sans autre
   travail.
 
-Une réponse courte (« oui », « vas-y », « continue ») reprend la nature du travail en cours dans la conversation.
+Une réponse courte (« oui », « vas-y », « continue ») reprend la nature du travail en cours dans la conversation."""
+
+MODEL_PROMPT = f"""Tu choisis le modèle Claude qui traitera une demande de développement envoyée depuis un téléphone.
+{MODEL_RULES}
 Réponds UNIQUEMENT par un objet JSON sur une ligne :
-{"model": "rapide" | "standard" | "approfondi", "reason": "<justification courte, en français>"}"""
+{{"model": "rapide" | "standard" | "approfondi", "reason": "<justification courte, en français>"}}"""
+
+ROUTER_MODEL_PROMPT = f"""
+
+Choisis AUSSI le modèle Claude qui traitera l'instruction :
+{MODEL_RULES}
+Ajoute au même objet JSON les champs "model" ("rapide" | "standard" | "approfondi") et "model_reason" (justification
+courte, en français), même si project vaut null."""
 
 MODEL_CHOICES = ("rapide", "standard", "approfondi")
 
