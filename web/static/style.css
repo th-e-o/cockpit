@@ -124,6 +124,9 @@ footer .chips > * { flex: none; }
   box-shadow: 0 2px 8px color-mix(in srgb, var(--accent) 40%, transparent); transition: transform .1s, opacity .15s; }
 #send:hover { transform: translateY(-1px); }
 #send:disabled { opacity: .35; box-shadow: none; transform: none; }
+#mic { width: 42px; height: 42px; border-radius: 12px; border: 1px solid var(--line); background: var(--panel2); font-size: 17px; flex: none; }
+#mic[aria-pressed="true"] { background: color-mix(in srgb, var(--bad) 18%, var(--panel2)); border-color: var(--bad); animation: listen 1.2s ease-in-out infinite; }
+@keyframes listen { 50% { box-shadow: 0 0 0 6px color-mix(in srgb, var(--bad) 25%, transparent); } }
 
 dialog { background: var(--panel); color: var(--text); border: 1px solid var(--line); border-radius: 20px; width: min(92vw, 520px); max-height: 85dvh; padding: 20px;
   box-shadow: 0 24px 64px rgb(0 0 0 / .35); }

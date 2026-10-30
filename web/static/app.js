@@ -2196,6 +2196,56 @@ $('#composer').addEventListener('submit', async (ev) => {
   $('#send').disabled = false;
 });
 
+// ---------- commande vocale : dictée dans la saisie (reconnaissance vocale du navigateur, en français).
+// Finir par « envoie » (ou « envoyer ») envoie l'instruction ; « annule » efface la dictée en cours.
+const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
+let voice = null;
+function stopVoice() { voice?.stop(); }
+function startVoice() {
+  if (!Speech || voice) return;
+  const rec = new Speech();
+  rec.lang = 'fr-FR';
+  rec.continuous = true;
+  rec.interimResults = true;
+  const before = input.value.trim();
+  let said = '';
+  const show = (extra = '') => {
+    input.value = [before, (said + extra).trim()].filter(Boolean).join(' ');
+    input.dispatchEvent(new Event('input'));
+  };
+  rec.onresult = (ev) => {
+    let interim = '';
+    for (let i = ev.resultIndex; i < ev.results.length; i++) {
+      const r = ev.results[i];
+      if (r.isFinal) said += ` ${r[0].transcript}`; else interim += ` ${r[0].transcript}`;
+    }
+    if (/\bannul(e|er|ez)[\s.!]*$/i.test(said)) { said = ''; show(); rec.abort(); return; }
+    const send = /\s*\benvo(ie|ies|yer|yez)[\s.!]*$/i;
+    if (send.test(said)) {
+      said = said.replace(send, '');
+      show();
+      rec.abort();
+      if (input.value.trim()) $('#composer').requestSubmit();
+      return;
+    }
+    show(interim);
+  };
+  rec.onerror = (ev) => {
+    if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') alert('Micro refusé : autorise-le pour le cockpit dans les réglages du navigateur.');
+  };
+  rec.onend = () => {
+    voice = null;
+    $('#mic').setAttribute('aria-pressed', 'false');
+    $('#mic').setAttribute('aria-label', 'dicter');
+  };
+  try { rec.start(); } catch { return; }
+  voice = rec;
+  $('#mic').setAttribute('aria-pressed', 'true');
+  $('#mic').setAttribute('aria-label', 'arrêter la dictée');
+}
+if (Speech) $('#mic').classList.remove('hidden');
+$('#mic').addEventListener('click', () => (voice ? stopVoice() : startVoice()));
+
 $('#modelSel').addEventListener('change', () => {
   state.model = $('#modelSel').value;
   renderCostTip();
@@ -2278,7 +2328,7 @@ function applyLaunchParams() {
   if (q.get('action') === 'pod') openPodDialog();
 }
 
-// Clavier : « / » ou Ctrl/⌘+K pour écrire, Échap pour quitter la saisie, Alt+1 / Alt+2 pour changer de vue.
+// Clavier : « / » ou Ctrl/⌘+K pour écrire, Échap pour quitter la saisie, Alt+1 / Alt+2 pour changer de vue, Alt+M pour dicter.
 document.addEventListener('keydown', (e) => {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName);
   if ((e.key === 'k' && (e.ctrlKey || e.metaKey)) || (e.key === '/' && !typing)) {
@@ -2290,6 +2340,9 @@ document.addEventListener('keydown', (e) => {
   } else if (e.altKey && e.key.toLowerCase() === 'd') {
     e.preventDefault();
     setDashHidden(!document.body.classList.contains('dash-hidden'));
+  } else if (e.altKey && e.key.toLowerCase() === 'm' && Speech) {
+    e.preventDefault();
+    if (voice) stopVoice(); else startVoice();
   } else if (e.altKey && e.key.toLowerCase() === 'p') {
     e.preventDefault();
     openPip();

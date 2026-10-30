@@ -124,6 +124,9 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
   - *Mini-fenêtre toujours visible* (🪟 ou Alt+P, Chrome et Edge sur ordinateur) : par-dessus les autres fenêtres,
     validations à approuver, questions de Claude, tâches en cours et terminées ; elle clignote quand quelque chose
     t'attend.
+  - *Commande vocale* (🎤 à côté de la saisie, ou Alt+M) : tu parles, l'instruction s'écrit dans la saisie ; termine
+    par « envoie » pour l'envoyer sans toucher l'écran, « annule » pour effacer la dictée. Reconnaissance vocale du
+    navigateur (Chrome, Edge, Safari) ; le bouton n'apparaît pas si le navigateur ne la propose pas.
   - *Commandes rapides* (puces au-dessus de la saisie, ✎ pour les modifier, communes ou par projet) et *mémoire du
     projet* (🧠 : le `CLAUDE.md`, lu par Claude au début de chaque tâche, modifiable depuis le téléphone).
 - **Pods de projet** : leur agent transmet à l'orchestrateur ce qui sort de son projet (nouveau projet, nouveau
