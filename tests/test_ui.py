@@ -260,10 +260,13 @@ def test_tableau_de_bord(relay):
         browser = pw.chromium.launch()
         # Téléphone : onglet « Pods »
         page, errors = browser_page(p, browser, relay, **pw.devices["iPhone 13"])
-        page.wait_for_selector(".pill.st-done")
+        page.wait_for_selector(".pill.st-done", state="attached")  # dans un groupe de projet peut-être replié
         assert int(page.inner_text("#tabCount")) >= 2  # d’autres tests du module peuvent laisser des tâches actives
         page.click("#tabDash")
         page.wait_for_selector(".podcard >> text=drones")
+        # L'essentiel d'abord ; chiffres du jour, bilan et mémoire sont repliés sous « Plus de détails »
+        assert page.is_hidden(".kpis")
+        page.click("details[data-more] > summary")
         assert "⚠ 1" in page.inner_text(".kpis")
         assert page.locator(".live", has_text="Refactorise le routeur").count() == 1 and page.locator(".live.alert", has_text="mlflow").count() == 1
         assert "Plan 2/4" in page.inner_text(".lives") and "Lance les tests du routeur" in page.inner_text(".lives")
@@ -713,6 +716,8 @@ def test_inciter_a_economiser(relay):
         assert page.inner_text(f"#t-{t1} .pill.cost") == "≈ 350 k tokens · +7 % session"
         assert "86 % relus depuis le cache" in page.get_attribute(f"#t-{t1} .pill.cost", "title")
         import re
+        if page.is_hidden(".kpis"):
+            page.click("details[data-more] > summary")
         assert re.search(r"\d+ k\nTokens aujourd'hui", page.inner_text(".kpis"))  # données créées par plusieurs tests
         page.wait_for_selector(".sect >> text=Tâches les plus gourmandes aujourd'hui")
         # Conseils sous la saisie

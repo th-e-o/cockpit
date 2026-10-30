@@ -579,6 +579,14 @@ async function loadDiff(details) {
   }
 }
 document.addEventListener('toggle', (ev) => { if (ev.target.matches?.('details.file[open]')) loadDiff(ev.target); }, true);
+// « Plus de détails » du tableau de bord : ouvert ou replié, mémorisé (le tableau de bord est redessiné souvent)
+document.addEventListener('toggle', (ev) => {
+  if (!ev.target.matches?.('details[data-more]') || state.dashMore === ev.target.open) return;
+  state.dashMore = ev.target.open;
+  try { localStorage.setItem('cockpit_more', state.dashMore ? '1' : ''); } catch { /* sans importance */ }
+  state.dashHtml = '';
+  if (state.dashMore) loadBilan();
+}, true);
 
 const lastOfConversation = (id) => [...state.order].reverse().find((x) => conversationOf(x) === conversationOf(id));
 
@@ -1368,31 +1376,43 @@ function renderDash() {
     .sort((a, b) => (b.task.updated || b.task.created) - (a.task.updated || a.task.created)).slice(0, 8);
 
   const kpi = (v, l, cls = '', title = '') => `<div class="kpi ${cls}" title="${esc(title)}"><div class="v">${v}</div><div class="l">${l}</div></div>`;
+  // L'essentiel d'abord (ce qui attend une action, l'autonomie, le travail en cours, les pods) ; le détail est replié.
+  const weekIncite = state.week && state.week.hours_left <= 48 && state.week.remaining >= 0.2 && !state.hard?.enabled;
   const html = `<div class="dashwrap">
-    ${usageHtml(latestUsage())}
     ${questionsSection(tasks)}
     ${prsSection(tasks)}
+    ${variantsHtml(tasks)}
+    ${state.memory ? autonomyHtml(projectName) : ''}
+    ${state.hard?.enabled ? reportHtml() : ''}
+    ${weekIncite ? weekHtml() : ''}
+    ${usageHtml(latestUsage())}
+    <section class="sect"><h3>En cours</h3>${active.length
+      ? `<div class="lives">${active.map(liveCard).join('')}</div>`
+      : '<div class="emptyd">Aucun Claude ne travaille. Écris une instruction, ou arme le full auto.</div>'}</section>
+    ${proposalsHtml()}
+    <section class="sect"><div class="secthead"><h3>Pods · ${online.length} en ligne</h3><button type="button" class="btn ghost" id="newPod">＋ Nouveau pod</button></div>${state.workers.length
+      ? `<div class="pods">${state.workers.map(podCard).join('')}</div>`
+      : '<div class="emptyd">Aucun pod connecté. Lance « ./run.sh » dans un service VSCode Onyxia.</div>'}</section>
+    ${recent.length ? `<section class="sect"><h3>Terminées récemment</h3><div class="recents">${recent.slice(0, 5).map(recentRow).join('')}</div></section>` : ''}
+    <details class="more" data-more ${state.dashMore ? 'open' : ''}><summary>Plus de détails</summary><div class="dashwrap">
     <div class="kpis">
       ${kpi(`${working}<small>/${capacity || '—'}</small>`, 'Claude au travail', '', 'agents actifs / capacité des pods en ligne')}
       ${kpi(pending ? `⚠ ${pending}` : '0', 'Validation(s) en attente', pending ? 'warn' : '')}
       ${kpi(today, 'Tâches aujourd\'hui')}
       ${kpi(fmtTokens(tokensJour), 'Tokens aujourd\'hui', '', 'tokens consommés par les tâches du jour (cache compris)')}
     </div>
-    <section class="sect"><h3>En cours</h3>${active.length
-      ? `<div class="lives">${active.map(liveCard).join('')}</div>`
-      : '<div class="emptyd">Aucun Claude ne travaille. Envoie une instruction ; pour en lancer plusieurs, ouvre une nouvelle conversation par tâche.</div>'}</section>
     ${gourmandes.length ? `<section class="sect"><h3>Tâches les plus gourmandes aujourd'hui</h3><div class="recents">${gourmandes.map((e) =>
       `<button class="recent" data-jump="${esc(e.task.id)}"><span class="ri">🔥</span><span class="rbody"><span class="rinst">${esc(shownInstruction(e.task.instruction))}</span>
         <span class="rmeta">${esc(state.projects.find((p) => p.id === e.task.project)?.name || '')} · ≈ ${fmtTokens(e.task.tokens.total)} tokens${e.task.session_delta != null ? ` · +${Math.round(e.task.session_delta * 100)} % session` : ''}${e.task.model_used ? ` · ${esc(modelName(e.task.model_used))}` : ''}</span></span></button>`).join('')}</div>
       <p class="hint">Pour économiser : une conversation par sujet, la puce du projet plutôt qu'Auto, le tableau de bord pour l'avancement, « Modèle auto ».</p></section>` : ''}
-    ${variantsHtml(tasks)}
-    ${memoryHtml()}
+    ${weekIncite ? '' : weekHtml()}
+    ${state.hard?.enabled ? '' : reportHtml()}
     ${followHtml(tasks.filter(pendingSteps).sort((a, b) => (b.task.updated || b.task.created) - (a.task.updated || a.task.created)).slice(0, 6))}
+    ${state.memory && !state.memory.proposals.length ? `<section class="sect"><div class="secthead"><h3>Propositions</h3><button type="button" class="btn ghost" data-prop="ajouter">＋ Ajouter</button></div>
+      <div class="emptyd">Rien en attente : les prochaines étapes des tâches terminées arrivent ici, et le full auto en génère quand la file est vide.</div></section>` : ''}
+    ${projectsHtml()}
     ${bilanHtml()}
-    <section class="sect"><div class="secthead"><h3>Pods · ${online.length} en ligne</h3><button type="button" class="btn ghost" id="newPod">＋ Nouveau pod</button></div>${state.workers.length
-      ? `<div class="pods">${state.workers.map(podCard).join('')}</div>`
-      : '<div class="emptyd">Aucun pod connecté. Lance « ./run.sh » dans un service VSCode Onyxia.</div>'}</section>
-    ${recent.length ? `<section class="sect"><h3>Terminées récemment</h3><div class="recents">${recent.map(recentRow).join('')}</div></section>` : ''}
+    </div></details>
   </div>`;
   // Reconstruit seulement si le contenu change (survol, focus et clics préservés) ; les durées vivent dans tick().
   if (html !== state.dashHtml) { $('#dash').innerHTML = html; state.dashHtml = html; restoreQuestions($('#dash')); sizes($('#dash')); tick(); }
@@ -1453,7 +1473,7 @@ function autonomyHtml(name) {
     icon: '🤖', title: 'Full auto', on: !!a?.enabled,
     chips: a?.enabled ? scope(a.projects) + chip(`${a.max_parallel || 1} de front`) + chip(`${a.launched_today}/${a.max_per_day} aujourd'hui`)
       + chip(`seuil ${Math.round(a.threshold * 100)} %`) + chip(`jusqu'au ${esc(fmtWhen(a.until))}`) : '',
-    text: a?.enabled ? 'Enchaîne le travail resté en plan puis les propositions, repart après chaque réinitialisation. Les validations restent demandées.'
+    text: a?.enabled ? 'Enchaîne le travail resté en plan puis les propositions, repart après chaque réinitialisation. Seules les opérations destructrices restent demandées.'
       : `${a?.stopped ? `Arrêté : ${esc(a.stopped)}. ` : ''}Enchaîne seul le travail resté en plan puis les propositions. Tu choisis les projets et vois ce qu'il compte faire avant d'armer.`,
     button: a?.enabled ? '<button class="btn ghost" data-auto="off">Désarmer</button>' : '<button class="btn" data-auto="on">🤖 Armer le full auto…</button>',
   });
@@ -1467,10 +1487,24 @@ function autonomyHtml(name) {
   return `<section class="sect"><div class="secthead"><h3>⚡ Autonomie</h3></div><div class="autocard">${auto}${hard}</div>${liveAutonomy(name)}</section>`;
 }
 
-function memoryHtml() {
+const projectName = (id) => state.projects.find((p) => p.id === id)?.name || state.memory?.projects.find((p) => p.id === id)?.name || id || 'Auto';
+
+/** Propositions en attente (lancées à la main ou par le full auto) : affichées seulement s'il y en a. */
+function proposalsHtml() {
+  const m = state.memory;
+  if (!m?.proposals.length) return '';
+  const proposals = m.proposals.map((x) => `<article class="follow"><div class="fhead"><b>${esc(x.titre)}</b><span class="muted">${esc(projectName(x.project))}</span></div>
+      <div class="hint">${esc(x.instruction.replace(/\n\n\(Tâche lancée par le mode full auto[^)]*\)/, '').slice(0, 220))}</div>
+      <div class="fhead"><button class="btn" data-prop="lancer" data-id="${esc(x.id)}">▶ Lancer</button>
+        <button class="btn ghost" data-prop="ignorer" data-id="${esc(x.id)}">Ignorer</button></div></article>`).join('');
+  return `<section class="sect"><div class="secthead"><h3>Propositions · ${m.proposals.length}</h3><button type="button" class="btn ghost" data-prop="ajouter">＋ Ajouter</button></div>
+    <div class="follows">${proposals}</div></section>`;
+}
+
+/** Mémoire de chaque projet (CLAUDE.md) et son état. */
+function projectsHtml() {
   const m = state.memory;
   if (!m) return '';
-  const name = (id) => state.projects.find((p) => p.id === id)?.name || m.projects.find((p) => p.id === id)?.name || id || 'Auto';
   const memoryLine = (p) => {
     const mm = p.memory;
     if (!mm) return '';
@@ -1487,14 +1521,7 @@ function memoryHtml() {
   const projects = m.projects.map((p) => `<article class="follow ${p.memory?.state === 'absente' ? 'ask' : p.active ? '' : 'ask'}"><div class="fhead"><b>${esc(p.name || p.id)}</b>
       <span class="muted">${p.updated ? `<span data-ago="${Number(p.updated)}"></span>` : ''}</span><span>${p.active ? `⚙ ${p.active} en cours` : p.status === 'en_pause' ? '⏸ en pause' : p.status === 'nouveau' ? '✨ nouveau' : ''}</span></div>
       ${memoryLine(p)}${p.summary ? `<div class="hint">${esc(p.summary)}</div>` : ''}</article>`).join('');
-  const proposals = m.proposals.map((x) => `<article class="follow"><div class="fhead"><b>${esc(x.titre)}</b><span class="muted">${esc(name(x.project))}</span></div>
-      <div class="hint">${esc(x.instruction.replace(/\n\n\(Tâche lancée par le mode full auto[^)]*\)/, '').slice(0, 220))}</div>
-      <div class="fhead"><button class="btn" data-prop="lancer" data-id="${esc(x.id)}">▶ Lancer</button>
-        <button class="btn ghost" data-prop="ignorer" data-id="${esc(x.id)}">Ignorer</button></div></article>`).join('');
-  return `${weekHtml()}${autonomyHtml(name)}${reportHtml()}
-    <section class="sect"><div class="secthead"><h3>Propositions · ${m.proposals.length}</h3><button type="button" class="btn ghost" data-prop="ajouter">＋ Ajouter</button></div>
-    <div class="follows">${proposals || '<div class="emptyd">Rien en attente : les prochaines étapes des tâches terminées arrivent ici, et le full auto en génère quand la file est vide.</div>'}</div></section>
-    <section class="sect"><div class="secthead"><h3>Mémoire · ${m.projects.length} projet(s)</h3></div>
+  return `<section class="sect"><div class="secthead"><h3>Mémoire · ${m.projects.length} projet(s)</h3></div>
     <div class="follows">${projects || '<div class="emptyd">Aucun projet connu.</div>'}</div></section>`;
 }
 
@@ -1518,7 +1545,7 @@ const DIALOG_MODES = {
   hard: { title: '☠ Mode hard', go: '☠ Activer le mode hard', hours: 8, perDay: 40, threshold: 95,
     intro: 'Pleine autonomie : plus aucune validation, questions tranchées par Claude, compte rendu à la fin. Choisis les projets concernés ; les autres ne sont pas touchés.' },
   auto: { title: '🤖 Full auto', go: '🤖 Armer le full auto', hours: 24, perDay: 12, threshold: 85,
-    intro: 'Claude enchaîne seul les propositions et reprend le travail resté en plan, tant que l\'usage de la session reste sous le seuil, et repart après chaque réinitialisation. Les validations restent demandées (refusées au bout de 15 min sans réponse). Choisis les projets concernés.' },
+    intro: 'Claude enchaîne seul les propositions et reprend le travail resté en plan, tant que l\'usage de la session reste sous le seuil, et repart après chaque réinitialisation. Seules les opérations destructrices restent demandées (refusées au bout de 15 min sans réponse). Choisis les projets concernés.' },
 };
 let dialogMode = 'hard';
 
@@ -2297,6 +2324,7 @@ try {
   state.model = localStorage.getItem('cockpit_model') || '';
   $('#modelSel').value = state.model;
   if ([1, 7, 30].includes(Number(localStorage.getItem('cockpit_bilan')))) state.bilanJours = Number(localStorage.getItem('cockpit_bilan'));
+  state.dashMore = localStorage.getItem('cockpit_more') === '1';
   if (localStorage.getItem('cockpit_view') === 'dash') setView('dash');
 } catch { /* navigation privée */ }
 if ('serviceWorker' in navigator) {

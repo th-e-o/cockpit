@@ -75,9 +75,11 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
   (instantané avec un index temporaire, sans toucher au dépôt) : fichiers ajoutés/modifiés/supprimés, lignes `+/−`,
   commits, branche et état du push. Toucher un fichier affiche son diff (chargé à la demande). La réponse de Claude
   suit trois rubriques : **Fait**, **Choix**, **À faire**. La notification de fin reprend ce résumé.
-- **Tableau de bord** (onglet *Pods* sur téléphone, à droite du fil sur un écran large) : Claude au travail,
-  validations en attente, tâches et coût du jour ; pour chaque pod, CPU / mémoire (cgroup, comme `kubectl top`) /
-  disque de `~/work`, agents actifs, état git de chaque projet et branches parallèles. Toucher une carte ouvre la tâche.
+- **Tableau de bord** (onglet *Pods* sur téléphone, à droite du fil sur un écran large) : l'essentiel d'abord, ce qui
+  attend ta réponse (questions, PR, variantes), l'autonomie (full auto, mode hard), l'usage, Claude au travail, les
+  propositions, les pods (CPU / mémoire / disque, état git de chaque projet) et les tâches récentes. Le reste (chiffres
+  du jour, tâches gourmandes, prochaines étapes, mémoire des projets, bilan, compte rendu) est replié sous *Plus de
+  détails*. Toucher une carte ouvre la tâche.
 - **Prochaines étapes** : à la fin d'une tâche, Claude propose 1 à 4 suites concrètes (outil `proposer_suite`).
   Sous la réponse, toucher une étape la prépare dans la saisie (modifiable) ; ▶ la lance tout de suite dans la
   conversation. Le tableau de bord les regroupe (*Prochaines étapes*) tant qu'elles ne sont ni lancées ni ignorées.
@@ -109,12 +111,13 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
     les compare (modifications, tests, capture) et *Garder* fusionne la choisie et jette les autres.
   - *Revue* : toucher une ligne d'un diff pour la commenter, puis *Envoyer la revue à Claude*. *Ouvrir une pull
     request* demande à Claude de la rédiger (`ouvrir_pr`, jamais depuis main/master).
-  - *Validations automatiques* (par défaut, `trust.default` de `config/policy.yaml`) : installations, suppressions
-    et copies dans le projet, commandes non répertoriées, fichiers sensibles du projet, `WebFetch`, lancement d'un
-    pod, dépôt GitHub privé, agents en parallèle. Restent toujours demandés : refus (`deny`), écritures hors du
-    projet, `.git/` et workflows de CI, arrêt d'un service, dépôt public, cluster, push sur main ou forcé, `sudo`,
-    S3, `vault`. Chaque auto-approbation est journalisée et signalée sur la carte (« 🛡 N validations passées
-    automatiquement »). Pour aller plus loin, le *mode hard* lève toutes les validations (voir plus bas).
+  - *Grande liberté par défaut* (`trust` de `config/policy.yaml`) : installations, `sudo`, suppressions et écritures
+    partout dans `~/work`, workflows de CI, push (main compris), `helm install/upgrade`, `kubectl apply`, S3 en lecture
+    et écriture, requêtes HTTP, lancement d'un pod, dépôt GitHub privé, agents en parallèle : sans attendre. Restent
+    demandés seulement ce qui détruit sans retour : refus (`deny`), `.git/` à la main, écritures hors de `~/work` et
+    `/tmp`, arrêt d'un service (stockage perdu), `helm uninstall`, `kubectl delete`, push forcé ou suppression de
+    branche distante, suppression de données S3, `vault`, dépôt public. Chaque auto-approbation est journalisée et
+    signalée sur la carte (« 🛡 N validations passées automatiquement »). Le *mode hard* lève aussi ces dernières.
   - *Questions avant le travail* : au premier message d'une conversation importante, Claude pose d'abord, en une
     fois, les questions essentielles (`poser_question`, un choix par question + précisions) puis travaille ou
     transmet un cahier des charges complet.
@@ -196,7 +199,7 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
   durée jusqu'à la réinitialisation. L'aperçu du dialogue chiffre aussi les tokens du plan affiché.
 - **Full auto : même dialogue que le mode hard** (🤖 *Armer le full auto*) : projets au choix (● pod en ligne / ○ hors ligne),
   durée en heures, projets de front, tâches par jour, seuil de session, et le même **aperçu** de ce qu'il compte faire (travail
-  resté en plan d'abord, puis propositions). Il garde les validations (refusées au bout de 15 min sans réponse).
+  resté en plan d'abord, puis propositions). Il garde les rares validations restantes (refusées au bout de 15 min sans réponse).
 - **Mode hard** (☠, tableau de bord) : pleine autonomie, pour une durée choisie (1 h à 14 jours) :
   - plus aucune validation (écriture hors du projet, push sur main, cluster, `sudo`…), chaque action reste journalisée
     (`policy: hard`) ; les validations en attente sont approuvées à l'activation ;
