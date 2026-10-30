@@ -29,7 +29,6 @@ const IMAGE_MAX = 1_600_000;            // capture d'écran (JPEG), octets
 const MEMOIRE_MAX = 50_000;             // CLAUDE.md d'un projet
 const COMMANDES_MAX = 20;               // commandes rapides par liste
 const ACTIFS = ['pending', 'routing', 'queued', 'running', 'waiting_approval'];
-const CONFIANCE_DUREES = [0, 15, 30, 60, 120];  // minutes (0 : désactivé)
 const PROPOSITIONS_CLOSES_MAX = 40;     // propositions lancées ou ignorées gardées en mémoire
 const PROJET_EN_COURS = 14;             // jours sans activité avant qu'un projet passe « en pause »
 const AUTO_SEUIL = 0.85;                // full auto : plus aucune tâche lancée au-delà de cet usage de la session
@@ -42,8 +41,8 @@ const MEMOIRE_INIT_DELAI = 86400;       // une création automatique de la mémo
 const POLL_BATTEMENT = 10;              // secondes entre deux mises à jour de « vu_le » d'un pod (une écriture, pas deux par seconde)
 const ENTRETIEN_PERIODE = 1800;         // secondes entre deux entretiens de la base (checkpoint, contrôle, sauvegarde)
 const SAUVEGARDES_GARDEES = 3;
-const ETAT_BLOCS = ['projects', 'workers', 'trust', 'memory', 'autopilot', 'hard', 'week', 'deleted_projects'];
-const SCHEMA_VERSION = 1;               // à incrémenter à chaque changement de schéma dans migrer()
+const ETAT_BLOCS = ['projects', 'workers', 'memory', 'autopilot', 'hard', 'week', 'deleted_projects'];
+const SCHEMA_VERSION = 2;               // à incrémenter à chaque changement de schéma dans migrer()
 const INCITATION_VERIF = 600;           // secondes entre deux vérifications du reste de la semaine
 const INCITATION_PALIERS = [[48, 0.20], [12, 0.10]];  // [heures avant la réinitialisation, part restante minimale]
 const AUTO_PARALLELE_MAX = 6;           // full auto : projets menés de front, au plus
@@ -53,12 +52,6 @@ const HARD_HEURES_MAX = 336;            // mode hard : durée maximale d'un arme
 /** Règles « Toujours autoriser » pour les workers : [{tool, pattern}]. */
 function regles(): array {
     return array_map(fn($r) => ['tool' => $r['outil'], 'pattern' => $r['motif']], q('SELECT outil, motif FROM regles ORDER BY id')->fetchAll());
-}
-
-/** Conversations en mode confiance : {conversation: fin (horodatage)}. */
-function confiances(): array {
-    // Lecture seule (appelée à chaque rafraîchissement) : les lignes expirées sont purgées par entretien_base()
-    return array_map('intval', q('SELECT conversation, jusqua FROM confiances WHERE jusqua > ?', [time()])->fetchAll(PDO::FETCH_KEY_PAIR));
 }
 
 $CONFIG = require __DIR__ . '/config.php';
@@ -130,8 +123,6 @@ CREATE TABLE IF NOT EXISTS reglages (cle TEXT PRIMARY KEY, valeur TEXT NOT NULL)
 CREATE TABLE IF NOT EXISTS workers (
     id TEXT PRIMARY KEY, nom TEXT NOT NULL, instance TEXT NOT NULL, projets TEXT NOT NULL DEFAULT '[]',
     orchestrateur INTEGER NOT NULL DEFAULT 1, vu_le INTEGER NOT NULL DEFAULT 0);
--- Mode confiance : validations de routine auto-approuvées pour une conversation jusqu'à « jusqua »
-CREATE TABLE IF NOT EXISTS confiances (conversation TEXT PRIMARY KEY, jusqua INTEGER NOT NULL);
 -- Règles « Toujours autoriser » créées depuis le téléphone, appliquées par tous les pods
 CREATE TABLE IF NOT EXISTS regles (id INTEGER PRIMARY KEY AUTOINCREMENT, outil TEXT NOT NULL, motif TEXT NOT NULL DEFAULT '',
     libelle TEXT NOT NULL, exemple TEXT NOT NULL DEFAULT '', cree_le INTEGER NOT NULL, UNIQUE(outil, motif));
@@ -154,6 +145,7 @@ SQL);
     $colonnesW = array_column($pdo->query('PRAGMA table_info(workers)')->fetchAll(), 'name');
     if (!in_array('etat', $colonnesW, true)) $pdo->exec('ALTER TABLE workers ADD COLUMN etat TEXT');
     if (!in_array('apparu_le', $colonnesW, true)) $pdo->exec('ALTER TABLE workers ADD COLUMN apparu_le INTEGER NOT NULL DEFAULT 0');
+    $pdo->exec('DROP TABLE IF EXISTS confiances');  // version 2 : mode confiance retiré
     $pdo->exec('PRAGMA user_version = ' . SCHEMA_VERSION);
     $pdo->exec('COMMIT');
 }
@@ -739,7 +731,6 @@ function entretien_base(): void {
     if (time() - (int)(reglage('entretien') ?? 0) < ENTRETIEN_PERIODE) return;
     reglage('entretien', (string)time());
     $pdo = db();
-    q('DELETE FROM confiances WHERE jusqua <= ?', [time()]);
     try { $pdo->query('PRAGMA wal_checkpoint(PASSIVE)')->fetchAll(); } catch (Throwable) {}
     try {
         $controle = $pdo->query('PRAGMA quick_check(1)')->fetchColumn();
@@ -1000,7 +991,6 @@ switch ($route) {
         $blocs = [
             'projects' => projets(),
             'workers' => workers_publics(),
-            'trust' => (object)confiances(),
             'memory' => memoire_publique(),
             'autopilot' => autopilote_lire(),
             'hard' => hard_lire(),
@@ -1110,19 +1100,6 @@ switch ($route) {
         exiger_session();
         q('DELETE FROM regles WHERE id = ?', [(int)($in['id'] ?? 0)]);
         repondre(['ok' => true]);
-
-    case 'confiance': // mode confiance d'une conversation, pour une durée limitée (0 : désactivé)
-        exiger_session();
-        $minutes = (int)($in['minutes'] ?? -1);
-        if (!in_array($minutes, CONFIANCE_DUREES, true)) erreur('durée invalide : ' . implode(', ', CONFIANCE_DUREES) . ' minutes');
-        $conv = (string)($in['conversation'] ?? '');
-        if (!q('SELECT 1 FROM taches WHERE conversation = ? OR id = ?', [$conv, $conv])->fetchColumn()) erreur('conversation introuvable', 404);
-        if ($minutes === 0) q('DELETE FROM confiances WHERE conversation = ?', [$conv]);
-        else q('INSERT INTO confiances(conversation, jusqua) VALUES(?, ?) ON CONFLICT(conversation) DO UPDATE SET jusqua = excluded.jusqua',
-               [$conv, time() + 60 * $minutes]);
-        q('INSERT INTO audit(donnees, ts) VALUES(?, ?)', [json_encode(['ts' => date('Y-m-d\\TH:i:s'), 'event' => 'trust',
-            'conversation' => $conv, 'minutes' => $minutes], JSON_UNESCAPED_UNICODE), time()]);
-        repondre(['ok' => true, 'trust' => (object)confiances()]);
 
     case 'recadrer': // message envoyé à Claude pendant qu'il travaille : il est interrompu et reprend avec
         exiger_session();
@@ -1460,7 +1437,7 @@ switch ($route) {
             'autopilot' => autopilote_lire(),
             'hard' => hard_lire()['enabled'],
             'hard_projects' => hard_lire()['projects'],
-            'steers' => $recadrages, 'memory_edits' => $memoires, 'trust' => (object)confiances(), 'rules' => regles(),
+            'steers' => $recadrages, 'memory_edits' => $memoires, 'rules' => regles(),
             'decisions' => $decisions, 'cancels' => $annulations,
             'choices' => array_map(fn($c) => ['task_id' => $c['id'], 'project' => $c['choix_projet']], $choix),
             'worktree_actions' => array_map(fn($w) => ['task_id' => $w['id'], 'project' => $w['projet'],

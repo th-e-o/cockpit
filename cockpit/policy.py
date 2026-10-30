@@ -53,7 +53,6 @@ class Policy:
         self.trust_never = [re.compile(p, re.I) for p in trust.get("never", [])]
         self.trust_paths_never = [re.compile(p, re.I) for p in trust.get("paths_never", [])]
         self.trust_default = bool(trust.get("default", False))  # validations de routine automatiques partout
-        self.trust_outside = [re.compile(p) for p in trust.get("extended", {}).get("outside_paths", [])]
         self.trust_scratch = [re.compile(p) for p in trust.get("scratch_paths", [])]  # hors projet, mais sans risque
         self.user_rules: list[tuple[str, re.Pattern | None]] = []  # règles « Toujours autoriser » du téléphone
         self.trust_unknown = bool(trust.get("unknown_commands", False))
@@ -114,12 +113,12 @@ class Policy:
                 worst = d
         return worst
 
-    def trusted(self, tool: str, tool_input: dict, cwd: str, extended: bool = False) -> bool:
+    def trusted(self, tool: str, tool_input: dict, cwd: str) -> bool:
         """Validation de routine : une demande (ask) peut-elle passer sans l'utilisateur ?
 
         Jamais pour : un refus (deny) ; une écriture dans trust.paths_never (.git, workflows de CI) ou hors du
-        projet (sauf extended : mode confiance 🛡, dans trust.extended.outside_paths) ; un outil hors de
-        trust.tools ; un dépôt GitHub public ; une commande qui touche à trust.never (cluster, push sur main…).
+        projet (sauf trust.scratch_paths) ; un outil hors de trust.tools ; un dépôt GitHub public ; une commande qui
+        touche à trust.never (cluster, push sur main…).
         """
         d = self.evaluate(tool, tool_input, cwd)
         if d.action != ASK:
@@ -134,7 +133,7 @@ class Policy:
                 return True
             if any(rx.search(resolved) for rx in self.trust_scratch):
                 return True
-            return extended and any(rx.search(resolved) for rx in self.trust_outside)
+            return False
         if tool != "Bash":
             if tool.endswith("creer_depot") and tool_input.get("prive") is False:
                 return False  # un dépôt public reste toujours validé

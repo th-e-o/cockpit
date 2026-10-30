@@ -540,8 +540,6 @@ class Worker:
             self.autopilot.config = msg["autopilot"] or {}
         if "rules" in msg:
             self.runner.policy.set_user_rules(msg["rules"] or [])
-        if "trust" in msg:
-            self.runner.trust = {str(k): float(v) for k, v in (msg["trust"] or {}).items()}
         for s in msg.get("steers", []):
             self.spawn(self.steer(s))
         for e in msg.get("memory_edits", []):

@@ -87,17 +87,15 @@ bash:
     - '^(mc\s+(ls|cat|stat)|aws\s+s3\s+ls)\b'
     - '^(mkdir|touch|cd)\b'
 
-# Validations de routine automatiques (« default: true » : dans toutes les conversations ; sinon seulement en mode
-# confiance 🛡). Chaque auto-approbation est journalisée (policy: trust) et signalée sur la carte de la tâche.
+# Validations de routine automatiques (« default: true » : dans toutes les conversations ; « false » : toutes demandées).
+# Chaque auto-approbation est journalisée (policy: trust) et signalée sur la carte de la tâche.
 # Toujours demandés : les refus (deny), les écritures dans « paths_never » ou hors du projet, les outils absents de
 # « tools » (arrêt d'un service…), un dépôt GitHub public, et les commandes qui correspondent à « never ».
-# Le mode confiance 🛡 (téléphone, par conversation, durée limitée) ajoute « extended ».
+# Le mode hard (téléphone) lève toutes ces validations, sauf les refus.
 trust:
   default: true
   tools: [NotebookEdit, WebFetch, mcp__services__lancer_service, mcp__cockpit__creer_depot, mcp__cockpit__lancer_en_parallele]
   scratch_paths: ['^/tmp/']                  # hors du projet mais sans risque : fichiers temporaires
-  extended:
-    outside_paths: ['^/home/onyxia/work/']   # écritures hors du projet, dans l'espace de travail du pod
   paths_never: ['/\.git/', '\.github/workflows/']   # historique git, CI (exécutée avec les secrets du dépôt)
   unknown_commands: true   # commandes non répertoriées (make, docker build, scripts du projet…)
   opaque: true             # substitutions et redirections, contrôlées par « never » sur la commande entière

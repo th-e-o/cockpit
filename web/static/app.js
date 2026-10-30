@@ -4,7 +4,7 @@ const $ = (s) => document.querySelector(s);
 // replyTo : tâche dont le prochain message est la suite (undefined tant que l'historique n'est pas chargé)
 const state = { projects: [], selected: null, tasks: new Map(), order: [], lastId: 0, workerOnline: false, replay: false, replyTo: undefined,
   workers: [], diffs: new Map(), view: 'chat', bilan: null, bilanAt: 0, bilanJours: 7, repos: null,
-  commands: {}, review: new Map(), model: '', variants: 1, trust: {}, memory: null, autopilot: null, hard: null, week: null, deleted: {}, report: null, reportAt: 0 };
+  commands: {}, review: new Map(), model: '', variants: 1, memory: null, autopilot: null, hard: null, week: null, deleted: {}, report: null, reportAt: 0 };
 const MODELES = { rapide: '⚡ Rapide', standard: '● Standard', approfondi: '◆ Approfondi' };
 /** « claude-opus-5-5 » -> « Opus 5.5 » ; « claude-sonnet-4-5-20250929 » -> « Sonnet 4.5 ». */
 function modelName(id) {
@@ -731,34 +731,6 @@ function renderCostTip() {
 const wantsNewPod = (text) => /\b(nouveau|nouvel|nouvelle|autre|propre)\s+(pod|projet|repo|dépôt|depot|service)\b|\bdans un (nouveau|autre) pod\b|\b(crée|créer|creer|lance|lancer|ouvre|ouvrir)\s+(un|le)\s+(pod|projet)\b/i.test(text);
 const isOrchestratorProject = (pid) => state.workers.some((w) => w.orchestrator && (w.projects || []).includes(pid));
 
-// ---------- mode confiance (par conversation, durée limitée)
-function updateTrust() {
-  const conv = state.replyTo && conversationOf(state.replyTo);
-  const until = conv ? state.trust[conv] || 0 : 0;
-  const left = until - Date.now() / 1000;
-  $('#trustSel').classList.toggle('on', left > 0);
-  $('#trustLeft').classList.toggle('hidden', left <= 0);
-  $('#trustLeft').dataset.until = left > 0 ? until : '';
-  if (left <= 0 && document.activeElement !== $('#trustSel')) $('#trustSel').value = '0';
-  tick();
-}
-
-$('#trustSel').addEventListener('change', async () => {
-  const minutes = Number($('#trustSel').value);
-  if (!state.replyTo) return;
-  if (minutes && !confirm(`Mode confiance pendant ${minutes >= 60 ? `${minutes / 60} h` : `${minutes} min`} : en plus des validations `
-    + 'de routine (déjà automatiques), Claude pourra écrire hors de son projet, dans ~/work. '
-    + 'Restent toujours demandés : cluster, arrêt de services, dépôt public, push sur main, sudo, .git et workflows de CI.')) {
-    updateTrust();
-    return;
-  }
-  try {
-    state.trust = (await api('confiance', { conversation: conversationOf(state.replyTo), minutes })).trust || {};
-  } catch (e) { alert(e.message); }
-  $('#trustSel').blur();
-  updateTrust();
-});
-
 // ---------- recadrage, modèle, variantes, commandes rapides
 const shownInstruction = (s) => String(s || '').replace(/\n\n\(Variante \d\/\d : [\s\S]*\)$/, '');
 // Ordre de création (celui du fil) : les variantes d'une demande naissent dans la même seconde.
@@ -781,7 +753,6 @@ function updateComposer() {
       + (proj ? ` · ${proj.name}` : '');
   }
   $('#variantSel').classList.toggle('hidden', !!state.replyTo);
-  updateTrust();
   renderCostTip();
   renderQuick();
 }
@@ -1748,12 +1719,6 @@ function tick() {
 }
 function tickIn(doc) {
   const $ = (sel) => doc.querySelector(sel) || document.createElement('span');
-  const tl = $('#trustLeft');
-  if (tl.dataset.until) {
-    const s = Number(tl.dataset.until) - Date.now() / 1000;
-    tl.textContent = s > 0 ? `actif · ${Math.ceil(s / 60)} min` : '';
-    if (s <= 0) { tl.dataset.until = ''; updateTrust(); }
-  }
   doc.querySelectorAll('[data-uptime]').forEach((el) => { el.textContent = dureeLongue(Date.now() / 1000 - Number(el.dataset.uptime)); });
   doc.querySelectorAll('[data-expires]').forEach((el) => {
     const s = Math.max(0, Math.round(el.dataset.expires - Date.now() / 1000));
@@ -1877,7 +1842,6 @@ async function poll() {
     render(touched);
     if (state.pendingJump && document.getElementById(`t-${state.pendingJump}`)) { jumpTo(state.pendingJump); state.pendingJump = null; }
     if ('workers' in s) state.workers = s.workers || [];
-    if ('trust' in s) state.trust = s.trust || {};
     if ('memory' in s) state.memory = s.memory || null;
     if ('autopilot' in s) state.autopilot = s.autopilot || null;
     if ('hard' in s) state.hard = s.hard || null;
@@ -1885,7 +1849,6 @@ async function poll() {
     if ('deleted_projects' in s) state.deleted = s.deleted_projects || {};
     renderUsageBar();
     renderPip();
-    updateTrust();
     renderDash();
     state.replay = false;
   } catch (e) {
