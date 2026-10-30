@@ -114,8 +114,7 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
     pod, dépôt GitHub privé, agents en parallèle. Restent toujours demandés : refus (`deny`), écritures hors du
     projet, `.git/` et workflows de CI, arrêt d'un service, dépôt public, cluster, push sur main ou forcé, `sudo`,
     S3, `vault`. Chaque auto-approbation est journalisée et signalée sur la carte (« 🛡 N validations passées
-    automatiquement »). Le *mode confiance* (🛡 dans la barre de conversation, 15 min à 2 h) permet en plus
-    d'écrire hors du projet, dans `~/work`.
+    automatiquement »). Pour aller plus loin, le *mode hard* lève toutes les validations (voir plus bas).
   - *Questions avant le travail* : au premier message d'une conversation importante, Claude pose d'abord, en une
     fois, les questions essentielles (`poser_question`, un choix par question + précisions) puis travaille ou
     transmet un cahier des charges complet.
@@ -255,7 +254,7 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
 
 ## Sécurité : ce qu'il faut savoir
 
-- **Le mode confiance élargit ce que l'agent fait sans toi** : à n'activer que sur une conversation que tu suis.
+- **Le mode hard lève toutes les validations** sauf les refus : à n'activer que sur des pods dont tu acceptes les risques.
 - **La politique est un garde-fou, pas une frontière de sécurité.** Un agent autorisé à lancer `python`
   ou `pytest` peut exécuter du code arbitraire. La vraie frontière, ce sont le RBAC du namespace Kubernetes et
   l'isolation des pods.

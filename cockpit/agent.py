@@ -507,7 +507,6 @@ class Runner:
         self.steers: dict[str, list[str]] = {}  # messages de l'utilisateur pendant une tâche
         self.hard = False  # mode hard (téléphone) : plus aucune validation, seuls les refus (deny) de la politique restent
         self.hard_projects: set[str] = set()  # périmètre du mode hard (vide : tous les projets de ce pod)
-        self.trust: dict[str, float] = {}  # mode confiance : conversation -> fin (activé depuis le téléphone)
         self.on_rate_limit = None  # RateLimitInfo -> None (barre d'usage), fourni par le worker
         self.project_status = None  # async (projet) -> état vu du relais (outil etat_projet), fourni par le worker
         self.session_usage = None  # () -> utilisation de la session de 5 h (0-1) ou None, fourni par le worker
@@ -580,9 +579,8 @@ class Runner:
                 # Règle « Toujours autoriser » créée depuis le téléphone
                 ok, d.action, d.reason = True, "rule", f"règle « {rule} » : {d.reason}"
                 self.store.publish("message", {"task_id": task.id, "type": "trusted", "tool": tool, "text": d.reason})
-            elif ((self.policy.trust_default or self.trusted(task))
-                  and self.policy.trusted(tool, tool_input, cwd, extended=self.trusted(task))):
-                # Validation de routine auto-approuvée (journalisée et signalée sur la carte) : par défaut, ou mode 🛡
+            elif self.policy.trust_default and self.policy.trusted(tool, tool_input, cwd):
+                # Validation de routine auto-approuvée (journalisée et signalée sur la carte)
                 ok, d.action = True, "trust"
                 self.store.publish("message", {"task_id": task.id, "type": "trusted", "tool": tool, "text": d.reason})
             else:
@@ -813,10 +811,6 @@ class Runner:
             return
         if after is not None:
             self.store.task_update(task, session_delta=round(max(0.0, after - before), 4))
-
-    def trusted(self, task: Task) -> bool:
-        """La conversation de la tâche est-elle en mode confiance (activé depuis le téléphone, non expiré) ?"""
-        return self.trust.get(task.conversation or task.id, 0) > time.time()
 
     def _spawn(self, coro) -> None:
         t = asyncio.create_task(coro)

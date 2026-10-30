@@ -552,15 +552,10 @@ def test_vibe_coding_ui(relay):
         # Ouvrir une PR depuis une carte : demandée à Claude dans la conversation
         assert page.locator(f"#t-{a} [data-open-pr]").count() == 0  # la conversation a avancé (revue envoyée)
 
-        # Mode confiance sur la conversation suivie : confirmé, transmis au worker, temps restant affiché
-        page.select_option("#trustSel", "30")
-        page.wait_for_selector("#trustLeft:not(.hidden) >> text=actif · 30 min")
-        conv = page.evaluate("conversationOf(state.replyTo)")
-        assert conv in wpoll(relay, "pod-vibe", False)["trust"]
+        # Validations passées automatiquement : signalées sur la carte
         worker_call(relay, "w_evenements", {"worker_id": "pod-vibe", "events": [{"kind": "message", "task_id": r,
             "type": "trusted", "tool": "Bash", "text": "opération sensible : pip install rich", "ts": time.time()}]})
         page.wait_for_selector(f"#t-{r} details.trusted >> text=1 validation passée automatiquement")
-        page.locator("#thread").screenshot(path=SHOTS / "14-confiance.png")
 
         # Modèle choisi pour une nouvelle conversation, commandes rapides
         page.click("#newConv")

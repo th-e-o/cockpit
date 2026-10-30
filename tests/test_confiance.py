@@ -1,4 +1,4 @@
-"""Mode confiance : validations de routine auto-approuvées pour une conversation, jamais les opérations sensibles."""
+"""Validations de routine auto-approuvées (trust.default), jamais les opérations sensibles."""
 
 import asyncio
 import time
@@ -45,15 +45,10 @@ def test_regles(tool, inp, trusted):
     assert POLICY.trusted(tool, inp, CWD) is trusted
 
 
-def test_mode_confiance_etendu():
-    """Par défaut, la routine est automatique ; le mode 🛡 permet en plus d'écrire hors du projet, dans ~/work."""
+def test_hors_du_projet_toujours_demande():
+    """Par défaut, la routine est automatique, mais pas l'écriture dans un autre projet de ~/work."""
     assert POLICY.trust_default is True
-    autre = {"file_path": "/home/onyxia/work/autre-projet/a.py"}
-    assert POLICY.trusted("Write", autre, CWD) is False
-    assert POLICY.trusted("Write", autre, CWD, extended=True) is True
-    assert POLICY.trusted("Write", {"file_path": "/opt/x"}, CWD, extended=True) is False
-    assert POLICY.trusted("Write", {"file_path": "/home/onyxia/work/autre/.git/config"}, CWD, extended=True) is False
-    assert POLICY.trusted("Bash", {"command": "git push origin main"}, CWD, extended=True) is False
+    assert POLICY.trusted("Write", {"file_path": "/home/onyxia/work/autre-projet/a.py"}, CWD) is False
 
 
 def hook(runner, task, cwd):
@@ -64,7 +59,7 @@ def hook(runner, task, cwd):
 def test_decision_de_l_agent(tmp_path):
     store = Store(tmp_path / "data")
     policy = Policy.load(ROOT / "config" / "policy.yaml")
-    policy.trust_default = False  # routine demandée hors mode confiance (comportement de « default: false »)
+    policy.trust_default = False  # « default: false » : toute la routine est demandée
     runner = Runner(store, policy)
     asked = []
 
@@ -78,20 +73,14 @@ def test_decision_de_l_agent(tmp_path):
     pre = hook(runner, task, str(tmp_path))
     call = lambda cmd: asyncio.run(pre({"tool_name": "Bash", "tool_input": {"command": cmd}, "tool_use_id": cmd}, cmd, None))
 
-    # Sans confiance : validation demandée
     assert call("pip install x")["hookSpecificOutput"]["permissionDecision"] == "deny" and asked == ["pip install x"]
-    # Confiance active sur la conversation : routine auto-approuvée, signalée, journalisée
-    runner.trust = {"c": time.time() + 600}
+    # « default: true » : routine auto-approuvée, signalée, journalisée ; opération sensible toujours demandée
+    policy.trust_default = True
     assert call("pip install y")["hookSpecificOutput"]["permissionDecision"] == "allow" and asked == ["pip install x"]
     assert [e["type"] for e in task.events][-1] == "trusted"
     assert '"policy": "trust"' in (tmp_path / "data" / "audit.jsonl").read_text()
-    # Opération sensible : toujours demandée
     assert call("git push origin main")["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert asked[-1] == "git push origin main"
-    # Autre conversation, ou confiance expirée : demandée
-    runner.trust = {"autre": time.time() + 600, "c": time.time() - 1}
-    call("pip install z")
-    assert asked[-1] == "pip install z"
 
 
 def test_routine_automatique_par_defaut(tmp_path):
