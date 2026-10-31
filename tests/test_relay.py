@@ -490,7 +490,7 @@ def test_nouveau_pod_et_bilan(relay):
                 {"nom": "np-onyxia"}, {"nom": "x", "branche": "a b"}]:
         assert call(p, "lancer_pod", bad).status_code == 400, bad
     t = call(p, "lancer_pod", {"nom": "drones", "depot_git": "https://github.com/th-e-o/drones", "branche": "dev", "cpu": "4"}).json()
-    assert t["kind"] == "service" and t["instruction"] == "🚀 Nouveau pod « drones » : th-e-o/drones (dev)"
+    assert t["kind"] == "service" and t["instruction"] == "Nouveau pod « drones » : th-e-o/drones (dev)"
     livrees = [x for x in wpoll(relay, "orch-np", True)["tasks"] if x["id"] == t["id"]]
     assert livrees[0]["action"] == {"type": "lancer_service", "nom": "drones", "depot_git": "https://github.com/th-e-o/drones",
                                     "branche": "dev", "cpu": "4", "memoire": "8Gi", "disque": "10Gi", "gpu": False,
@@ -557,7 +557,7 @@ def test_suite_et_notifications(relay):
     # Nouveau pod sur un nouveau dépôt GitHub
     assert call(p, "lancer_pod", {"nom": "drones", "creer_depot": {"nom": "a b"}}).status_code == 400
     t2 = call(p, "lancer_pod", {"nom": "drones", "depot_git": "https://ignoré", "creer_depot": {"nom": "Drones.vols", "prive": False}}).json()
-    assert t2["instruction"] == "🚀 Nouveau pod « drones » : nouveau dépôt GitHub public « Drones.vols »"
+    assert t2["instruction"] == "Nouveau pod « drones » : nouveau dépôt GitHub public « Drones.vols »"
     wid = last_status(p)[t2["id"]]["worker"]  # orchestrateur en ligne le plus récent (d'autres tests en ont lancé)
     livrees = wpoll(relay, wid, True, instance="inst-orch-2" if wid == "orch" else None)["tasks"]
     act = [x for x in livrees if x["id"] == t2["id"]][0]["action"]

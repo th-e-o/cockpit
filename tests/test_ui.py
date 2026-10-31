@@ -268,10 +268,10 @@ def test_tableau_de_bord(relay):
         assert page.is_hidden(".kpis")
         page.click("details[data-more] > summary")
         assert "Tâches aujourd'hui" in page.inner_text(".kpis")
-        assert "À valider · 1" in page.inner_text("#dash .sect.attn")  # en tête, avec ses boutons (plus en chiffre caché)
+        assert page.inner_text("#dash .sect.attn h3 .count") == "1"  # en tête, avec ses boutons (plus en chiffre caché)
         assert page.locator(".live", has_text="Refactorise le routeur").count() == 1 and page.locator(".live.alert", has_text="mlflow").count() == 1
         assert "Plan 2/4" in page.inner_text(".lives") and "Lance les tests du routeur" in page.inner_text(".lives")
-        assert "⚠ 8,9 Go / 9,8 Go" in page.inner_text(".podcard")  # disque presque plein : alerte avec icône
+        assert page.locator(".podcard .mv.bad .ic, .podcard .mv.warn .ic").count() >= 1 and "8,9 Go / 9,8 Go" in page.inner_text(".podcard")  # disque presque plein : icône d'alerte
         assert page.locator(f".wtrow >> text=cockpit/{t1}").count() == 1
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")  # pas de défilement horizontal
         page.screenshot(path=SHOTS / "7-pods-mobile.png", full_page=True)
@@ -427,7 +427,7 @@ def test_appairage_ordinateur_par_cle(relay):
         assert page.input_value("#pairCode") == code  # affichée en majuscules
         page.screenshot(path=SHOTS / "10-cle-appairage.png")
         page.press("#pairCode", "Enter")
-        page.wait_for_selector("text=Ordinateur connecté ✓")
+        page.wait_for_selector("text=Ordinateur connecté")
         assert page.is_hidden("#pairForm")
         page.click("#authBtn")  # Créer ma passkey
         page.wait_for_selector("#auth.hidden", state="attached")
@@ -507,7 +507,7 @@ def test_vibe_coding_ui(relay):
         assert vs.locator("a", has_text="Ouvrir VSCode").get_attribute("href") == "https://user-x-cockpit-vibe.example/"
         assert "mot-de-passe-vscode" not in page.content()
         vs.locator("[data-copy-pw]").click()
-        page.wait_for_selector("[data-copy-pw] >> text=✓ Copié")
+        page.wait_for_selector("[data-copy-pw] >> text=Copié")
         assert page.evaluate("navigator.clipboard.readText()") == "mot-de-passe-vscode"
         # Barres du tableau de bord dimensionnées malgré la CSP (pas de style en ligne)
         page.wait_for_selector(".podcard >> text=Vibe")
@@ -522,7 +522,7 @@ def test_vibe_coding_ui(relay):
 
         # Modèle qui écrit : sur la carte (avec les sous-agents) et dans le tableau de bord
         assert page.locator(f"#t-{r} .pill.model").inner_text() == "◆ Opus 5.5 auto + Haiku 5.5"
-        assert "choisi automatiquement (◆ Approfondi) : écriture de code" in page.get_attribute(f"#t-{r} .pill.model", "title")
+        assert "choisi automatiquement (Approfondi) : écriture de code" in page.get_attribute(f"#t-{r} .pill.model", "title")
         assert "Opus 5.5" in page.locator(".live", has_text="Refais le menu").inner_text()
         names = page.evaluate("""['claude-opus-5-5', 'claude-sonnet-4-5-20250929', 'claude-3-5-sonnet-20241022', 'claude-haiku-4-5', 'claude-fable-5-1', 'gpt']
           .map(modelName)""")
@@ -541,7 +541,7 @@ def test_vibe_coding_ui(relay):
         page.wait_for_selector("#imgDlg[open] #imgFull")
         assert page.evaluate("document.querySelector('#imgFull').naturalWidth") > 0
         page.click("#imgDlg [data-close]")
-        assert "Tests ❌ en échec" in card.locator("details.tests summary").inner_text()
+        assert "Tests en échec" in card.locator("details.tests summary").inner_text()
         assert "CI en échec" in card.locator(".ci").inner_text()
         card.locator("details.file").click()
         card.locator(".diffpre span[data-ln='11']").click()  # « +    titre = 'Mon app' »
@@ -565,10 +565,10 @@ def test_vibe_coding_ui(relay):
         # Modèle choisi pour une nouvelle conversation, commandes rapides
         page.click("#newConv")
         page.select_option("#modelSel", "rapide")
-        page.click(".chip.qc >> text=🧪 Tests")
+        page.click(".chip.qc >> text=Tests")
         assert page.input_value("#input").startswith("Lance les tests")
         page.click("#send")
-        page.wait_for_selector("section .pill >> text=⚡ Rapide")
+        page.wait_for_selector("section .pill >> text=Rapide")
         page.click("#editQuick")
         page.click("#addCmd")
         page.locator("#cmdRows .cmdrow").last.locator(".ct").fill("📦 Dépendances")
@@ -656,7 +656,7 @@ def test_questions_de_claude(relay):
         browser = pw.chromium.launch()
         page, errors = browser_page(p, browser, relay, **pw.devices["iPhone 13"])
         page.wait_for_selector(f"#t-{q['id']} form.question >> text=Quel format pour les cartes ?")
-        assert "❓" in page.inner_text("#pendingBtn") and "3" in page.inner_text("#pendingBtn")
+        assert "?" in page.inner_text("#pendingBtn") and "3" in page.inner_text("#pendingBtn")
         page.locator(f"#t-{q['id']} form.question").scroll_into_view_if_needed()
         page.screenshot(path=SHOTS / "16-question.png")
         # Mini-fenêtre toujours visible : ce qui attend une réponse d'abord (contenu calculé par pipHtml)
@@ -697,7 +697,7 @@ def test_questions_de_claude(relay):
         page.wait_for_selector(".follow.ask >> text=Quel format pour les cartes ?")
         page.click(".follow.ask [data-answer] >> text=Anki .apkg")
         page.wait_for_selector("section.suite .user >> text=Anki .apkg")
-        assert page.locator("#feed form.question").count() == 0 and "❓" not in page.inner_text("#pendingBtn")
+        assert page.locator("#feed form.question").count() == 0 and "?" not in page.inner_text("#pendingBtn")
         suites = {e["task"]["instruction"]: e["task"]["reply_to"] for e in call(p, "etat").json()["events"] if e["kind"] == "task"}
         assert suites["Anki .apkg"] == q["id"] and suites["CSV avec point-virgule"] == q2["id"]
         assert not errors, errors
@@ -820,7 +820,7 @@ def test_pull_requests(relay):
         worker_call(relay, "w_evenements", {"worker_id": "pod-pr", "events": [
             {"kind": "message", "task_id": act[0]["id"], "type": "pr_merged", "url": url, "ts": time.time()},
             {"kind": "task", "task_id": act[0]["id"], "task": {"status": "done", "result": "✅ Pull request fusionnée"}}]})
-        page.wait_for_selector(f"#t-{t['id']} .prbox.merged >> text=✅ fusionnée")
+        page.wait_for_selector(f"#t-{t['id']} .prbox.merged >> text=fusionnée")
         assert page.locator(".sect >> text=Pull requests à valider").count() == 0
         assert not errors, errors
         browser.close()
@@ -836,10 +836,10 @@ def test_theme_et_repartition(relay):
         page, errors = browser_page(p, browser, relay, viewport={"width": 1440, "height": 900}, color_scheme="light")
         page.wait_for_selector("#splitter")
         bg = lambda: page.evaluate("getComputedStyle(document.body).backgroundColor")  # noqa: E731
-        assert bg() == "rgb(246, 247, 249)"  # auto : suit le système (clair)
+        assert bg() == "rgb(244, 245, 248)"  # auto : suit le système (clair)
         page.click("#menuBtn")
         page.click("[data-theme-set='dark']")
-        assert bg() == "rgb(11, 12, 16)" and page.get_attribute("html", "data-theme") == "dark"
+        assert bg() == "rgb(14, 17, 23)" and page.get_attribute("html", "data-theme") == "dark"
         assert page.get_attribute("[data-theme-set='dark']", "aria-pressed") == "true"
         page.click("#menuDlg [data-close]")
         # Largeur du fil : glisser la séparation
@@ -852,7 +852,7 @@ def test_theme_et_repartition(relay):
         page.screenshot(path=SHOTS / "21-sombre-large.png")
         page.reload()
         page.wait_for_selector("#splitter")
-        assert bg() == "rgb(11, 12, 16)"  # thème mémorisé, appliqué avant l'affichage
+        assert bg() == "rgb(14, 17, 23)"  # thème mémorisé, appliqué avant l'affichage
         assert abs(page.locator("#chat").bounding_box()["width"] - 900) < 12  # largeur mémorisée
         page.dblclick("#splitter")
         assert page.locator("#chat").bounding_box()["width"] < 700  # largeur par défaut
@@ -863,7 +863,7 @@ def test_theme_et_repartition(relay):
         assert page.is_visible("#dash")
         page.click("#menuBtn")
         page.click("[data-theme-set='light']")
-        assert bg() == "rgb(246, 247, 249)"
+        assert bg() == "rgb(244, 245, 248)"
         assert not errors, errors
         browser.close()
 
@@ -880,7 +880,7 @@ def test_idees_et_fin_de_semaine(relay):
         page, errors = browser_page(p, browser, relay, viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True)
         page.click("#tabDash")
         page.wait_for_selector("#dash .follow >> text=Un tableau de bord des vols")
-        assert "💡 nouveau projet" in page.inner_text("#dash .follow:has-text('Un tableau de bord des vols')")
+        assert "nouveau projet" in page.inner_text("#dash .follow:has-text('Un tableau de bord des vols')")
         # Idée ajoutée depuis le téléphone : un seul champ, projet au choix (nouveau projet par défaut sur Auto)
         page.click("[data-prop='ajouter']")
         page.fill("#ideaText", "Une appli de quiz Anki pour le métro")
@@ -891,7 +891,7 @@ def test_idees_et_fin_de_semaine(relay):
         page.evaluate("openHardDialog('hard')")
         page.wait_for_selector("#hardPreview li >> text=Une appli de quiz Anki")
         assert page.is_visible("#hardIdeasRow") and page.is_visible("#hardExternalRow")
-        assert "nouveau projet" in page.inner_text("#hardPreview")
+        assert "Nouveau projet" in page.inner_text("#hardPreview")
         page.screenshot(path=SHOTS / "23-mode-hard-idees.png")
         page.uncheck("#hardExternal")
         wait_js(page, "!document.querySelector('#hardPreview').textContent.includes('vols de drones')")

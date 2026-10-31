@@ -1299,7 +1299,7 @@ switch ($route) {
         $id = bin2hex(random_bytes(5));
         $source = $nouveauDepot ? 'nouveau dépôt GitHub ' . ($nouveauDepot['prive'] ? 'privé ' : 'public ') . "« {$nouveauDepot['nom']} »" : ($depot !== '' ? preg_replace('#^https://(www\.)?github\.com/#', '', $depot) . ($branche !== '' ? " ($branche)" : '') : 'dossier vide');
         q('INSERT INTO taches(id, instruction, cree_le, maj_le, worker_id, conversation, action) VALUES(?, ?, ?, ?, ?, ?, ?)',
-          [$id, "🚀 Nouveau pod « $nom » : $source", time(), time(), $orch, $id, json_encode($action, JSON_UNESCAPED_UNICODE)]);
+          [$id, "Nouveau pod « $nom » : $source", time(), time(), $orch, $id, json_encode($action, JSON_UNESCAPED_UNICODE)]);
         evenement_tache($id);
         repondre(tache_publique(q('SELECT * FROM taches WHERE id = ?', [$id])->fetch()));
 
