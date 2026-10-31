@@ -280,6 +280,40 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
 - ☰ : journal d'audit, notifications, passkeys (ajout/suppression), déconnexion.
 - `./run.sh logs | stop | fg` côté Onyxia.
 
+## Espace « 📊 Données » : interroger S3 en français
+
+Une puce **📊 Données** à côté des projets : « Évolution du salaire moyen des gendarmes depuis 2015 ? », puis « et pour
+les policiers ? ». Réponse rédigée, graphique, tableau et requête SQL sur la carte ; *📄 Rapport Quarto* rassemble les
+résultats de la conversation dans un document HTML à télécharger. Pas de pod à ouvrir par question.
+
+- **Où ça tourne** : dans un pod Onyxia qui a `config/donnees.yaml` (modèle : `config/donnees.example.yaml`). Les identifiants
+  S3 y sont injectés par Onyxia ; le relais, lui, n'atteint pas S3. Un pod dédié est préférable (lecture seule, sans helm ni
+  kubectl) ; l'orchestrateur peut aussi l'héberger.
+- **Pas d'agent** : une chaîne courte, contrôlée par le code (`cockpit/donnees.py`) : question → requête SQL écrite par le LLM →
+  **DuckDB** l'exécute sur les fichiers S3 (Parquet, CSV, partitions) → réponse rédigée à partir du résultat. SQL suffit pour
+  ces questions (agrégations par année, corps, sexe…) ; aucun Python à écrire.
+- **Lecture seule par construction** : une seule requête `SELECT`, sur les tables déclarées seulement (ni fichier, ni URL, ni
+  `COPY`, `ATTACH`, `INSTALL`…), agrégée, limitée en lignes et en durée ; une requête refusée est renvoyée au LLM pour correction.
+- **Secret statistique appliqué par le code**, pas par une consigne : chaque résultat a une colonne `effectif` ; toute case de
+  moins de `seuil` individus (11 par défaut) est masquée (« s ») **avant** de repartir vers le LLM ou le téléphone. Une requête
+  qui listerait des individus est donc entièrement masquée. Le LLM ne voit que le schéma, les modalités des variables
+  catégorielles et des agrégats masqués, jamais une ligne. Le secret secondaire (déduction par différence) n'est pas traité.
+- **LLM privé** : section `llm` de `config/donnees.yaml` (API compatible OpenAI : `url`, `modele`, clé dans la variable
+  `cle_env`), par exemple sur le cloud du ministère. Sans elle, c'est Claude tel que configuré pour le cockpit.
+- **Rapport Quarto** : le `.qmd` ne contient aucun code exécutable (tableaux et graphiques déjà calculés, requêtes en annexe) ;
+  il suffit du binaire `quarto` dans le pod. Le HTML est déposé sur le relais (30 jours) et téléchargé en pièce jointe ;
+  la source `.qmd` reste dans le pod (`data/donnees/`).
+
+### Hébergement interne (relais et LLM)
+
+- **Relais** : `web/` est une application PHP + SQLite sans dépendance ; elle se déploie sur n'importe quel hébergement interne
+  en HTTPS (variables GitHub `COCKPIT_HOTE`, `COCKPIT_BASE`, `FTP_*`, voir plus haut) ; côté pods, `COCKPIT_RELAY_URL`. Les
+  passkeys sont liées au domaine : à recréer après le changement.
+- **Claude via une passerelle interne** : le cockpit utilise Claude Code ; il suit `ANTHROPIC_BASE_URL` (et la clé de la
+  passerelle dans `ANTHROPIC_API_KEY`), ou les modes Bedrock / Vertex de Claude Code, à définir dans les secrets Onyxia des pods.
+- **Modèles ouverts seulement** (API compatible OpenAI) : l'espace Données fonctionne avec eux (section `llm`) ; les agents de
+  code, eux, ont besoin de Claude.
+
 ## Configuration
 
 - `config/projects.yaml` : projets (dossier de travail, description et mots-clés pour le routage).

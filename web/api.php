@@ -26,6 +26,8 @@ const TACHES_FILLES_MAX = 5;            // lancer_en_parallele : sous-tâches pa
 const MODELES = ['rapide', 'standard', 'approfondi'];
 const VARIANTES_MAX = 3;
 const IMAGE_MAX = 1_600_000;            // capture d'écran (JPEG), octets
+const FICHIER_MAX = 8_000_000;          // fichier produit pour une tâche (rapport HTML de l'espace Données), octets
+const FICHIERS_JOURS = 30;              // fichiers gardés autant de jours
 const MEMOIRE_MAX = 50_000;             // CLAUDE.md d'un projet
 const COMMANDES_MAX = 20;               // commandes rapides par liste
 const ACTIFS = ['pending', 'routing', 'queued', 'running', 'waiting_approval'];
@@ -56,7 +58,7 @@ const IDEES_PAR_JOUR = 2;               // idées de nouveaux projets lancées a
 // Routes en lecture seule, seules acceptées en GET : toutes les autres exigent un POST JSON (anti-CSRF, y compris
 // depuis une autre page du même domaine, qui pourrait sinon déclencher une action par un simple <img src>).
 const ROUTES_GET = ['moi', 'etat', 'diff', 'bilan', 'depots', 'regles', 'image', 'memoire', 'commandes', 'resume', 'audit',
-                    'appareils', 'vapid', 'hard_apercu', 'compte_rendu'];
+                    'appareils', 'vapid', 'hard_apercu', 'compte_rendu', 'fichier'];
 
 /** Règles « Toujours autoriser » pour les workers : [{tool, pattern}]. */
 function regles(): array {
@@ -949,6 +951,7 @@ function entretien_base(): void {
     q('DELETE FROM defis WHERE expire_le < ?', [time()]);
     q('DELETE FROM echecs WHERE ts < ?', [time() - LIMITE_ECHECS_IP[1]]);
     q('DELETE FROM appairages WHERE expire_le < ?', [time()]);
+    foreach (glob(__DIR__ . '/data/fichiers/*') ?: [] as $f) if (filemtime($f) < time() - FICHIERS_JOURS * 86400) @unlink($f);
     try { $pdo->query('PRAGMA wal_checkpoint(PASSIVE)')->fetchAll(); } catch (Throwable) {}
     try {
         $controle = $pdo->query('PRAGMA quick_check(1)')->fetchColumn();
@@ -1365,6 +1368,20 @@ switch ($route) {
         readfile($f);
         exit;
 
+    case 'fichier': // téléchargement d'un fichier produit pour une tâche (toujours en pièce jointe : jamais affiché dans le cockpit)
+        exiger_session();
+        $id = (string)($_GET['id'] ?? '');
+        $dir = __DIR__ . '/data/fichiers';
+        if (!preg_match('/^[0-9a-f]{16}$/', $id) || !is_file("$dir/$id.bin")) erreur('fichier introuvable ou expiré', 404);
+        $meta = json_decode((string)@file_get_contents("$dir/$id.json"), true) ?: [];
+        header('Content-Type: ' . ($meta['type'] ?? 'application/octet-stream'));
+        header('Content-Disposition: attachment; filename="' . str_replace('"', '', $meta['nom'] ?? 'fichier') . '"');
+        header('X-Content-Type-Options: nosniff');
+        header('Cache-Control: private, no-store');
+        header('Content-Length: ' . filesize("$dir/$id.bin"));
+        readfile("$dir/$id.bin");
+        exit;
+
     case 'memoire': // CLAUDE.md d'un projet, publié par son worker
         exiger_session();
         $m = json_decode(reglage('memoire:' . (string)($_GET['project'] ?? '')) ?? 'null', true);
@@ -1751,6 +1768,22 @@ switch ($route) {
         file_put_contents("$dir/$id.jpg", $jpeg);
         inserer_evenement($tacheId, ['kind' => 'message', 'task_id' => $tacheId, 'type' => 'image', 'image' => $id,
                                      'caption' => mb_substr((string)($in['caption'] ?? ''), 0, 200), 'ts' => time()]);
+        repondre(['id' => $id]);
+
+    case 'w_fichier': // fichier produit pour une tâche (rapport Quarto de l'espace Données), téléchargeable depuis le téléphone
+        exiger_worker();
+        $tacheId = (string)($in['task_id'] ?? '');
+        $t = q('SELECT worker_id FROM taches WHERE id = ?', [$tacheId])->fetch() ?: erreur('tâche introuvable', 404);
+        if ($t['worker_id'] !== (string)($in['worker_id'] ?? '')) erreur('tâche d\'un autre worker', 403);
+        $contenu = base64_decode((string)($in['data'] ?? ''), true);
+        if ($contenu === false || $contenu === '' || strlen($contenu) > FICHIER_MAX) erreur('fichier invalide ou trop lourd');
+        $nom = preg_replace('/[^\w.-]+/u', '-', (string)($in['nom'] ?? 'fichier')) ?: 'fichier';
+        $type = in_array($in['type'] ?? '', ['text/html', 'text/csv', 'application/pdf'], true) ? $in['type'] : 'application/octet-stream';
+        $dir = __DIR__ . '/data/fichiers';
+        if (!is_dir($dir)) mkdir($dir, 0700, true);
+        $id = bin2hex(random_bytes(8));
+        file_put_contents("$dir/$id.bin", $contenu);
+        file_put_contents("$dir/$id.json", json_encode(['nom' => mb_substr($nom, 0, 80), 'type' => $type, 'tache' => $tacheId, 'ts' => time()]));
         repondre(['id' => $id]);
 
     case 'w_memoire':

@@ -89,6 +89,12 @@ class Relay:
         return (await self.call("w_image", {"task_id": task_id, "data": jpeg_b64, "caption": caption,
                                              "worker_id": self.worker_id}))["id"]
 
+    async def fichier(self, task_id: str, nom: str, contenu: bytes, type_mime: str) -> str:
+        """Fichier produit pour une tâche (rapport HTML…), téléchargeable depuis le téléphone ; renvoie son identifiant."""
+        import base64
+        return (await self.call("w_fichier", {"task_id": task_id, "nom": nom, "type": type_mime, "worker_id": self.worker_id,
+                                               "data": base64.b64encode(contenu).decode()}))["id"]
+
     async def memoire(self, project: str, content: str, digest: str) -> None:
         """Publie la mémoire du projet (CLAUDE.md) pour l'afficher et la modifier depuis le téléphone."""
         await self.call("w_memoire", {"project": project, "content": content, "hash": digest, "worker_id": self.worker_id})

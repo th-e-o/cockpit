@@ -382,6 +382,7 @@ function taskHtml(e) {
       <div class="actions">${state.projects.map((p) => `<button class="btn" data-choose="${esc(p.id)}">${esc(p.name)}</button>`).join('')}</div>`;
   }
   if (t.result && !ACTIVE.has(t.status)) body += `<div class="result">${md(t.result)}</div>`;
+  body += dataHtml(e);
   if (openQuestion(e)) body += questionHtml(t);
   if (!active) body += changesHtml(e) + testsHtml(e) + ciPrHtml(e) + worktreeHtml(e) + nextStepsHtml(e);
 
@@ -848,6 +849,26 @@ $('#memForm').addEventListener('submit', async (ev) => {
 });
 
 // ---------- captures, tests, CI, pull request, revue
+/** Espace Données : tableau agrégé (cases sous le seuil masquées « s »), graphique, requête ; rapport Quarto à télécharger. */
+function dataHtml(e) {
+  let out = '';
+  for (const d of e.events.filter((x) => x.type === 'donnees')) {
+    // SVG produit par le worker (valeurs échappées) ; refusé s'il contient autre chose que du dessin
+    const svg = /^<svg[\s>]/.test(d.svg || '') && !/<script|\son\w+=|href|<foreignObject/i.test(d.svg) ? d.svg : '';
+    const rows = (d.lignes || []).map((r) => `<tr>${r.map((v) => `<td class="${v === 's' ? 'secret' : typeof v === 'number' ? 'num' : ''}">${
+      esc(typeof v === 'number' && !(Number.isInteger(v) && v >= 1900 && v <= 2100) ? v.toLocaleString('fr-FR', { maximumFractionDigits: 2 }) : v ?? '')}</td>`).join('')}</tr>`).join('');
+    out += `<div class="databox"><div class="datatitle">📊 ${esc(d.titre || '')}</div>${svg ? `<div class="datachart">${svg}</div>` : ''}
+      <div class="datatable"><table><thead><tr>${(d.colonnes || []).map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>
+      <div class="hint">${d.masquees ? `${d.masquees} case(s) masquée(s) « s » : moins de ${Number(d.seuil)} individus. ` : ''}Résultat agrégé, calculé sur S3 en lecture seule.</div>
+      <details class="datasql"><summary>Requête SQL</summary><pre><code>${esc(d.sql || '')}</code></pre></details>
+      ${e.task.status === 'done' ? `<div class="fhead"><button class="btn ghost" data-rapport="${esc(e.task.id)}">📄 Rapport Quarto de cette conversation</button></div>` : ''}</div>`;
+  }
+  for (const f of e.events.filter((x) => x.type === 'fichier')) {
+    out += `<div class="fhead"><a class="btn" href="api.php?r=fichier&amp;id=${encodeURIComponent(f.id)}" download="${esc(f.nom)}">⬇ ${esc(f.nom)}</a></div>`;
+  }
+  return out;
+}
+
 function imagesHtml(e) {
   const shots = e.events.filter((x) => x.type === 'image');
   if (!shots.length) return '';
@@ -2003,6 +2024,11 @@ async function onClick(ev) {
     } else if (b.dataset.resume) {
       b.disabled = true;
       await api('reprendre', { task_id: b.dataset.resume });
+      poll();
+    } else if (b.dataset.rapport) {
+      b.disabled = true;
+      const t = await api('tache', { instruction: 'Fais-en un rapport Quarto', reply_to: b.dataset.rapport });
+      onEvent({ kind: 'task', task_id: t.id, task: t });
       poll();
     } else if (b.dataset.cancel) {
       if (!confirm('Arrêter ce Claude ? Le travail en cours est interrompu.')) return;

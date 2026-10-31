@@ -608,3 +608,19 @@ details.adv[open] > summary { margin-bottom: 8px; }
 .btn.mem.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, var(--line)); background: color-mix(in srgb, var(--warn) 10%, transparent); }
 .membadge { font-size: 12px; color: var(--muted); margin-left: 6px; }
 .podcard.starting .dot { background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); animation: listen 1.4s ease-in-out infinite; }
+/* Espace Données : tableau agrégé, graphique (couleurs par série, thèmes clair et sombre), requête repliée */
+.databox { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; padding: 12px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--panel2); }
+.datatitle { font-weight: 600; }
+.datachart svg { width: 100%; height: auto; color: var(--muted); }
+.datachart svg text { fill: var(--muted); }
+.datachart .s0 { fill: #4f46e5; stroke: #4f46e5; } .datachart .s1 { fill: #e8590c; stroke: #e8590c; }
+.datachart .s2 { fill: #0ca678; stroke: #0ca678; } .datachart .s3 { fill: #d6336c; stroke: #d6336c; }
+.datachart .s4 { fill: #1971c2; stroke: #1971c2; } .datachart .s5 { fill: #f59f00; stroke: #f59f00; }
+.datachart .s6 { fill: #7048e8; stroke: #7048e8; } .datachart .s7 { fill: #868e96; stroke: #868e96; }
+.datachart polyline { fill: none !important; }
+.datatable { overflow-x: auto; max-height: 320px; }
+.datatable table { border-collapse: collapse; font-size: 13px; width: 100%; }
+.datatable th, .datatable td { padding: 4px 8px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+.datatable td.num { text-align: right; font-variant-numeric: tabular-nums; }
+.datatable td.secret { color: var(--muted); text-align: center; font-style: italic; }
+.datasql pre { font-size: 12px; white-space: pre-wrap; }

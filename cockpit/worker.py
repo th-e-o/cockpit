@@ -27,6 +27,7 @@ from .podstate import PodState
 from .policy import Policy
 from .relay import Relay, RelayStore
 from .router import Project, load_projects, route
+from . import donnees
 from .store import Task
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -114,6 +115,19 @@ class Worker:
     def __init__(self, relay: Relay):
         self.relay = relay
         self.projects: dict[str, Project] = load_projects(CONFIG / "projects.yaml")
+        # Espace « 📊 Données » : hébergé par le pod qui a config/donnees.yaml (et les identifiants S3 d'Onyxia)
+        try:
+            self.donnees = donnees.Espace.charger(CONFIG / "donnees.yaml", DATA / "donnees")
+        except Exception as e:
+            log.error("espace Données non chargé : %s", e)
+            self.donnees = None
+        if self.donnees:
+            self.projects[donnees.PROJECT_ID] = Project(
+                id=donnees.PROJECT_ID, name="📊 Données", cwd=str(self.donnees.dossier),
+                description="Questions en français sur les données S3 (" + ", ".join(j.nom for j in self.donnees.cfg.jeux)
+                            + ") : chiffres, évolutions, comparaisons, tableaux, graphiques, rapport Quarto. Lecture seule.",
+                keywords=["données", "donnees", "statistique", "évolution", "salaire", "salaires", "combien", "moyenne", "médiane"]
+                         + [j.id for j in self.donnees.cfg.jeux])
         self.store = RelayStore(DATA, relay)
         self.runner = Runner(self.store, Policy.load(CONFIG / "policy.yaml"), services=ORCHESTRATOR)
         self.all_projects: dict[str, Project] = {}  # projets de tous les workers (orchestrateur)
@@ -545,7 +559,32 @@ class Worker:
             if project_id not in self.projects:
                 await self.hand_over(task, project_id)
                 return
+        if project_id == donnees.PROJECT_ID and self.donnees:
+            await self.answer_data(task)
+            return
         await self.runner.run(task, self.projects[project_id])
+
+    async def answer_data(self, task: Task) -> None:
+        """Question à l'espace Données : pas d'agent, une chaîne courte et contrôlée (voir donnees.py)."""
+        self.store.task_update(task, status="running", project=donnees.PROJECT_ID)
+        conv = task.conversation or task.id
+        etape = lambda texte: self.store.publish("message", {"task_id": task.id, "type": "tool_use", "tool": "Donnees", "text": "{}", "label": texte})
+        try:
+            if self.donnees.est_rapport(task.instruction, conv):
+                etape("📄 Met en forme le rapport Quarto")
+                nom, contenu = await asyncio.to_thread(self.donnees.rapport, conv)
+                fid = await self.relay.fichier(task.id, nom, contenu, "text/html")
+                self.store.publish("message", {"task_id": task.id, "type": "fichier", "id": fid, "nom": nom})
+                self.store.task_update(task, status="done", result=f"📄 Rapport prêt : {nom} (bouton ci-dessous). Sa source .qmd est gardée dans le pod.")
+                return
+            r = await self.donnees.repondre(task.instruction, conv, etape)
+            if "colonnes" in r:
+                self.store.publish("message", {"task_id": task.id, "type": "donnees", **{k: r[k] for k in
+                                   ("titre", "colonnes", "lignes", "masquees", "sql", "svg", "seuil")}})
+            self.store.task_update(task, status="done", result=r["texte"])
+        except Exception as e:
+            log.warning("espace Données : %s", e)
+            self.store.task_update(task, status="error", result=f"Je n'ai pas pu répondre : {e}")
 
     async def hand_over(self, task: Task, project_id: str) -> None:
         """Projet hébergé par un autre worker : le relais lui réaffecte la tâche."""

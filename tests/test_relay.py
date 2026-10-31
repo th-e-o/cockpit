@@ -1278,3 +1278,22 @@ def test_memoire_ecrite_des_le_demarrage_d_un_pod(relay_neuf):
     # La carte du tableau de bord sait que la mémoire est en cours d'écriture
     t = next(e["task"] for e in call(p, "etat").json()["events"] if e["kind"] == "task" and e["task_id"] == taches["depot-existant"][0]["id"])
     assert t["memory_init"] is True
+
+
+def test_fichier_d_une_tache(relay):
+    """Rapport produit par un worker : déposé pour sa tâche, téléchargé en pièce jointe par le téléphone seulement."""
+    import base64
+
+    p = paired_phone(relay)
+    wpoll(relay, "pod-fic", False, [{"id": "fic", "name": "Fic"}], hello=True)
+    t = call(p, "tache", {"instruction": "rapport", "project": "fic"}).json()
+    wpoll(relay, "pod-fic", False)
+    corps = {"task_id": t["id"], "nom": "rapport final.html", "type": "text/html", "worker_id": "pod-fic",
+             "data": base64.b64encode(b"<html>ok</html>").decode()}
+    assert worker_call(relay, "w_fichier", {**corps, "worker_id": "autre"}).status_code == 403
+    fid = worker_call(relay, "w_fichier", corps).json()["id"]
+    r = call(p, "fichier", id=fid)
+    assert r.status_code == 200 and r.content == b"<html>ok</html>"
+    assert r.headers["content-disposition"] == 'attachment; filename="rapport-final.html"'
+    assert call(phone(relay), "fichier", id=fid).status_code == 401
+    assert call(p, "fichier", id="../../config").status_code == 404

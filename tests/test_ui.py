@@ -957,3 +957,34 @@ def test_pod_qui_demarre_et_memoire(relay):
         page.locator(".podcard .proj", has_text="Projet sans mémoire").locator("text=mémoire en cours d'écriture").wait_for()
         assert not errors, errors
         browser.close()
+
+
+def test_reponse_de_l_espace_donnees(relay):
+    """Carte d'une question à l'espace Données : réponse, graphique, tableau avec cases masquées, requête, bouton rapport."""
+    from test_relay import call, paired_phone, worker_call, wpoll
+
+    p = paired_phone(relay)
+    wpoll(relay, "pod-data", False, [{"id": "donnees", "name": "📊 Données"}], hello=True)
+    t = call(p, "tache", {"instruction": "Évolution du salaire des gendarmes ?", "project": "donnees"}).json()
+    wpoll(relay, "pod-data", False)
+    from cockpit.donnees import graphique_svg
+    lignes = [[a, c, 20, 30000 + (a - 2015) * (500 if c == "gendarme" else 300)] for a in range(2015, 2024) for c in ("gendarme", "policier")]
+    svg = graphique_svg(["annee", "corps", "effectif", "salaire_moyen"], lignes, {"type": "ligne", "x": "annee", "y": "salaire_moyen", "serie": "corps"})
+    worker_call(relay, "w_evenements", {"worker_id": "pod-data", "events": [
+        {"kind": "message", "task_id": t["id"], "type": "donnees", "titre": "Salaire moyen des gendarmes", "colonnes": ["annee", "effectif", "salaire_moyen"],
+         "lignes": [[2015, 120, 30010.5], [2016, 4, "s"]], "masquees": 1, "seuil": 11, "sql": "SELECT …", "svg": svg},
+        {"kind": "task", "task_id": t["id"], "task": {"status": "done", "project": "donnees", "result": "Hausse de **5 %** en un an."}}]})
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        page, errors = browser_page(p, browser, relay, viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True)
+        box = page.locator(f"#t-{t['id']} .databox")
+        box.wait_for()
+        assert "Salaire moyen des gendarmes" in box.inner_text() and box.locator("svg polyline").count() == 2  # une courbe par corps
+        assert box.locator("td.secret").inner_text() == "s" and "1 case(s) masquée(s)" in box.inner_text()
+        assert box.locator("td.num").first.inner_text() == "2015"  # une année n'est pas un nombre à séparer
+        box.scroll_into_view_if_needed()
+        page.screenshot(path=SHOTS / "26-donnees.png")
+        box.locator("[data-rapport]").click()
+        page.wait_for_selector("section.suite .user >> text=Fais-en un rapport Quarto")
+        assert not errors, errors
+        browser.close()
