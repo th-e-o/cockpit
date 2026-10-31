@@ -1019,7 +1019,7 @@ def test_objectif_et_relecture(relay):
         card.wait_for()
         assert "Plan à valider" in card.inner_text() and "échéance : vendredi" in card.inner_text()
         rv = page.locator(f"#t-{t['id']} .reviewbox")
-        assert "2 remarque(s), 1 corrigée(s)" in rv.inner_text() and "cas vide non géré" in rv.inner_text()
+        assert "2 remarque(s), dont 1 à corriger" in rv.inner_text() and "cas vide non géré" in rv.inner_text()
         plan = page.locator(f"#t-{r['task_id']} .planbox")
         assert "Scénario de démo" in plan.inner_text()
         page.screenshot(path=SHOTS / "27-objectif-plan.png")

@@ -898,11 +898,14 @@ function reviewHtml(e) {
   const r = [...e.events].reverse().find((x) => x.type === 'relecture');
   if (!r) return '';
   const grav = { bloquant: 'bad', important: 'warn', mineur: '' };
-  const items = (r.remarques || []).map((x) => `<li class="${grav[x.gravite] || ''}"><span class="rvtag">${esc(x.gravite)}</span>
-      ${x.fichier ? `<code>${esc(x.fichier)}</code> ` : ''}${esc(x.texte)}${x.corrigee ? ` <span class="okt">${ic('check')} corrigée</span>` : ''}</li>`).join('');
-  const n = (r.remarques || []).length, fixed = (r.remarques || []).filter((x) => x.corrigee).length;
-  return `<details class="reviewbox ${r.erreur ? 'err' : n ? '' : 'clean'}" data-k="relecture"${n && n > fixed ? ' open' : ''}>
-    <summary>${ic('shield')} ${r.erreur ? 'Relecture non faite' : n ? `Relu par un second agent : ${n} remarque(s), ${fixed} corrigée(s)` : 'Relu par un second agent : rien à signaler'}</summary>
+  const list = r.remarques || [];
+  const serious = list.filter((x) => x.gravite !== 'mineur').length;
+  const items = list.map((x) => `<li class="${grav[x.gravite] || ''}"><span class="rvtag">${esc(x.gravite)}</span>
+      ${x.fichier ? `<code>${esc(x.fichier)}</code> ` : ''}${esc(x.texte)}</li>`).join('');
+  const head = r.erreur ? 'Relecture non faite' : !list.length ? 'Relu par un second agent : rien à signaler'
+    : `Relu par un second agent : ${list.length} remarque(s)${serious ? `, dont ${serious} à corriger (première étape proposée)` : ''}`;
+  return `<details class="reviewbox ${r.erreur ? 'err' : list.length ? '' : 'clean'}" data-k="relecture"${serious ? ' open' : ''}>
+    <summary>${ic('shield')} ${head}</summary>${r.raison ? `<div class="hint">Relu car : ${esc(r.raison)}</div>` : ''}
     ${r.avis ? `<p>${esc(r.avis)}</p>` : ''}${items ? `<ul>${items}</ul>` : ''}</details>`;
 }
 

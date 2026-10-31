@@ -296,11 +296,20 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
 
 ## Relecture par un second agent
 
-Après chaque travail qui modifie au moins 15 lignes (`COCKPIT_RELECTURE_LIGNES`), un second agent Claude, sans l'historique du
-premier, relit les modifications : bugs, cas limites, régressions, sécurité, tests manquants. Il corrige ce qui est sûr et local
-(même politique et mêmes validations), sans changer l'approche ni rien pousser ; modifications et tests sont alors recalculés.
-Sur la carte : « Relu par un second agent : N remarque(s), K corrigée(s) », avec la gravité de chacune et son avis. Ses tokens
-s'ajoutent à ceux de la tâche. `COCKPIT_RELECTURE=0` la désactive.
+Relire coûte : le cockpit relit **ce qui est risqué**, pas tout (`review_decision` dans `cockpit/agent.py`).
+
+- **Relu** : un fichier sensible touché, même de quelques lignes (authentification, mots de passe, secrets, droits, sessions,
+  migrations, SQL, CI, Dockerfile, déploiement helm/k8s, `.env`…) ; un gros changement de code (150 lignes et plus,
+  `COCKPIT_RELECTURE_LIGNES`) ; un changement moyen (50 lignes) fait **sans toi** (full auto, mode hard, sous-agent).
+- **Jamais relu** : documentation, données, fichiers de verrouillage, images ; tests en échec (leur correction est déjà la
+  première étape) ; session de 5 h au-delà de 80 % ; au-delà de 12 relectures par jour (`COCKPIT_RELECTURES_JOUR`). Les fichiers
+  de tests ne comptent que pour un tiers.
+- **Bon marché** : le relecteur reçoit le **diff ciblé** (fichiers sensibles d'abord, puis le code le plus modifié, 14 000
+  caractères au plus), travaille en **lecture seule**, avec un modèle intermédiaire (Sonnet) et 6 tours au plus ; il ne
+  corrige rien et ne relance pas les tests.
+- **Utile** : ses remarques sérieuses (bloquantes, importantes) deviennent la **première prochaine étape** « Corriger les
+  remarques de relecture », lancée d'un geste — ou par le full auto. Sur la carte : pourquoi c'était relu, l'avis, les
+  remarques par gravité. `COCKPIT_RELECTURE=0` désactive la relecture.
 
 ## Espace « 📊 Données » : interroger S3 en français
 

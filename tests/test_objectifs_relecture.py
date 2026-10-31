@@ -57,11 +57,13 @@ def test_lecture_du_bloc_de_relecture():
 
 
 class Client:
-    """Premier client : l'auteur écrit 20 lignes ; second client : le relecteur corrige une ligne et rend son avis."""
+    """Premier client : l'auteur modifie un fichier sensible ; second client : le relecteur (lecture seule) rend ses remarques."""
     prompts: list[str] = []
+    options: list = []
 
     def __init__(self, options):
         self.options = options
+        Client.options.append(options)
 
     async def __aenter__(self):
         return self
@@ -74,37 +76,66 @@ class Client:
         self.prompt = prompt
 
     async def receive_response(self):
-        f = Path(self.options.cwd, "module.py")
-        if "relecteur" in self.prompt:
-            f.write_text(f.read_text().replace("x0 = 0", "x0 = 1"))
-            result = '{"remarques": [{"gravite": "important", "fichier": "module.py", "texte": "valeur initiale", "corrigee": true}], "avis": "OK."}'
+        if "relis, en lecture seule" in self.prompt:
+            result = ('{"remarques": [{"gravite": "bloquant", "fichier": "auth.py", "texte": "mot de passe comparé en clair"},'
+                      ' {"gravite": "mineur", "fichier": "auth.py", "texte": "nom"}], "avis": "À corriger."}')
         else:
-            f.write_text("".join(f"x{i} = {i}\n" for i in range(20)))
-            result = "**Fait** — module écrit."
+            Path(self.options.cwd, self.prompt).write_text("".join(f"x{i} = {i}\n" for i in range(6)))
+            result = "**Fait** — écrit."
         yield ResultMessage(subtype="success", duration_ms=1, duration_api_ms=1, is_error=False, num_turns=1, session_id="s",
                             total_cost_usd=0.01, result=result, usage={"input_tokens": 100, "output_tokens": 10})
 
 
-def test_relecture_par_un_second_agent(tmp_path, monkeypatch):
+def test_relecture_ciblee_et_bon_marche(tmp_path, monkeypatch):
     repo = tmp_path / "projet"
     repo.mkdir()
     for args in (["init", "-q", "-b", "main"], ["config", "user.email", "t@x.fr"], ["config", "user.name", "T"],
                  ["commit", "-q", "--allow-empty", "-m", "départ"]):
         subprocess.run(["git", *args], cwd=repo, check=True, capture_output=True)
     monkeypatch.setattr(agent_mod, "ClaudeSDKClient", Client)
-    Client.prompts = []
+    Client.prompts, Client.options = [], []
     runner = Runner(Store(tmp_path / "data"), POLICY)
-    task = Task(id="t1", instruction="écris le module", conversation="t1")
+    proj = Project(id="p", name="P", cwd=str(repo))
+    # 6 lignes dans un fichier ordinaire : pas de relecture
+    t0 = Task(id="t0", instruction="utils.py", conversation="t0")
+    asyncio.run(runner.run(t0, proj))
+    assert len(Client.prompts) == 1 and not [e for e in t0.events if e.get("type") == "relecture"]
+    # 6 lignes dans un fichier sensible : relu, en lecture seule, sur le diff, avec un modèle intermédiaire et peu de tours
+    Client.prompts, Client.options = [], []
+    task = Task(id="t1", instruction="auth.py", conversation="t1")
     runner.store.tasks["t1"] = task
-    asyncio.run(runner.run(task, Project(id="p", name="P", cwd=str(repo))))
-    assert len(Client.prompts) == 2 and "relecteur" in Client.prompts[1] and "module.py" in Client.prompts[1]
+    asyncio.run(runner.run(task, proj))
+    assert len(Client.prompts) == 2 and "+x5 = 5" in Client.prompts[1] and "auth.py" in Client.prompts[1]
+    rv = Client.options[1]
+    assert rv.model == "sonnet" and rv.max_turns == agent_mod.REVIEW_MAX_TURNS
+    hook = rv.hooks["PreToolUse"][0].hooks[0]
+    out = asyncio.run(hook({"tool_name": "Edit", "tool_input": {"file_path": f"{repo}/auth.py"}}, "u", None))
+    assert out["hookSpecificOutput"]["permissionDecision"] == "deny"  # le relecteur ne modifie rien
     review = next(e for e in task.events if e.get("type") == "relecture")
-    assert review["remarques"][0]["corrigee"] and review["avis"] == "OK."
-    assert task.status == "done" and task.result == "**Fait** — module écrit."  # la réponse de l'auteur reste la réponse
-    assert "x0 = 1" in (repo / "module.py").read_text() and task.tokens["input"] == 200  # correction prise en compte, tokens cumulés
-    # Petit changement : pas de relecture
-    Client.prompts = []
-    monkeypatch.setattr(agent_mod, "REVIEW_MIN_LINES", 1000)
-    t2 = Task(id="t2", instruction="petit", conversation="t2")
-    asyncio.run(runner.run(t2, Project(id="p", name="P", cwd=str(repo))))
-    assert len(Client.prompts) == 1
+    assert "sensible" in review["raison"] and len(review["remarques"]) == 2
+    # Remarque sérieuse : sa correction devient la première étape proposée ; la réponse reste celle de l'auteur
+    assert task.next_steps[0]["titre"] == "Corriger les remarques de relecture" and "mot de passe" in task.next_steps[0]["instruction"]
+    assert task.status == "done" and task.result == "**Fait** — écrit." and task.tokens["input"] == 200
+
+
+def test_decision_de_relecture():
+    f = lambda path, n: {"path": path, "added": n, "removed": 0}  # noqa: E731
+    d = agent_mod.review_decision
+    assert d({"files": [f("README.md", 400), f("uv.lock", 900)]}) == (False, "aucun code modifié")
+    assert d({"files": [f("app/util.py", 40)]})[0] is False                       # changement limité
+    assert d({"files": [f("app/util.py", 40)]}, autonomous=False)[0] is False
+    assert d({"files": [f("app/util.py", 60)]}, autonomous=True)[0] is True       # fait sans l'utilisateur
+    assert d({"files": [f("app/core.py", 200)]})[0] is True                        # gros changement
+    assert d({"files": [f("tests/test_core.py", 300)]})[0] is False               # des tests : un tiers du poids
+    assert d({"files": [f("app/auth/login.py", 4)]})[1].startswith("fichier(s) sensible(s)")
+    assert d({"files": [f(".github/workflows/ci.yml", 5)]})[0] is True
+    assert d({"files": [f("app/auth.py", 50)]}, tests={"ok": False})[0] is False   # tests rouges : déjà à corriger
+    assert d({"files": [f("app/auth.py", 50)]}, session=0.9)[0] is False           # session presque pleine
+    assert d({"files": [f("app/auth.py", 50)]}, done_today=99)[0] is False         # plafond du jour
+
+
+def test_diff_du_relecteur_cible():
+    changes = {"files": [{"path": "README.md", "added": 50}, {"path": "app/big.py", "added": 80}, {"path": "app/auth.py", "added": 2}]}
+    patches = {"README.md": "doc", "app/big.py": "x" * 500, "app/auth.py": "+check()"}
+    diff = agent_mod.review_diff(changes, patches, limit=300)
+    assert diff.index("app/auth.py") < diff.index("Non inclus") and "README.md" not in diff and "app/big.py" in diff

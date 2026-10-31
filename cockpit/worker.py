@@ -620,7 +620,7 @@ class Worker:
                         resume_session=t.get("resume_session"), parent=t.get("parent"), model=t.get("model"),
                         model_hint=t.get("model_hint"),
                         isolate=bool(t.get("isolate")), group=t.get("group"), reply_to_task=t.get("reply_to"),
-                        mode=t.get("mode"), objective=t.get("objective"))
+                        mode=t.get("mode"), objective=t.get("objective"), auto=bool(t.get("auto")))
             self.store.tasks[task.id] = task
             if t.get("action"):
                 self.spawn(self.run_action(task, t["action"]))

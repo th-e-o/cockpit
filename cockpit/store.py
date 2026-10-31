@@ -49,6 +49,7 @@ class Task:
     session_delta: float | None = None  # part de la session de 5 h consommée pendant la tâche (0-1, approximative)
     mode: str | None = None  # « atelier » : atelier de décision d'un objectif (lecture seule, definir_plan)
     objective: str | None = None  # objectif auquel la tâche appartient (atelier ou étape)
+    auto: bool = False  # lancée par le full auto ou le mode hard (personne ne la suit en direct)
 
 
 @dataclass
