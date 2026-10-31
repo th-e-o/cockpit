@@ -27,6 +27,7 @@ from .podstate import PodState
 from .policy import Policy
 from .relay import Relay, RelayStore
 from .router import Project, load_projects, route
+from . import donnees
 from .store import Task
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -47,6 +48,8 @@ SUPERSEDED_WINDOW = 300  # deux « remplacé » en moins de 5 min : un vrai doub
 PR_TASKS_SEEN = 40  # dernières tâches de chaque projet examinées (le tableau de bord en affiche jusqu'à 30)
 PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
 ACTIVE = {"pending", "routing", "queued", "running", "waiting_approval"}
+STARTUP_TIMEOUT = 15 * 60  # secondes : au-delà, un pod lancé dont le worker ne s'est pas connecté est signalé en erreur
+STARTUP_POLL = 10
 KEY_HASH_FILE = CONFIG / "worker_key.sha256"  # versionné : seule l'empreinte est publique
 
 log = logging.getLogger("cockpit.worker")
@@ -98,13 +101,37 @@ async def pair() -> None:
     print("Valable 10 minutes, pour un seul appareil.")
 
 
+# Parties d'une réponse de w_poll qui sont du travail à faire une seule fois (le reste : réglages, à appliquer à chaque fois)
+WORK_KEYS = {"tasks", "decisions", "cancels", "choices", "worktree_actions", "steers", "memory_edits"}
+
+
+def _log_failure(t: asyncio.Task) -> None:
+    """Une tâche de fond qui échoue le dit tout de suite dans le journal (et pas au ramasse-miettes, ou jamais)."""
+    if not t.cancelled() and (e := t.exception()):
+        log.error("tâche de fond en échec : %s", e, exc_info=e)
+
+
 class Worker:
     def __init__(self, relay: Relay):
         self.relay = relay
         self.projects: dict[str, Project] = load_projects(CONFIG / "projects.yaml")
+        # Espace « 📊 Données » : hébergé par le pod qui a config/donnees.yaml (et les identifiants S3 d'Onyxia)
+        try:
+            self.donnees = donnees.Espace.charger(CONFIG / "donnees.yaml", DATA / "donnees")
+        except Exception as e:
+            log.error("espace Données non chargé : %s", e)
+            self.donnees = None
+        if self.donnees:
+            self.projects[donnees.PROJECT_ID] = Project(
+                id=donnees.PROJECT_ID, name="📊 Données", cwd=str(self.donnees.dossier),
+                description="Questions en français sur les données S3 (" + ", ".join(j.nom for j in self.donnees.cfg.jeux)
+                            + ") : chiffres, évolutions, comparaisons, tableaux, graphiques, rapport Quarto. Lecture seule.",
+                keywords=["données", "donnees", "statistique", "évolution", "salaire", "salaires", "combien", "moyenne", "médiane"]
+                         + [j.id for j in self.donnees.cfg.jeux])
         self.store = RelayStore(DATA, relay)
         self.runner = Runner(self.store, Policy.load(CONFIG / "policy.yaml"), services=ORCHESTRATOR)
         self.all_projects: dict[str, Project] = {}  # projets de tous les workers (orchestrateur)
+        self._online: dict[str, bool] = {}  # projet -> son pod est en ligne (orchestrateur, d'après le relais)
         self._background: set[asyncio.Task] = set()
         self.runner.spawn_tasks = self.spawn_children
         self.pod = PodState()
@@ -118,6 +145,7 @@ class Worker:
         self.runner.project_status = self.relay.projet_etat
         self.runner.session_usage = self.session_usage
         self.runner.refresh_usage = self.refresh_usage
+        self.runner.submit_plan = self.submit_plan
         self._memory: dict[str, str] = {}  # projet -> empreinte du CLAUDE.md publié
         self.usage = usage.Usage()
         self.autopilot = Autopilot(relay, self.usage)
@@ -140,6 +168,7 @@ class Worker:
         t = asyncio.create_task(coro)
         self._background.add(t)
         t.add_done_callback(self._background.discard)
+        t.add_done_callback(_log_failure)
 
     def projects_payload(self) -> list[dict]:
         return [
@@ -449,11 +478,50 @@ class Worker:
                 p.depot_git, p.branche = repo["url"], ""
                 prefix = f"Dépôt {'privé ' if repo['private'] else ''}{repo['name']} créé : {repo['url']}\n"
                 self._repos_dirty = True
-            text, status = prefix + await svc.lancer_nouveau(p), "done"
+            text = prefix + await svc.lancer_nouveau(p)
+            self.store.audit("service_launch", task=task.id, action=action, result=text)
+            # La carte de lancement suit le pod jusqu'à ce que son projet soit prêt dans le cockpit (ou échoue)
+            text, status = await self.follow_startup(task, p.nom, text)
         except Exception as e:
             text, status = f"Lancement impossible : {e}", "error"
-        self.store.audit("service_launch", task=task.id, action=action, result=text)
+            self.store.audit("service_launch", task=task.id, action=action, result=text)
         self.store.task_update(task, status=status, result=text)
+
+    async def follow_startup(self, task: Task, nom: str, launched: str) -> tuple[str, str]:
+        """Suit le démarrage d'un pod lancé depuis le cockpit : étapes publiées sur sa carte, fin quand son worker est connecté.
+
+        Un pod qui plante, dont l'image est introuvable ou qui ne se connecte pas dans STARTUP_TIMEOUT est signalé en erreur,
+        avec la raison : sans cela, un lancement raté restait « terminé » et le projet n'apparaissait jamais, sans explication."""
+        labels = {"attente": "⏳ Création du pod", "planification": "⏳ En attente de ressources dans le cluster",
+                  "image": "📦 Téléchargement de l'image", "demarrage": "🔧 Installation (dépôt, outils, worker)",
+                  "pret": "🔌 Conteneur prêt : connexion du worker au cockpit"}
+        deadline, shown = time.monotonic() + STARTUP_TIMEOUT, None
+        while time.monotonic() < deadline:
+            if (pr := self.all_projects.get(nom)) and nom not in self.projects and self.project_online(nom):
+                return (f"{launched}\n\n🟢 Projet « {pr.name} » prêt : envoie-lui une instruction. Claude commence par écrire la mémoire "
+                        f"du projet (CLAUDE.md) s'il n'en a pas, pour savoir par où partir.", "done")
+            try:
+                e = await svc.etat_demarrage(nom)
+            except Exception as err:  # kubectl indisponible un instant : on réessaie
+                e = {"etape": shown or "attente", "echec": False, "detail": str(err)[:200]}
+            if e["echec"]:
+                return (f"{launched}\n\n❌ Le pod ne démarre pas — {e['detail']}\nCorrige la cause (ressources, dépôt, image) puis relance, "
+                        f"ou arrête le service depuis l'orchestrateur.", "error")
+            step = labels.get(e["etape"], e["etape"]) + (f" — {e['detail']}" if e.get("detail") else "")
+            if step != shown:
+                shown = step
+                self.store.publish("message", {"task_id": task.id, "type": "tool_use", "tool": "Bash", "text": "{}", "label": step})
+            await asyncio.sleep(STARTUP_POLL)
+        return (f"{launched}\n\n⚠ Toujours pas connecté au bout de {STARTUP_TIMEOUT // 60} min ({shown or 'état inconnu'}). "
+                f"Ouvre VSCode du pod et regarde ~/work/cockpit/data/worker.log, ou relance ./run.sh dans un terminal.", "error")
+
+    async def submit_plan(self, task: Task, resume: str, etapes: list[dict]) -> None:
+        """Plan proposé par un atelier d'objectif : au relais, qui le présente à l'utilisateur pour validation."""
+        await self.relay.call("w_plan", {"objectif": task.objective, "task_id": task.id, "resume": resume, "etapes": etapes,
+                                         "worker_id": self.relay.worker_id})
+
+    def project_online(self, project_id: str) -> bool:
+        return self._online.get(project_id, False)
 
     async def publish_repos(self) -> None:
         """Orchestrateur : liste des dépôts GitHub envoyée au relais au démarrage, puis toutes les 10 minutes."""
@@ -485,6 +553,8 @@ class Worker:
             self.store.task_update(task, status="routing")
             r = await route(self.routing_text(task), self.all_projects or self.projects, with_model=not task.model)
             self.store.audit("route", task=task.id, project=r.project, confidence=r.confidence, reason=r.reason)
+            if task.id in self.runner.cancelled:  # annulée pendant le routage : ni transmise à un autre pod, ni lancée
+                return
             if r.project is None:
                 self.store.task_update(task, status="needs_project", route_reason=r.reason)
                 return
@@ -495,7 +565,32 @@ class Worker:
             if project_id not in self.projects:
                 await self.hand_over(task, project_id)
                 return
+        if project_id == donnees.PROJECT_ID and self.donnees:
+            await self.answer_data(task)
+            return
         await self.runner.run(task, self.projects[project_id])
+
+    async def answer_data(self, task: Task) -> None:
+        """Question à l'espace Données : pas d'agent, une chaîne courte et contrôlée (voir donnees.py)."""
+        self.store.task_update(task, status="running", project=donnees.PROJECT_ID)
+        conv = task.conversation or task.id
+        etape = lambda texte: self.store.publish("message", {"task_id": task.id, "type": "tool_use", "tool": "Donnees", "text": "{}", "label": texte})
+        try:
+            if self.donnees.est_rapport(task.instruction, conv):
+                etape("📄 Met en forme le rapport Quarto")
+                nom, contenu = await asyncio.to_thread(self.donnees.rapport, conv)
+                fid = await self.relay.fichier(task.id, nom, contenu, "text/html")
+                self.store.publish("message", {"task_id": task.id, "type": "fichier", "id": fid, "nom": nom})
+                self.store.task_update(task, status="done", result=f"📄 Rapport prêt : {nom} (bouton ci-dessous). Sa source .qmd est gardée dans le pod.")
+                return
+            r = await self.donnees.repondre(task.instruction, conv, etape)
+            if "colonnes" in r:
+                self.store.publish("message", {"task_id": task.id, "type": "donnees", **{k: r[k] for k in
+                                   ("titre", "colonnes", "lignes", "masquees", "sql", "svg", "seuil")}})
+            self.store.task_update(task, status="done", result=r["texte"])
+        except Exception as e:
+            log.warning("espace Données : %s", e)
+            self.store.task_update(task, status="error", result=f"Je n'ai pas pu répondre : {e}")
 
     async def hand_over(self, task: Task, project_id: str) -> None:
         """Projet hébergé par un autre worker : le relais lui réaffecte la tâche."""
@@ -505,6 +600,8 @@ class Worker:
             self.store.task_update(task, status="error", result=f"Réaffectation impossible : {e}")
             return
         self.store.audit("hand_over", task=task.id, project=project_id, worker=target)
+        # La tâche appartient désormais à l'autre worker : sa copie locale (pending) ne doit plus compter comme du travail en cours
+        self.store.tasks.pop(task.id, None)
 
     def handle(self, msg: dict) -> None:
         if ORCHESTRATOR:
@@ -513,12 +610,17 @@ class Worker:
                     id=p["id"], name=p.get("name", p["id"]), cwd="", description=p.get("description", ""))
                 for p in msg.get("all_projects", [])
             } | self.projects
+            if "all_projects" in msg:
+                self._online = {p["id"]: bool(p.get("online")) for p in msg["all_projects"]}
         for t in msg.get("tasks", []):
+            if (known := self.store.tasks.get(t["id"])) and known.status in ACTIVE:
+                continue  # déjà reçue et en cours : jamais deux agents pour la même tâche
             task = Task(id=t["id"], instruction=t["instruction"], project=t.get("project"),
                         conversation=t.get("conversation"), context=t.get("context") or [],
                         resume_session=t.get("resume_session"), parent=t.get("parent"), model=t.get("model"),
                         model_hint=t.get("model_hint"),
-                        isolate=bool(t.get("isolate")), group=t.get("group"), reply_to_task=t.get("reply_to"))
+                        isolate=bool(t.get("isolate")), group=t.get("group"), reply_to_task=t.get("reply_to"),
+                        mode=t.get("mode"), objective=t.get("objective"))
             self.store.tasks[task.id] = task
             if t.get("action"):
                 self.spawn(self.run_action(task, t["action"]))
@@ -599,10 +701,15 @@ class Worker:
                 await asyncio.sleep(pause)
                 hello = True
                 continue
+            # Lot déjà traité (renvoyé parce que l'accusé de réception s'est perdu) : seuls les réglages sont repris
+            if (lot := msg.get("lot")) and lot == self.relay.ack:
+                msg = {k: v for k, v in msg.items() if k not in WORK_KEYS}
             try:
                 self.handle(msg)
             except Exception:
                 log.exception("message du relais non traité : %s", msg)
+            if lot:
+                self.relay.ack = lot
 
 
 def main() -> None:

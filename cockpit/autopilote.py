@@ -195,7 +195,8 @@ class Autopilot:
             self.note("en attente : aucune proposition (nouvelle recherche dans quelques heures)")
             return
         self._generated = time.time()
-        projects = [p for p in (await self.relay.projet_etat()).get("projects", []) if p.get("online")]
+        # L'espace Données répond à des questions : rien à y proposer de lui-même
+        projects = [p for p in (await self.relay.projet_etat()).get("projects", []) if p.get("online") and p.get("id") != "donnees"]
         sections = []
         for p in projects:
             state = await self.relay.projet_etat(p["id"])

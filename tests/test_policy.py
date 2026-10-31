@@ -105,3 +105,52 @@ def test_tools():
 def test_commandes_de_developpement(cmd, action):
     """Lecture et outils de développement courants : sans validation ; écriture, réseau et suppression : validés."""
     assert POLICY.evaluate("Bash", {"command": cmd}, "/home/onyxia/work/p").action == action
+
+
+@pytest.mark.parametrize("cmd", [
+    # Options globales avant la sous-commande, combinaisons d'options, refspec forcée
+    "git -C /home/onyxia/work/cockpit push --force origin main",
+    "git -c core.x=y push -f origin main",
+    "git push origin +main",
+    "git push origin main -f",
+    "kubectl --namespace user-x delete ns user-x",
+    # Dossier personnel, racine ou espace de travail : toutes les formes
+    "rm -rf ~/", "rm -rf $HOME/", 'rm -rf "$HOME"', "rm -rf /*", "rm -rf --no-preserve-root /",
+    "rm --recursive --force /", "rm -rf /home/onyxia", "rm -rf ~/work",
+    "find ~ -delete", "find / -delete",
+])
+def test_bash_deny_formes_detournees(cmd):
+    assert bash(cmd) == DENY
+
+
+@pytest.mark.parametrize("cmd", [
+    "git push origin --force", "git push -u origin --force", "git push origin --mirror", "git push -uf origin feat",
+    "git push -d origin feat", "git push origin +HEAD:feature",
+    "kubectl -n user-x delete deployment api", "helm -n user-x uninstall vscode-1",
+    "aws s3api delete-object --bucket b --key k", "mc mirror --remove ./vide s3/bucket",
+    "ls & vault kv get secret/x", "echo & kubectl -n x delete deploy y",
+    "sed -i s/ask/allow/ config/policy.yaml",
+])
+def test_jamais_auto_approuve(cmd):
+    """Ce qui détruit sans retour (ou touche la politique) reste demandé, même en grande liberté."""
+    assert bash(cmd) != ALLOW
+    assert not POLICY.trusted("Bash", {"command": cmd}, CWD)
+
+
+def test_regle_utilisateur_ne_couvre_pas_never():
+    p = Policy.load(Path(__file__).parent.parent / "config" / "policy.yaml")
+    p.set_user_rules([{"tool": "Bash", "pattern": "^npm install"}])
+    assert p.user_allowed("Bash", {"command": "npm install x"}, CWD) == "^npm install"
+    assert p.user_allowed("Bash", {"command": "npm install x & helm uninstall cockpit-api"}, CWD) is None
+
+
+def test_politique_jamais_modifiee_sans_validation():
+    for path in (f"{CWD}/config/policy.yaml", f"{CWD}/cockpit/policy.py"):
+        assert POLICY.evaluate("Edit", {"file_path": path}, CWD).action == ASK
+        assert not POLICY.trusted("Edit", {"file_path": path}, CWD)
+
+
+@pytest.mark.parametrize("cmd", ["git -C /x status", "kubectl -n ns get pods", "helm --namespace x list",
+                                 "npm test & npm run dev", "ls 2>&1 | head"])
+def test_options_globales_et_arriere_plan_restent_autorises(cmd):
+    assert bash(cmd) == ALLOW

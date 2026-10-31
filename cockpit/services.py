@@ -156,6 +156,7 @@ async def _run(*cmd: str, timeout: float = 300, stdin: bytes | None = None) -> s
         out, _ = await asyncio.wait_for(proc.communicate(stdin), timeout)
     except asyncio.TimeoutError:
         proc.kill()
+        await proc.wait()  # pas de zombie
         raise ServiceError(f"{cmd[0]} : délai dépassé")
     text = out.decode(errors="replace").strip()
     if proc.returncode:
@@ -201,6 +202,47 @@ async def lister() -> list[dict]:
         pass
     return [{"nom": r["name"].removeprefix(PREFIX), "release": r["name"], "etat_helm": r["status"],
              "pods": pods.get(r["name"], []), "maj": r.get("updated", "")[:19]} for r in mine]
+
+
+# Raisons d'attente d'un conteneur qui ne se résoudront pas seules : le démarrage a échoué
+ECHECS_DEMARRAGE = {"CrashLoopBackOff", "ImagePullBackOff", "ErrImagePull", "InvalidImageName", "CreateContainerConfigError",
+                    "CreateContainerError", "RunContainerError"}
+
+
+async def etat_demarrage(nom: str) -> dict:
+    """Où en est le pod d'un service qui démarre : {etape, echec, detail}.
+
+    etape : attente (pas encore de pod), planification, image, demarrage, pret ; echec : True si le démarrage a échoué pour de bon
+    (image introuvable, conteneur qui plante en boucle…), avec la raison et la fin du journal du conteneur dans detail."""
+    release = PREFIX + nom
+    items = json.loads(await _run("kubectl", "get", "pods", "-n", namespace(), "-l", f"app.kubernetes.io/instance={release}",
+                                  "-o", "json", timeout=30)).get("items", [])
+    if not items:
+        return {"etape": "attente", "echec": False, "detail": ""}
+    pod = items[0]
+    st = pod.get("status", {})
+    statuts = st.get("initContainerStatuses", []) + st.get("containerStatuses", [])
+    for c in statuts:
+        attente = (c.get("state") or {}).get("waiting") or {}
+        if attente.get("reason") in ECHECS_DEMARRAGE:
+            journal = ""
+            try:
+                journal = await _run("kubectl", "logs", "-n", namespace(), pod["metadata"]["name"], "-c", c["name"], "--tail", "15", timeout=30)
+            except ServiceError:
+                pass
+            return {"etape": "echec", "echec": True, "detail": f"{attente['reason']} : {attente.get('message', '')[:300]}\n{journal[-1200:]}".strip()}
+    if st.get("phase") == "Failed":
+        return {"etape": "echec", "echec": True, "detail": st.get("reason") or st.get("message") or "pod en échec"}
+    if st.get("phase") == "Pending":
+        planifie = any(c.get("type") == "PodScheduled" and c.get("status") == "True" for c in st.get("conditions", []))
+        if not planifie:
+            raison = next((c.get("message", "") for c in st.get("conditions", []) if c.get("type") == "PodScheduled"), "")
+            return {"etape": "planification", "echec": False, "detail": raison[:300]}
+        return {"etape": "image", "echec": False, "detail": ""}
+    principaux = st.get("containerStatuses", [])  # un conteneur d'initialisation terminé n'est jamais « ready »
+    if principaux and all(c.get("ready") for c in principaux):
+        return {"etape": "pret", "echec": False, "detail": ""}
+    return {"etape": "demarrage", "echec": False, "detail": ""}
 
 
 async def ingress_hotes(nom: str) -> dict | None:
@@ -341,7 +383,8 @@ def _reply(text: str, error: bool = False) -> dict:
       {"nom": str, "depot_git": str, "branche": str, "cpu": str, "memoire": str, "disque": str, "gpu": bool, "apercu": bool})
 async def lancer_service(args: dict) -> dict:
     try:
-        return _reply(await lancer(_launch_from(args)))
+        # Jamais de remplacement d'un service existant : helm upgrade redémarrerait le pod (tâches en cours perdues)
+        return _reply(await lancer_nouveau(_launch_from(args)))
     except ServiceError as e:
         return _reply(str(e), error=True)
 

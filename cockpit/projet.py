@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import signal
 import time
 from pathlib import Path
 
@@ -58,7 +59,12 @@ async def run_tests(cwd: str, cmd: str, timeout: float = TEST_TIMEOUT) -> dict:
         out, _ = await asyncio.wait_for(proc.communicate(), timeout)
         ok, text = proc.returncode == 0, out.decode(errors="replace")
     except asyncio.TimeoutError:
-        proc.kill()
+        # Tout le groupe de processus (serveur de dev, sous-processus des tests), pas seulement bash ; puis on récupère le zombie
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        await proc.wait()
         ok, text = False, f"délai dépassé ({int(timeout)} s)"
     return {"ok": ok, "command": cmd, "duration_s": round(time.monotonic() - start),
             "output": text[-OUTPUT_TAIL:].strip()}

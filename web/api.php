@@ -26,6 +26,8 @@ const TACHES_FILLES_MAX = 5;            // lancer_en_parallele : sous-tâches pa
 const MODELES = ['rapide', 'standard', 'approfondi'];
 const VARIANTES_MAX = 3;
 const IMAGE_MAX = 1_600_000;            // capture d'écran (JPEG), octets
+const FICHIER_MAX = 8_000_000;          // fichier produit pour une tâche (rapport HTML de l'espace Données), octets
+const FICHIERS_JOURS = 30;              // fichiers gardés autant de jours
 const MEMOIRE_MAX = 50_000;             // CLAUDE.md d'un projet
 const COMMANDES_MAX = 20;               // commandes rapides par liste
 const ACTIFS = ['pending', 'routing', 'queued', 'running', 'waiting_approval'];
@@ -41,13 +43,24 @@ const MEMOIRE_INIT_DELAI = 86400;       // une création automatique de la mémo
 const POLL_BATTEMENT = 10;              // secondes entre deux mises à jour de « vu_le » d'un pod (une écriture, pas deux par seconde)
 const ENTRETIEN_PERIODE = 1800;         // secondes entre deux entretiens de la base (checkpoint, contrôle, sauvegarde)
 const SAUVEGARDES_GARDEES = 3;
-const ETAT_BLOCS = ['projects', 'workers', 'memory', 'autopilot', 'hard', 'week', 'deleted_projects'];
-const SCHEMA_VERSION = 2;               // à incrémenter à chaque changement de schéma dans migrer()
+const ETAT_BLOCS = ['projects', 'workers', 'memory', 'autopilot', 'hard', 'week', 'deleted_projects', 'objectives'];
+const SCHEMA_VERSION = 3;               // à incrémenter à chaque changement de schéma dans migrer()
 const INCITATION_VERIF = 600;           // secondes entre deux vérifications du reste de la semaine
 const INCITATION_PALIERS = [[48, 0.20], [12, 0.10]];  // [heures avant la réinitialisation, part restante minimale]
 const AUTO_PARALLELE_MAX = 6;           // full auto : projets menés de front, au plus
 const HARD_REPONSES_MAX = 4;            // mode hard : réponses automatiques aux questions de Claude, par conversation
 const HARD_HEURES_MAX = 336;            // mode hard : durée maximale d'un armement (14 jours)
+const DEFIS_MAX = 50;                   // challenges WebAuthn en attente, au plus (requêtes anonymes)
+const ABONNEMENTS_MAX = 10;             // abonnements push gardés (les plus récents)
+const PUSH_ECHECS_MAX = 5;              // abonnement push supprimé après autant d'échecs de suite
+const PROPOSITIONS_OUVERTES_MAX = 50;   // propositions en attente par projet
+const OBJECTIFS_MAX = 30;               // objectifs gardés (les plus récents)
+const OBJECTIF_ETAPES_MAX = 12;
+const IDEES_PAR_JOUR = 2;               // idées de nouveaux projets lancées automatiquement par jour (chacune crée un dépôt et un pod)
+// Routes en lecture seule, seules acceptées en GET : toutes les autres exigent un POST JSON (anti-CSRF, y compris
+// depuis une autre page du même domaine, qui pourrait sinon déclencher une action par un simple <img src>).
+const ROUTES_GET = ['moi', 'etat', 'diff', 'bilan', 'depots', 'regles', 'image', 'memoire', 'commandes', 'resume', 'audit',
+                    'appareils', 'vapid', 'hard_apercu', 'compte_rendu', 'fichier'];
 
 /** Règles « Toujours autoriser » pour les workers : [{tool, pattern}]. */
 function regles(): array {
@@ -59,6 +72,13 @@ $CONFIG = require __DIR__ . '/config.php';
 function repondre($data, int $code = 200): never {
     http_response_code($code);
     echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    // Notifications push envoyées après la réponse, hors de toute transaction : un service push lent ne bloque plus
+    // la base (verrou d'écriture) ni le worker.
+    if (!empty($GLOBALS['notifier_apres']) && $code < 400) {
+        $GLOBALS['notifier_apres'] = false;
+        if (function_exists('fastcgi_finish_request')) fastcgi_finish_request();
+        try { envoyer_notifications(); } catch (Throwable $e) { error_log('cockpit: push : ' . $e->getMessage()); }
+    }
     exit;
 }
 
@@ -146,6 +166,19 @@ SQL);
     if (!in_array('etat', $colonnesW, true)) $pdo->exec('ALTER TABLE workers ADD COLUMN etat TEXT');
     if (!in_array('apparu_le', $colonnesW, true)) $pdo->exec('ALTER TABLE workers ADD COLUMN apparu_le INTEGER NOT NULL DEFAULT 0');
     $pdo->exec('DROP TABLE IF EXISTS confiances');  // version 2 : mode confiance retiré
+    // Version 3 : index des requêtes fréquentes (boucle de livraison des workers), compteur de signature des passkeys,
+    // échecs des abonnements push.
+    $pdo->exec('CREATE INDEX IF NOT EXISTS taches_worker ON taches(worker_id, statut);
+                CREATE INDEX IF NOT EXISTS taches_maj ON taches(maj_le);
+                CREATE INDEX IF NOT EXISTS validations_decision ON validations(decision);
+                CREATE INDEX IF NOT EXISTS evenements_ts ON evenements(ts);
+                CREATE INDEX IF NOT EXISTS echecs_ip ON echecs(ip, ts);');
+    if (!in_array('compteur', array_column($pdo->query('PRAGMA table_info(passkeys)')->fetchAll(), 'name'), true)) {
+        $pdo->exec('ALTER TABLE passkeys ADD COLUMN compteur INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!in_array('echecs', array_column($pdo->query('PRAGMA table_info(abonnements_push)')->fetchAll(), 'name'), true)) {
+        $pdo->exec('ALTER TABLE abonnements_push ADD COLUMN echecs INTEGER NOT NULL DEFAULT 0');
+    }
     $pdo->exec('PRAGMA user_version = ' . SCHEMA_VERSION);
     $pdo->exec('COMMIT');
 }
@@ -294,6 +327,8 @@ function exiger_cle_api(): void {
 
 function nouveau_defi(string $type): string {
     q('DELETE FROM defis WHERE expire_le < ?', [time()]);
+    // Requête anonyme : un flot de demandes ne doit pas remplir la base ni monopoliser le verrou d'écriture
+    if ((int)q('SELECT COUNT(*) FROM defis')->fetchColumn() >= DEFIS_MAX) erreur('trop de demandes, réessaie dans quelques minutes', 429);
     $defi = b64url(random_bytes(32));
     q('INSERT INTO defis(defi, type, expire_le) VALUES(?, ?, ?)', [$defi, $type, time() + DEFI_DUREE]);
     return $defi;
@@ -308,6 +343,55 @@ function verifier_client_data(string $clientDataB64, string $type): string {
     $st = q('DELETE FROM defis WHERE defi = ? AND type = ? AND expire_le >= ?', [$cd['challenge'] ?? '', $type, time()]);
     if ($st->rowCount() !== 1) echec('challenge expiré ou inconnu');
     return $brut;
+}
+
+/** Décodeur CBOR minimal (attestationObject, clé COSE) : entiers, chaînes, tableaux, tables, simples. */
+function cbor(string $b, int &$i = 0): mixed {
+    if ($i >= strlen($b)) throw new RuntimeException('CBOR tronqué');
+    $o = ord($b[$i++]);
+    [$type, $info] = [$o >> 5, $o & 0x1f];
+    $n = match (true) {
+        $info < 24 => $info,
+        $info === 24 => ord($b[$i++]),
+        $info === 25 => unpack('n', substr($b, ($i += 2) - 2, 2))[1],
+        $info === 26 => unpack('N', substr($b, ($i += 4) - 4, 4))[1],
+        $info === 27 => unpack('J', substr($b, ($i += 8) - 8, 8))[1],
+        default => throw new RuntimeException('CBOR non pris en charge'),
+    };
+    switch ($type) {
+        case 0: return $n;
+        case 1: return -1 - $n;
+        case 2: case 3: $v = substr($b, $i, $n); $i += $n; return $v;
+        case 4: $v = []; for ($k = 0; $k < $n; $k++) $v[] = cbor($b, $i); return $v;
+        case 5: $v = []; for ($k = 0; $k < $n; $k++) { $cle = cbor($b, $i); $v[$cle] = cbor($b, $i); } return $v;
+        case 7: return match ($info) { 20 => false, 21 => true, default => null };
+    }
+    throw new RuntimeException('CBOR non pris en charge');
+}
+
+/** Contrôle de l'attestation d'une nouvelle passkey : rpId, présence et vérification de l'utilisateur (biométrie),
+ * identifiant et clé publique tels qu'attestés par l'authentificateur (et non tels qu'annoncés par le client). */
+function verifier_attestation(string $attestation, string $id, string $spki): void {
+    try {
+        $att = cbor($attestation);
+        $ad = (string)($att['authData'] ?? '');
+        if (strlen($ad) < 55) throw new RuntimeException('authData trop court');
+        $flags = ord($ad[32]);
+        if (!hash_equals(hash('sha256', hote(), true), substr($ad, 0, 32))) echec('rpId invalide');
+        if (!($flags & 0x01) || !($flags & 0x04)) echec('vérification biométrique requise');
+        if (!($flags & 0x40)) throw new RuntimeException('clé absente de l\'attestation');
+        $long = unpack('n', substr($ad, 53, 2))[1];
+        if (!hash_equals(substr($ad, 55, $long), b64url_dec($id))) echec('identifiant de passkey incohérent');
+        $j = 55 + $long;
+        $cose = cbor($ad, $j);
+        $ec = openssl_pkey_get_details(openssl_pkey_get_public(pem_depuis_spki($spki)))['ec'] ?? [];
+        if (($cose[3] ?? null) !== -7 || ($cose[-1] ?? null) !== 1
+            || str_pad($ec['x'] ?? '', 32, "\0", STR_PAD_LEFT) !== $cose[-2] || str_pad($ec['y'] ?? '', 32, "\0", STR_PAD_LEFT) !== $cose[-3]) {
+            echec('clé publique incohérente avec l\'attestation');
+        }
+    } catch (RuntimeException|TypeError|ValueError $e) {
+        echec('attestation illisible : ' . $e->getMessage());
+    }
 }
 
 function pem_depuis_spki(string $der): string {
@@ -346,10 +430,16 @@ function der_vers_brut(string $der): string {
     return $out;
 }
 
-function notifier(): void {
+/** Demande une notification push : elle part après la réponse (voir repondre), une seule fois par requête. */
+function notifier(): void { $GLOBALS['notifier_apres'] = true; }
+
+/** Push sans contenu vers chaque abonnement, en parallèle, 4 s au plus en tout. */
+function envoyer_notifications(): void {
     $abonnements = q('SELECT endpoint FROM abonnements_push')->fetchAll(PDO::FETCH_COLUMN);
-    if (!$abonnements || !function_exists('curl_init')) return;
+    if (!$abonnements || !function_exists('curl_multi_init')) return;
     [$pem, $pub] = vapid();
+    $multi = curl_multi_init();
+    $poignees = [];
     foreach ($abonnements as $endpoint) {
         $p = parse_url($endpoint);
         $entete = b64url(json_encode(['typ' => 'JWT', 'alg' => 'ES256']));
@@ -358,14 +448,28 @@ function notifier(): void {
         $jwt = "$entete.$charge." . b64url(der_vers_brut($sig));
         $ch = curl_init($endpoint);
         curl_setopt_array($ch, [
-            CURLOPT_POST => true, CURLOPT_POSTFIELDS => '', CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 5,
+            CURLOPT_POST => true, CURLOPT_POSTFIELDS => '', CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 4, CURLOPT_CONNECTTIMEOUT => 3,
             CURLOPT_HTTPHEADER => ['TTL: 3600', 'Urgency: high', 'Content-Length: 0', "Authorization: vapid t=$jwt, k=$pub"],
         ]);
-        curl_exec($ch);
+        curl_multi_add_handle($multi, $ch);
+        $poignees[$endpoint] = $ch;
+    }
+    do {
+        $statut = curl_multi_exec($multi, $actifs);
+        if ($actifs) curl_multi_select($multi, 0.5);
+    } while ($actifs && $statut === CURLM_OK);
+    foreach ($poignees as $endpoint => $ch) {
         $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_multi_remove_handle($multi, $ch);
         curl_close($ch);
         if ($code === 404 || $code === 410) q('DELETE FROM abonnements_push WHERE endpoint = ?', [$endpoint]);
+        elseif ($code >= 200 && $code < 300) q('UPDATE abonnements_push SET echecs = 0 WHERE endpoint = ? AND echecs > 0', [$endpoint]);
+        else {  // injoignable ou en erreur : supprimé après plusieurs échecs de suite (il ne ralentit plus chaque envoi)
+            q('UPDATE abonnements_push SET echecs = echecs + 1 WHERE endpoint = ?', [$endpoint]);
+            q('DELETE FROM abonnements_push WHERE endpoint = ? AND echecs >= ?', [$endpoint, PUSH_ECHECS_MAX]);
+        }
     }
+    curl_multi_close($multi);
 }
 
 // ---------------------------------------------------------------- état
@@ -420,7 +524,7 @@ function tache_publique(array $t): array {
         'model_used' => $extra['model_used'] ?? null, 'models' => $extra['models'] ?? [], 'model_auto' => $extra['model_auto'] ?? null,
         'question' => $extra['question'] ?? null,
         'tokens' => $extra['tokens'] ?? null, 'session_delta' => $extra['session_delta'] ?? null, 'resume_at' => $extra['resume_at'] ?? null,
-        'auto' => !empty($extra['auto']),
+        'auto' => !empty($extra['auto']), 'memory_init' => !empty($extra['memoire_init']),
     ];
 }
 
@@ -539,19 +643,179 @@ function proposition_id(?string $projet, string $titre): string {
     return substr(sha1(($projet ?? '') . '|' . mb_strtolower(trim($titre))), 0, 10);
 }
 
+// ---------------------------------------------------------------- objectifs : atelier de décision, plan validé, étapes enchaînées
+
+/** Consigne de l'atelier : Claude aide à décider (options, arbitrages, questions) puis propose un plan avec definir_plan. */
+function instruction_atelier(array $o): string {
+    return "Atelier de décision pour un objectif" . ($o['horizon'] ? " (échéance : {$o['horizon']})" : '') . " :\n\n{$o['texte']}\n\n"
+        . "Aide-moi à décider comment l'atteindre : comprends la situation, propose plusieurs options contrastées avec leurs avantages, "
+        . "inconvénients, risques et effort, recommande, pose-moi les questions qui tranchent, puis propose le plan avec definir_plan.";
+}
+
+function objectifs_lire(): array { return json_decode(reglage('objectifs') ?? '', true) ?: []; }
+function objectifs_ecrire(array $l): void {
+    usort($l, fn($a, $b) => $b['maj'] <=> $a['maj']);
+    reglage('objectifs', json_encode(array_slice($l, 0, OBJECTIFS_MAX), JSON_UNESCAPED_UNICODE));
+}
+
+/** État de chaque étape d'après sa tâche : a_faire, en_cours, faite, erreur. */
+function etape_etat(array $e): string {
+    if (empty($e['tache'])) return 'a_faire';
+    $st = q('SELECT statut FROM taches WHERE id = ?', [$e['tache']])->fetchColumn();
+    return match ($st) { 'done' => 'faite', 'error', 'cancelled' => 'erreur', false => 'a_faire', default => 'en_cours' };
+}
+
+/** Prochaine étape à lancer d'un objectif en cours : la première non faite, si toutes les précédentes sont faites. */
+function etape_suivante(array $o): ?int {
+    if ($o['etat'] !== 'en_cours') return null;
+    foreach ($o['plan']['etapes'] ?? [] as $k => $e) {
+        $etat = etape_etat($e);
+        if ($etat === 'faite') continue;
+        return $etat === 'a_faire' ? $k : null;  // en cours ou en erreur : on attend (une erreur se relance à la main)
+    }
+    return null;
+}
+
+/** Tâche d'une étape : rappelle l'objectif et le plan validé, puis la consigne de l'étape. */
+function lancer_etape(array &$o, int $k, array $extra = []): ?string {
+    $e = $o['plan']['etapes'][$k];
+    $n = count($o['plan']['etapes']);
+    $liste = implode("\n", array_map(fn($i, $x) => ($i + 1) . ". {$x['titre']}" . ($i < $k ? ' (faite)' : ''), array_keys($o['plan']['etapes']), $o['plan']['etapes']));
+    $texte = "Objectif : {$o['titre']}\n{$o['texte']}\n\nPlan validé :\n$liste\n\nÉtape " . ($k + 1) . "/$n — {$e['titre']} :\n{$e['instruction']}";
+    // Projet de l'étape, sinon celui de l'objectif, sinon l'orchestrateur (qui peut créer un projet si l'étape le demande)
+    $pr = projet_etape($o, $k);
+    $id = $pr ? creer_tache_racine($texte, $pr, $extra + ['objectif' => $o['id'], 'etape' => $k]) : null;
+    if ($id) { $o['plan']['etapes'][$k]['tache'] = $id; $o['maj'] = time(); }
+    return $id;
+}
+
+function projet_etape(array $o, int $k): ?string {
+    return $o['plan']['etapes'][$k]['projet'] ?? $o['projet'] ?? projet_orchestrateur();
+}
+
+/** Objectifs pour le téléphone : avancement de chaque étape. */
+function objectifs_publics(): array {
+    return array_map(function ($o) {
+        $etapes = array_map(fn($e) => ['titre' => $e['titre'], 'instruction' => $e['instruction'], 'projet' => $e['projet'] ?? null,
+                                       'tache' => $e['tache'] ?? null, 'etat' => etape_etat($e)], $o['plan']['etapes'] ?? []);
+        return ['id' => $o['id'], 'titre' => $o['titre'], 'texte' => $o['texte'], 'horizon' => $o['horizon'], 'projet' => $o['projet'],
+                'conversation' => $o['conversation'], 'etat' => $o['etat'], 'resume' => $o['plan']['resume'] ?? '', 'etapes' => $etapes,
+                'faites' => count(array_filter($etapes, fn($e) => $e['etat'] === 'faite')), 'suivante' => etape_suivante($o),
+                'cree' => $o['cree'], 'maj' => $o['maj']];
+    }, objectifs_lire());
+}
+
+/** Une tâche d'objectif terminée : objectif atteint quand toutes ses étapes sont faites (notification). */
+function objectif_tache_terminee(array $t): void {
+    $x = json_decode($t['extra'] ?? '', true) ?: [];
+    if (empty($x['objectif']) || !isset($x['etape'])) return;
+    $l = objectifs_lire();
+    foreach ($l as &$o) {
+        if ($o['id'] !== $x['objectif'] || $o['etat'] !== 'en_cours') continue;
+        if (array_filter($o['plan']['etapes'], fn($e) => etape_etat($e) !== 'faite')) continue;
+        $o['etat'] = 'atteint';
+        $o['maj'] = time();
+        alerte_ajouter('objectif-' . $o['id'], '🎯 Objectif atteint', "« {$o['titre']} » : les " . count($o['plan']['etapes']) . ' étapes du plan sont faites.');
+    }
+    unset($o);
+    objectifs_ecrire($l);
+}
+
+/** Titre court tiré d'une instruction (premiers mots), quand l'outil ou l'utilisateur n'en donne pas. */
+function titre_depuis(string $instruction): string {
+    $mots = preg_split('/\s+/u', trim(preg_replace('/[#*_`>]+/u', ' ', $instruction)), 9, PREG_SPLIT_NO_EMPTY);
+    $titre = implode(' ', array_slice($mots, 0, 8));
+    return mb_substr($titre, 0, 80) . (count($mots) > 8 ? '…' : '');
+}
+
+/** Projet de l'orchestrateur qui crée les nouveaux projets (dépôt, pod) : celui dont la description en parle, sinon le premier. */
+function projet_orchestrateur(): ?string {
+    $orch = q('SELECT id FROM workers WHERE orchestrateur = 1 AND vu_le > ? ORDER BY vu_le DESC', [time() - WORKER_EN_LIGNE])->fetchAll(PDO::FETCH_COLUMN);
+    $candidats = array_values(array_filter(projets(), fn($p) => in_array($p['worker'], $orch, true)));
+    foreach ($candidats as $p) if (preg_match('/nouveau\s+projet/iu', (string)($p['description'] ?? ''))) return $p['id'];
+    return $candidats[0]['id'] ?? null;
+}
+
+/** Instruction d'une idée de nouveau projet, confiée à l'orchestrateur. */
+function instruction_idee(array $p): string {
+    return "Nouveau projet à réaliser (idée « {$p['titre']} ») : crée un dépôt GitHub privé dédié, lance un pod dessus et confie-lui "
+        . "la demande ci-dessous avec confier_au_projet. Ne travaille pas dans un projet existant.\n\n" . $p['instruction'];
+}
+
+/** La proposition entre-t-elle dans ce que le full auto (ou le mode hard) lance ? Réglages $a : ideas (idées de nouveaux
+ * projets, sans projet), external (idées envoyées par un outil avec la clé d'API) ; $portee : projets choisis (vide : tous). */
+function proposition_eligible(array $p, array $a, array $portee): bool {
+    if ($p['etat'] !== 'ouverte' || (!empty($p['externe']) && empty($a['external']))) return false;
+    if ($p['project'] === null) return !empty($a['ideas']);
+    return !$portee || in_array($p['project'], $portee, true);
+}
+
+/** Lance une proposition : une idée de nouveau projet part chez l'orchestrateur ; une prochaine étape continue la conversation
+ * d'où elle vient (même session Claude, même contexte) ; le reste démarre une conversation. Renvoie l'id de la tâche, ou null. */
+function lancer_proposition(array $p, array $extra = []): ?string {
+    if ($p['project'] === null) {
+        $orch = projet_orchestrateur();
+        return $orch ? creer_tache_racine(instruction_idee($p), $orch, $extra + ['idee' => true]) : null;
+    }
+    if (($p['source'] ?? '') === 'suite' && !empty($p['tache'])) {
+        $parent = q('SELECT * FROM taches WHERE id = ?', [$p['tache']])->fetch();
+        if ($parent && $parent['projet'] === $p['project']) {
+            // Dernière tâche de la conversation : la suite reprend là où elle en est (session et contexte)
+            $dernier = q('SELECT * FROM taches WHERE conversation = ? ORDER BY cree_le DESC, rowid DESC LIMIT 1',
+                         [$parent['conversation'] ?? $parent['id']])->fetch() ?: $parent;
+            return creer_tache_suite($dernier, $p['instruction'], $extra);
+        }
+    }
+    return creer_tache_racine($p['instruction'], $p['project'], $extra);
+}
+
+function conversation_de(string $tache): string {
+    return (string)(q('SELECT COALESCE(conversation, id) FROM taches WHERE id = ?', [$tache])->fetchColumn() ?: $tache);
+}
+
+/** Une conversation avance (nouveau message, nouvelles étapes) : ses prochaines étapes encore ouvertes sont dépassées.
+ * Celle qui vient d'être lancée telle quelle est marquée lancée ; les autres sont closes (la nouvelle tâche proposera les siennes).
+ * Sans cela, le full auto relançait plus tard une étape déjà faite, hors de sa conversation. */
+function fermer_suites(array &$m, string $conversation, ?string $nouvelle = null, string $instruction = '', ?string $sauf = null): void {
+    $taches = array_values(array_unique(array_filter(array_map(fn($p) => $p['etat'] === 'ouverte' && ($p['source'] ?? '') === 'suite'
+        && $p['tache'] && $p['tache'] !== $sauf ? $p['tache'] : null, $m['proposals']))));
+    if (!$taches) return;
+    $conv = [];
+    foreach (q('SELECT id, COALESCE(conversation, id) c FROM taches WHERE id IN (' . implode(',', array_fill(0, count($taches), '?')) . ')', $taches)->fetchAll() as $r) {
+        $conv[$r['id']] = $r['c'];
+    }
+    foreach ($m['proposals'] as &$p) {
+        if ($p['etat'] !== 'ouverte' || ($p['source'] ?? '') !== 'suite' || ($conv[$p['tache']] ?? null) !== $conversation) continue;
+        $lancee = $nouvelle && trim($p['instruction']) === trim($instruction);
+        $p['etat'] = $lancee ? 'lancee' : 'ignoree';
+        if ($lancee) $p['lancee_par'] = $nouvelle;
+        $p['maj'] = time();
+    }
+    unset($p);
+}
+
 /** Ajoute des propositions [{titre, instruction}] pour un projet ; celles déjà connues (même titre) sont ignorées. */
-function memoire_proposer(array &$m, ?string $projet, array $items, string $source, ?string $tache = null): int {
+function memoire_proposer(array &$m, ?string $projet, array $items, string $source, ?string $tache = null, bool $externe = false): int {
     $connues = array_column($m['proposals'], 'id');
+    $ouvertes = count(array_filter($m['proposals'], fn($p) => $p['etat'] === 'ouverte' && $p['project'] === $projet));
     $n = 0;
     foreach ($items as $it) {
-        $titre = trim((string)($it['titre'] ?? $it['title'] ?? ''));
-        $instruction = trim((string)($it['instruction'] ?? ''));
+        if ($ouvertes + $n >= PROPOSITIONS_OUVERTES_MAX) break;  // la file d'un projet reste lisible (et la mémoire légère)
+        $instruction = trim((string)($it['instruction'] ?? $it['description'] ?? ''));
+        $titre = trim((string)($it['titre'] ?? $it['title'] ?? '')) ?: titre_depuis($instruction);
         if ($titre === '' || $instruction === '' || mb_strlen($instruction) > 10000) continue;
-        $id = proposition_id($projet, $titre);
-        if (in_array($id, $connues, true)) continue;
+        // Une prochaine étape peut revenir dans une tâche suivante (même titre) : elle est propre à sa tâche, et seul un doublon
+        // encore ouvert l'écarte. Les autres sources gardent leur identité : une idée ignorée ne revient pas.
+        $id = proposition_id($projet, $source === 'suite' && $tache ? "$titre|$tache" : $titre);
+        $dejaOuverte = (bool)array_filter($m['proposals'], fn($p) => $p['etat'] === 'ouverte' && $p['project'] === $projet
+            && mb_strtolower($p['titre']) === mb_strtolower(mb_substr($titre, 0, 120)));
+        if (in_array($id, $connues, true) || $dejaOuverte) continue;
         $connues[] = $id;
         $m['proposals'][] = ['id' => $id, 'project' => $projet, 'titre' => mb_substr($titre, 0, 120), 'instruction' => $instruction,
-                             'etat' => 'ouverte', 'source' => $source, 'tache' => $tache, 'cree' => time(), 'maj' => time()];
+                             'etat' => 'ouverte', 'source' => $source, 'tache' => $tache, 'cree' => time(), 'maj' => time()]
+                             // Proposition d'un outil externe (clé d'API) : lancée par le full auto ou le mode hard seulement si
+                             // l'utilisateur l'a accepté en les armant (option « idées de tes outils »)
+                             + ($externe ? ['externe' => true] : []);
         $n++;
     }
     return $n;
@@ -560,6 +824,7 @@ function memoire_proposer(array &$m, ?string $projet, array $items, string $sour
 /** Tâche terminée : le projet est mis à jour dans l'état de mémoire et ses prochaines étapes deviennent des propositions. */
 function memoire_tache_terminee(string $id): void {
     $t = q('SELECT * FROM taches WHERE id = ?', [$id])->fetch();
+    if ($t && $t['statut'] === 'done') objectif_tache_terminee($t);
     if (!$t || !$t['projet'] || isset(projets_supprimes()[$t['projet']])) return;
     $x = json_decode($t['extra'] ?? '', true) ?: [];
     $m = memoire_lire();
@@ -574,7 +839,10 @@ function memoire_tache_terminee(string $id): void {
     }
     unset($p);
     if (!$trouve) $m['projects'][] = $entree;
-    if ($t['statut'] === 'done' && empty($x['next_steps_dismissed'])) memoire_proposer($m, $t['projet'], $x['next_steps'] ?? [], 'suite', $id);
+    if ($t['statut'] === 'done' && empty($x['next_steps_dismissed'])) {
+        fermer_suites($m, $t['conversation'] ?? $t['id'], sauf: $id);  // les étapes d'avant sont remplacées par celles-ci
+        memoire_proposer($m, $t['projet'], $x['next_steps'] ?? [], 'suite', $id);
+    }
     memoire_ecrire($m);
 }
 
@@ -596,6 +864,18 @@ function memoire_projet_etat(string $id): array {
 }
 
 /** Projets (de la liste donnée, ou tous) dont la mémoire est absente et que la création automatique n'a pas déjà tentée aujourd'hui. */
+/** Nouveau pod lancé depuis le cockpit sur un dépôt existant : création de la mémoire du projet si elle manque. */
+function memoire_au_demarrage(string $id): void {
+    if ($id === '' || memoire_projet_etat($id)['state'] !== 'absente') return;
+    $lancement = q("SELECT action FROM taches WHERE action LIKE '%\"lancer_service\"%' AND action LIKE ? ORDER BY cree_le DESC LIMIT 1",
+                   ['%"nom":"' . $id . '"%'])->fetchColumn();
+    $a = $lancement ? json_decode($lancement, true) : null;
+    if (!$a || ($a['depot_git'] ?? '') === '' || !empty($a['creer_depot'])) return;
+    if (q("SELECT 1 FROM taches WHERE projet = ? AND statut IN ('pending','routing','queued','running','waiting_approval')", [$id])->fetchColumn()) return;
+    reglage('memoire_init:' . $id, (string)time());
+    creer_tache_racine(MEMOIRE_INSTRUCTION, $id, ['memoire_init' => true]);
+}
+
 function projets_sans_memoire(array $portee = []): array {
     $out = [];
     foreach (projets() as $p) {
@@ -633,7 +913,8 @@ function memoire_publique(): array {
 function autopilote_lire(): array {
     $a = json_decode(reglage('autopilote') ?? '', true) ?: [];
     $a += ['enabled' => false, 'until' => 0, 'threshold' => AUTO_SEUIL, 'max_per_day' => AUTO_PAR_JOUR, 'max_parallel' => 1, 'projects' => [], 'day' => '', 'launched_today' => 0,
-           'failures' => 0, 'stopped' => '', 'since' => 0, 'last' => 0, 'total' => 0];
+           'failures' => 0, 'stopped' => '', 'since' => 0, 'last' => 0, 'total' => 0,
+           'ideas' => true, 'external' => true];  // idées de nouveaux projets et idées de tes outils : comprises par défaut
     if ($a['enabled'] && time() >= (int)$a['until']) { $a['enabled'] = false; $a['stopped'] = 'durée écoulée'; }
     if ($a['day'] !== date('Y-m-d')) { $a['day'] = date('Y-m-d'); $a['launched_today'] = 0; }
     return $a;
@@ -702,14 +983,29 @@ function incitation_hard(): void {
         $reste = round($e['remaining'] * 100);
         $quand = $e['hours_left'] >= 24 ? round($e['hours_left'] / 24, 1) . ' j' : round($e['hours_left']) . ' h';
         $tokens = $e['remaining_tokens'] !== null ? ' (≈ ' . tokens_lisibles($e['remaining_tokens']) . ' de tokens' . ($e['tasks_estimate'] ? ', ≈ ' . $e['tasks_estimate'] . ' tâches' : '') . ')' : '';
+        $file = hard_apercu([])['total'];
+        $attente = $file ? " $file tâche(s) et idée(s) attendent déjà." : ' Claude proposera des tâches à partir de l\'historique de tes projets.';
         alerte_ajouter('incitation-hard', "☠ Il reste $reste % de la semaine",
-            "Ta limite hebdomadaire se réinitialise dans $quand : il reste$tokens à dépenser, sinon ils sont perdus. Active le mode hard pour les utiliser.");
+            "Ta limite hebdomadaire se réinitialise dans $quand : il reste$tokens à dépenser, sinon ils sont perdus.$attente Active le mode hard pour les utiliser.");
     }
     reglage('incitation', json_encode($etat));
 }
 
 /** Y a-t-il quelque chose à livrer à ce worker ? Lecture seule, sans verrou d'écriture : la boucle d'écoute l'appelle deux fois par
  * seconde par pod, et prendre un verrou d'écriture à chaque tour fragilisait SQLite (WAL qui ne se vide plus, corruption). */
+/** Partie de la réponse de w_poll toujours recalculée (réglages, règles, projets), y compris quand un lot est renvoyé. */
+function reponse_poll_commune(bool $orchestrateur): array {
+    $h = hard_lire();
+    return [
+        'autopilot' => autopilote_lire(),
+        'hard' => $h['enabled'],
+        'hard_projects' => $h['projects'],
+        'rules' => regles(),
+        // Liste globale : l'orchestrateur route les tâches sans projet parmi tous les projets.
+        'all_projects' => $orchestrateur ? projets() : [],
+    ];
+}
+
 function travail_pour_worker(string $wid, string $mienne): bool {
     foreach ([["SELECT 1 FROM taches WHERE livree = 0 AND statut = 'pending' AND $mienne LIMIT 1"],
               ['SELECT 1 FROM validations v JOIN taches t ON t.id = v.tache_id WHERE v.decision IS NOT NULL AND v.decision_livree = 0 AND t.worker_id = ? LIMIT 1'],
@@ -731,6 +1027,12 @@ function entretien_base(): void {
     if (time() - (int)(reglage('entretien') ?? 0) < ENTRETIEN_PERIODE) return;
     reglage('entretien', (string)time());
     $pdo = db();
+    // Lignes devenues inutiles : sessions expirées, challenges et échecs d'authentification anciens
+    q('DELETE FROM sessions WHERE expire_le < ?', [time()]);
+    q('DELETE FROM defis WHERE expire_le < ?', [time()]);
+    q('DELETE FROM echecs WHERE ts < ?', [time() - LIMITE_ECHECS_IP[1]]);
+    q('DELETE FROM appairages WHERE expire_le < ?', [time()]);
+    foreach (glob(__DIR__ . '/data/fichiers/*') ?: [] as $f) if (filemtime($f) < time() - FICHIERS_JOURS * 86400) @unlink($f);
     try { $pdo->query('PRAGMA wal_checkpoint(PASSIVE)')->fetchAll(); } catch (Throwable) {}
     try {
         $controle = $pdo->query('PRAGMA quick_check(1)')->fetchColumn();
@@ -823,7 +1125,7 @@ function taches_a_reprendre(array $portee = []): array {
 }
 
 /** Aperçu du mode hard : ce qu'il compte faire, dans l'ordre (reprises d'abord, puis propositions), et ce qui l'en empêche. */
-function hard_apercu(array $portee): array {
+function hard_apercu(array $portee, array $options = ['ideas' => true, 'external' => true]): array {
     $m = memoire_lire();
     $resumes = taches_a_reprendre($portee);
     $plan = [];
@@ -834,9 +1136,23 @@ function hard_apercu(array $portee): array {
     $projets = [];
     $enLigne = [];
     foreach (projets() as $p) $enLigne[$p['id']] = $p['online'];
+    $orch = projet_orchestrateur();
+    foreach (objectifs_lire() as $o) {  // objectifs en cours : leur prochaine étape passe avant les propositions
+        if (($k = etape_suivante($o)) === null) continue;
+        $pr = projet_etape($o, $k);
+        if ($pr !== null && $portee && !in_array($pr, $portee, true)) continue;
+        $plan[] = ['kind' => 'objectif', 'project' => $pr, 'titre' => "{$o['titre']} — étape " . ($k + 1) . '/' . count($o['plan']['etapes']) . " : {$o['plan']['etapes'][$k]['titre']}",
+                   'since' => (int)$o['maj'], 'online' => $enLigne[$pr] ?? false, 'detail' => 'objectif'];
+    }
+    $compte = ['ideas' => 0, 'external' => 0];  // de quoi afficher les options seulement quand elles servent
     foreach ($m['proposals'] as $x) {
-        if ($x['etat'] !== 'ouverte' || ($x['project'] !== null && $portee && !in_array($x['project'], $portee, true))) continue;
-        $plan[] = ['kind' => 'proposition', 'project' => $x['project'], 'titre' => $x['titre'], 'since' => (int)$x['cree'], 'online' => $enLigne[$x['project']] ?? false, 'detail' => $x['source']];
+        if ($x['etat'] !== 'ouverte') continue;
+        if ($x['project'] === null) $compte['ideas']++;
+        if (!empty($x['externe'])) $compte['external']++;
+        if (!proposition_eligible($x, $options, $portee)) continue;
+        $idee = $x['project'] === null;
+        $plan[] = ['kind' => $idee ? 'idee' : 'proposition', 'project' => $x['project'], 'titre' => $x['titre'], 'since' => (int)$x['cree'],
+                   'online' => $idee ? $orch !== null : ($enLigne[$x['project']] ?? false), 'detail' => $x['source'], 'external' => !empty($x['externe'])];
     }
     $memoire = array_column($m['projects'], null, 'id');
     foreach (projets() as $p) {
@@ -847,7 +1163,7 @@ function hard_apercu(array $portee): array {
     }
     $sem = estimation_semaine();
     $moy = $sem['avg_task_tokens'] ?? null;
-    return ['plan' => array_slice($plan, 0, 14), 'total' => count($plan), 'projects' => $projets,
+    return ['plan' => array_slice($plan, 0, 14), 'total' => count($plan), 'projects' => $projets, 'counts' => $compte, 'ideas_per_day' => IDEES_PAR_JOUR,
             'tokens' => ['avg_task' => $moy, 'plan' => $moy ? $moy * count($plan) : null, 'remaining' => $sem['remaining_tokens'] ?? null,
                          'remaining_ratio' => $sem['remaining'] ?? null, 'hours_left' => $sem['hours_left'] ?? null]];
 }
@@ -881,6 +1197,7 @@ function autopilote_tache_terminee(string $statut): void {
 // ---------------------------------------------------------------- routes
 
 $route = $_GET['r'] ?? '';
+if ($_SERVER['REQUEST_METHOD'] !== 'POST' && !in_array($route, ROUTES_GET, true)) erreur('POST attendu', 405);
 $in = corps();
 
 switch ($route) {
@@ -925,8 +1242,11 @@ switch ($route) {
         if (!openssl_pkey_get_public($pem)) erreur('clé publique invalide');
         $id = (string)($in['id'] ?? '');
         if (!preg_match('/^[A-Za-z0-9_-]{16,1024}$/', $id)) erreur('identifiant invalide');
+        verifier_attestation(b64url_dec((string)($in['attestationObject'] ?? '')), $id, b64url_dec((string)($in['publicKey'] ?? '')));
         $nom = mb_substr(trim((string)($in['name'] ?? '')) ?: 'Appareil', 0, 60);
-        q('INSERT OR REPLACE INTO passkeys(id, cle_publique, nom, cree_le) VALUES(?, ?, ?, ?)', [$id, $pem, $nom, time()]);
+        // Jamais de remplacement : une passkey existante ne peut pas être écrasée par une autre clé
+        if (q('SELECT 1 FROM passkeys WHERE id = ?', [$id])->fetchColumn()) erreur('passkey déjà enregistrée', 409);
+        q('INSERT INTO passkeys(id, cle_publique, nom, cree_le) VALUES(?, ?, ?, ?)', [$id, $pem, $nom, time()]);
         repondre(['ok' => true]);
 
     case 'passkey_options_connexion':
@@ -945,7 +1265,10 @@ switch ($route) {
         $ok = openssl_verify($authData . hash('sha256', $clientData, true), b64url_dec((string)($in['signature'] ?? '')),
                              $pk['cle_publique'], OPENSSL_ALGO_SHA256);
         if ($ok !== 1) echec('signature invalide');
-        q('UPDATE passkeys SET utilisee_le = ? WHERE id = ?', [time(), $pk['id']]);
+        // Compteur de signatures : s'il est tenu (non nul), il doit augmenter ; sinon la clé a été clonée
+        $compteur = unpack('N', substr($authData, 33, 4))[1];
+        if (($compteur || $pk['compteur']) && $compteur <= (int)$pk['compteur']) echec('compteur de la passkey incohérent (clé clonée ?)');
+        q('UPDATE passkeys SET utilisee_le = ?, compteur = ? WHERE id = ?', [time(), $compteur, $pk['id']]);
         ouvrir_session();
         repondre(['ok' => true]);
 
@@ -959,9 +1282,17 @@ switch ($route) {
         repondre(q('SELECT id, nom, cree_le, utilisee_le FROM passkeys ORDER BY cree_le')->fetchAll());
 
     case 'appareil_supprimer':
+        // Un appareil perdu : sa passkey ne suffit pas, ses sessions doivent tomber aussi. Elles ne sont pas liées à une
+        // passkey (l'appairage en ouvre une avant) : toutes les autres sessions sont fermées, seule la tienne reste.
         exiger_session();
         q('DELETE FROM passkeys WHERE id = ?', [(string)($in['id'] ?? '')]);
+        q('DELETE FROM sessions WHERE jeton_hash != ?', [h($_COOKIE[SESSION_COOKIE] ?? '')]);
         repondre(['ok' => true]);
+
+    case 'sessions_fermer': // déconnecte tous les autres appareils (cookie volé, téléphone perdu)
+        exiger_session();
+        $n = q('DELETE FROM sessions WHERE jeton_hash != ?', [h($_COOKIE[SESSION_COOKIE] ?? '')])->rowCount();
+        repondre(['ok' => true, 'closed' => $n]);
 
     // ----- notifications
     case 'vapid':
@@ -973,6 +1304,7 @@ switch ($route) {
         $endpoint = (string)($in['endpoint'] ?? '');
         if (!preg_match('#^https://[^\s]+$#', $endpoint)) erreur('abonnement invalide');
         q('INSERT OR IGNORE INTO abonnements_push(endpoint, cree_le) VALUES(?, ?)', [$endpoint, time()]);
+        q('DELETE FROM abonnements_push WHERE endpoint NOT IN (SELECT endpoint FROM abonnements_push ORDER BY cree_le DESC LIMIT ?)', [ABONNEMENTS_MAX]);
         repondre(['ok' => true]);
 
     // ----- téléphone
@@ -995,6 +1327,7 @@ switch ($route) {
             'autopilot' => autopilote_lire(),
             'hard' => hard_lire(),
             'week' => estimation_semaine(),
+            'objectives' => objectifs_publics(),
             'deleted_projects' => (object)projets_supprimes(),
         ];
         $connues = explode('.', (string)($_GET['h'] ?? ''));
@@ -1055,7 +1388,7 @@ switch ($route) {
         $id = bin2hex(random_bytes(5));
         $source = $nouveauDepot ? 'nouveau dépôt GitHub ' . ($nouveauDepot['prive'] ? 'privé ' : 'public ') . "« {$nouveauDepot['nom']} »" : ($depot !== '' ? preg_replace('#^https://(www\.)?github\.com/#', '', $depot) . ($branche !== '' ? " ($branche)" : '') : 'dossier vide');
         q('INSERT INTO taches(id, instruction, cree_le, maj_le, worker_id, conversation, action) VALUES(?, ?, ?, ?, ?, ?, ?)',
-          [$id, "🚀 Nouveau pod « $nom » : $source", time(), time(), $orch, $id, json_encode($action, JSON_UNESCAPED_UNICODE)]);
+          [$id, "Nouveau pod « $nom » : $source", time(), time(), $orch, $id, json_encode($action, JSON_UNESCAPED_UNICODE)]);
         evenement_tache($id);
         repondre(tache_publique(q('SELECT * FROM taches WHERE id = ?', [$id])->fetch()));
 
@@ -1124,6 +1457,20 @@ switch ($route) {
         readfile($f);
         exit;
 
+    case 'fichier': // téléchargement d'un fichier produit pour une tâche (toujours en pièce jointe : jamais affiché dans le cockpit)
+        exiger_session();
+        $id = (string)($_GET['id'] ?? '');
+        $dir = __DIR__ . '/data/fichiers';
+        if (!preg_match('/^[0-9a-f]{16}$/', $id) || !is_file("$dir/$id.bin")) erreur('fichier introuvable ou expiré', 404);
+        $meta = json_decode((string)@file_get_contents("$dir/$id.json"), true) ?: [];
+        header('Content-Type: ' . ($meta['type'] ?? 'application/octet-stream'));
+        header('Content-Disposition: attachment; filename="' . str_replace('"', '', $meta['nom'] ?? 'fichier') . '"');
+        header('X-Content-Type-Options: nosniff');
+        header('Cache-Control: private, no-store');
+        header('Content-Length: ' . filesize("$dir/$id.bin"));
+        readfile("$dir/$id.bin");
+        exit;
+
     case 'memoire': // CLAUDE.md d'un projet, publié par son worker
         exiger_session();
         $m = json_decode(reglage('memoire:' . (string)($_GET['project'] ?? '')) ?? 'null', true);
@@ -1180,8 +1527,16 @@ switch ($route) {
         $t = q('SELECT * FROM taches WHERE id = ?', [(string)($in['task_id'] ?? '')])->fetch() ?: erreur('tâche introuvable', 404);
         $extra = json_decode($t['extra'] ?? '', true) ?: [];
         $extra['next_steps_dismissed'] = true;
+        debut();
         q('UPDATE taches SET extra = ? WHERE id = ?', [json_encode($extra, JSON_UNESCAPED_UNICODE), $t['id']]);
+        $m = memoire_lire();
+        foreach ($m['proposals'] as &$p) {  // les mêmes étapes, dans les propositions, sont ignorées aussi
+            if ($p['etat'] === 'ouverte' && ($p['tache'] ?? null) === $t['id']) { $p['etat'] = 'ignoree'; $p['maj'] = time(); }
+        }
+        unset($p);
+        memoire_ecrire($m);
         evenement_tache($t['id']);
+        valider();
         repondre(['ok' => true]);
 
     case 'worktree': // fusionner ou jeter la branche d'une tâche lancée en parallèle
@@ -1239,7 +1594,14 @@ switch ($route) {
         $suite = null;
         if (!empty($in['reply_to'])) {
             // Suite d'une conversation : même projet et même modèle par défaut, la session Claude sera reprise.
-            $parent = q('SELECT id, projet, conversation, modele FROM taches WHERE id = ?', [(string)$in['reply_to']])->fetch() ?: erreur('conversation introuvable');
+            $parent = q('SELECT id, projet, conversation, modele, extra FROM taches WHERE id = ?', [(string)$in['reply_to']])->fetch() ?: erreur('conversation introuvable');
+            // Réponse dans un atelier d'objectif encore ouvert : la suite reste un atelier (lecture seule, definir_plan)
+            $px = json_decode($parent['extra'] ?? '', true) ?: [];
+            if (($px['mode'] ?? '') === 'atelier') {
+                foreach (objectifs_lire() as $o) {
+                    if ($o['id'] === ($px['objectif'] ?? '') && in_array($o['etat'], ['atelier', 'plan_propose'], true)) $atelier = ['mode' => 'atelier', 'objectif' => $o['id']];
+                }
+            }
             $suite = $parent['id'];
             $conversation = $parent['conversation'] ?? $parent['id'];
             $projet ??= $parent['projet'];
@@ -1255,11 +1617,18 @@ switch ($route) {
             $texte = $variantes > 1 ? $instruction . "\n\n(Variante " . ($k + 1) . "/$variantes : d'autres agents Claude traitent la même "
                 . "demande en parallèle, chacun dans sa branche. Prends une approche qui te soit propre, va au bout et commite ; "
                 . "si le résultat est visuel, joins une capture avec capturer_ecran.)" : $instruction;
-            q('INSERT INTO taches(id, instruction, projet, nouvelle_session, cree_le, maj_le, worker_id, conversation, suite_de, modele, isoler, groupe)
-               VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+            q('INSERT INTO taches(id, instruction, projet, nouvelle_session, cree_le, maj_le, worker_id, conversation, suite_de, modele, isoler, groupe, extra)
+               VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
               [$tid, $texte, $projet, empty($in['new_session']) ? 0 : 1, time(), time(), worker_du_projet($projet),
-               $k ? $tid : $conversation, $k ? null : $suite, $modele, $variantes > 1 ? 1 : null, $variantes > 1 ? $id : null]);
+               $k ? $tid : $conversation, $k ? null : $suite, $modele, $variantes > 1 ? 1 : null, $variantes > 1 ? $id : null,
+               !empty($atelier) ? json_encode($atelier) : null]);
             evenement_tache($tid);
+        }
+        if ($suite) {  // la conversation avance : ses prochaines étapes encore proposées sont lancées ou dépassées
+            $m = memoire_lire();
+            $avant = json_encode($m['proposals']);
+            fermer_suites($m, $conversation, $id, $instruction);
+            if (json_encode($m['proposals']) !== $avant) memoire_ecrire($m);
         }
         valider();
         repondre(tache_publique(q('SELECT * FROM taches WHERE id = ?', [$id])->fetch()) + ['variants' => $ids]);
@@ -1351,6 +1720,12 @@ switch ($route) {
                 }
             }
         }
+        // Pod tout juste lancé depuis le téléphone sur un dépôt existant, sans mémoire : Claude l'écrit tout de suite (le projet
+        // est « compris » avant la première instruction). Pas pour un dépôt vide (rien à lire : la première demande s'en charge),
+        // ni si une tâche est déjà en route pour ce projet (elle écrira la mémoire en premier, sans double travail).
+        if ($nouveauPod && !$orchestrateur) {
+            foreach ((array)($in['projects'] ?? []) as $pr) memoire_au_demarrage((string)($pr['id'] ?? ''));
+        }
         // Fusions de PR restées en attente d'un pod hors ligne : l'orchestrateur les prend (même token GitHub sur tous les pods)
         if ($orchestrateur) {
             q("UPDATE taches SET worker_id = ? WHERE action LIKE '%fusionner_pr%' AND statut = 'pending' AND livree = 0 AND worker_id IS NOT NULL AND worker_id != ?
@@ -1375,6 +1750,19 @@ switch ($route) {
                 q("UPDATE validations SET decision = 'timeout', decision_livree = 1, donnees = ? WHERE id = ?",
                   [json_encode($a, JSON_UNESCAPED_UNICODE), $v['id']]);
                 inserer_evenement($v['tache_id'], ['kind' => 'approval', 'task_id' => $v['tache_id'], 'approval' => $a]);
+            }
+        }
+        // Livraison avec accusé de réception (worker qui envoie « ack ») : le dernier lot livré est gardé tant que le worker
+        // n'a pas confirmé l'avoir reçu ; une réponse perdue (coupure réseau, délai dépassé côté worker) est renvoyée telle
+        // quelle au poll suivant, au lieu d'une tâche jamais lancée ou d'une validation approuvée qui expire en refus.
+        $avecAccuse = array_key_exists('ack', $in);
+        if ($avecAccuse) {
+            $lot = json_decode(reglage('lot:' . $wid) ?? '', true);
+            if ($lot && (!empty($in['hello']) || ($in['ack'] ?? null) === $lot['id'])) {
+                // Reçu ; ou nouveau processus, dont les tâches livrées viennent d'être marquées interrompues
+                q('DELETE FROM reglages WHERE cle = ?', ['lot:' . $wid]);
+            } elseif ($lot) {
+                repondre($lot['travail'] + ['lot' => $lot['id']] + reponse_poll_commune((bool)$orchestrateur));
             }
         }
         // Tâches à livrer : celles de ce worker, et (orchestrateur) celles sans worker, à router.
@@ -1425,7 +1813,7 @@ switch ($route) {
             if ($taches || $decisions || $annulations || $choix || $worktrees || $recadrages || $memoires) break;
             usleep(500000);
         } while (microtime(true) < $fin && !connection_aborted());
-        repondre([
+        $travail = [
             'tasks' => array_map(fn($t) => ['id' => $t['id'], 'instruction' => $t['instruction'],
                 'project' => $t['projet'], 'new_session' => (bool)$t['nouvelle_session'],
                 'conversation' => $t['conversation'] ?? $t['id'], 'context' => $t['conversation'] ? contexte($t) : [],
@@ -1433,18 +1821,21 @@ switch ($route) {
                 'action' => empty($t['action']) ? null : json_decode($t['action'], true),
                 'model' => $t['modele'] ?? null, 'isolate' => !empty($t['isoler']), 'group' => $t['groupe'] ?? null,
                 'model_hint' => empty($t['modele_auto']) ? null : json_decode($t['modele_auto'], true),
-                'reply_to' => $t['suite_de'] ?? null], $taches),
-            'autopilot' => autopilote_lire(),
-            'hard' => hard_lire()['enabled'],
-            'hard_projects' => hard_lire()['projects'],
-            'steers' => $recadrages, 'memory_edits' => $memoires, 'rules' => regles(),
+                'reply_to' => $t['suite_de'] ?? null,
+                'mode' => (json_decode($t['extra'] ?? '', true) ?: [])['mode'] ?? null,
+                'objective' => (json_decode($t['extra'] ?? '', true) ?: [])['objectif'] ?? null], $taches),
+            'steers' => $recadrages, 'memory_edits' => $memoires,
             'decisions' => $decisions, 'cancels' => $annulations,
             'choices' => array_map(fn($c) => ['task_id' => $c['id'], 'project' => $c['choix_projet']], $choix),
             'worktree_actions' => array_map(fn($w) => ['task_id' => $w['id'], 'project' => $w['projet'],
                 'conversation' => $w['conversation'] ?? $w['id'], 'action' => $w['action_worktree']], $worktrees),
-            // Liste globale : l'orchestrateur route les tâches sans projet parmi tous les projets.
-            'all_projects' => $orchestrateur ? projets() : [],
-        ]);
+        ];
+        $lotId = null;
+        if ($avecAccuse && ($taches || $decisions || $annulations || $choix || $worktrees || $recadrages || $memoires)) {
+            $lotId = bin2hex(random_bytes(6));
+            reglage('lot:' . $wid, json_encode(['id' => $lotId, 'travail' => $travail], JSON_UNESCAPED_UNICODE));
+        }
+        repondre($travail + ['lot' => $lotId] + reponse_poll_commune((bool)$orchestrateur));
 
     case 'w_affecter': // l'orchestrateur confie une tâche routée au worker qui héberge le projet
         exiger_worker();
@@ -1457,8 +1848,9 @@ switch ($route) {
             ? json_encode(['choice' => $indice['choice'], 'reason' => mb_substr((string)($indice['reason'] ?? ''), 0, 200)], JSON_UNESCAPED_UNICODE)
             : null;
         $st = q("UPDATE taches SET projet = ?, worker_id = ?, livree = 0, statut = 'pending', maj_le = ?, modele_auto = ?
-                 WHERE id = ? AND statut NOT IN ('done','error','cancelled')", [$projet, $cible, time(), $modeleAuto, $id]);
-        if (!$st->rowCount()) erreur('tâche introuvable ou terminée', 404);
+                 WHERE id = ? AND statut NOT IN ('done','error','cancelled') AND annulation = 0", [$projet, $cible, time(), $modeleAuto, $id]);
+        // annulation = 1 : annulée depuis le téléphone pendant le routage, l'orchestrateur ne l'a pas encore appris
+        if (!$st->rowCount()) erreur('tâche introuvable, terminée ou annulée', 404);
         evenement_tache($id);
         repondre(['ok' => true, 'worker' => $cible]);
 
@@ -1475,6 +1867,22 @@ switch ($route) {
         file_put_contents("$dir/$id.jpg", $jpeg);
         inserer_evenement($tacheId, ['kind' => 'message', 'task_id' => $tacheId, 'type' => 'image', 'image' => $id,
                                      'caption' => mb_substr((string)($in['caption'] ?? ''), 0, 200), 'ts' => time()]);
+        repondre(['id' => $id]);
+
+    case 'w_fichier': // fichier produit pour une tâche (rapport Quarto de l'espace Données), téléchargeable depuis le téléphone
+        exiger_worker();
+        $tacheId = (string)($in['task_id'] ?? '');
+        $t = q('SELECT worker_id FROM taches WHERE id = ?', [$tacheId])->fetch() ?: erreur('tâche introuvable', 404);
+        if ($t['worker_id'] !== (string)($in['worker_id'] ?? '')) erreur('tâche d\'un autre worker', 403);
+        $contenu = base64_decode((string)($in['data'] ?? ''), true);
+        if ($contenu === false || $contenu === '' || strlen($contenu) > FICHIER_MAX) erreur('fichier invalide ou trop lourd');
+        $nom = preg_replace('/[^\w.-]+/u', '-', (string)($in['nom'] ?? 'fichier')) ?: 'fichier';
+        $type = in_array($in['type'] ?? '', ['text/html', 'text/csv', 'application/pdf'], true) ? $in['type'] : 'application/octet-stream';
+        $dir = __DIR__ . '/data/fichiers';
+        if (!is_dir($dir)) mkdir($dir, 0700, true);
+        $id = bin2hex(random_bytes(8));
+        file_put_contents("$dir/$id.bin", $contenu);
+        file_put_contents("$dir/$id.json", json_encode(['nom' => mb_substr($nom, 0, 80), 'type' => $type, 'tache' => $tacheId, 'ts' => time()]));
         repondre(['id' => $id]);
 
     case 'w_memoire':
@@ -1626,7 +2034,7 @@ switch ($route) {
             debut();
             $m = memoire_lire();
             $n = memoire_proposer($m, $projet, [['titre' => $in['titre'] ?? '', 'instruction' => $in['instruction'] ?? '']], 'manuelle');
-            if (!$n) { annuler(); erreur('proposition vide, trop longue ou déjà présente'); }
+            if (!$n) { annuler(); erreur('idée vide, trop longue ou déjà présente'); }
             memoire_ecrire($m);
             valider();
             repondre(['ok' => true]);
@@ -1640,8 +2048,10 @@ switch ($route) {
         if (!$cible) { annuler(); erreur('proposition introuvable ou déjà traitée', 404); }
         if ($action === 'lancer') {
             if ($cible['project'] !== null && !in_array($cible['project'], array_column(projets(), 'id'), true)) { annuler(); erreur('projet inconnu'); }
-            $tache = creer_tache_racine($cible['instruction'], $cible['project']);
-            $cible['tache'] = $tache;
+            $tache = lancer_proposition($cible);
+            if (!$tache) { annuler(); erreur('orchestrateur hors ligne : impossible de créer le projet pour l\'instant', 409); }
+            $cible['lancee_par'] = $tache;
+            fermer_suites($m, conversation_de($tache), $tache, $cible['instruction']);
         }
         $cible['etat'] = $action === 'lancer' ? 'lancee' : 'ignoree';
         $cible['maj'] = time();
@@ -1650,18 +2060,102 @@ switch ($route) {
         valider();
         repondre(['ok' => true, 'task_id' => $tache ?? null]);
 
+    case 'objectif_creer': // nouvel objectif : un atelier de décision s'ouvre (Claude explore, propose des options, fait décider)
+        exiger_session();
+        $texte = trim((string)($in['texte'] ?? ''));
+        if ($texte === '' || mb_strlen($texte) > 4000) erreur('objectif vide ou trop long');
+        $projet = ($in['project'] ?? null) ?: null;
+        if ($projet !== null && !in_array($projet, array_column(projets(), 'id'), true)) erreur('projet inconnu');
+        $horizon = mb_substr(trim((string)($in['horizon'] ?? '')), 0, 40);
+        debut();
+        $o = ['id' => bin2hex(random_bytes(5)), 'titre' => mb_substr(trim((string)($in['titre'] ?? '')) ?: titre_depuis($texte), 0, 120),
+              'texte' => $texte, 'horizon' => $horizon, 'projet' => $projet, 'etat' => 'atelier', 'plan' => null, 'cree' => time(), 'maj' => time()];
+        $tache = creer_tache_racine(instruction_atelier($o), $projet, ['mode' => 'atelier', 'objectif' => $o['id']]);
+        $o['conversation'] = $tache;
+        $l = objectifs_lire();
+        $l[] = $o;
+        objectifs_ecrire($l);
+        valider();
+        repondre(['id' => $o['id'], 'task_id' => $tache]);
+
+    case 'objectif': // valider le plan, lancer l'étape suivante, rouvrir l'atelier (ajuster), abandonner
+        exiger_session();
+        $action = (string)($in['action'] ?? '');
+        debut();
+        $l = objectifs_lire();
+        $cible = null;
+        foreach ($l as &$o) if ($o['id'] === (string)($in['id'] ?? '')) $cible = &$o;
+        if (!$cible) { annuler(); erreur('objectif introuvable', 404); }
+        $tache = null;
+        if ($action === 'valider') {
+            if ($cible['etat'] !== 'plan_propose' || empty($cible['plan']['etapes'])) { annuler(); erreur('aucun plan à valider', 409); }
+            $cible['etat'] = 'en_cours';
+            if (!empty($in['lancer'])) $tache = lancer_etape($cible, 0);  // la première étape part tout de suite
+        } elseif ($action === 'etape') {
+            $k = isset($in['etape']) ? (int)$in['etape'] : etape_suivante($cible);
+            if ($cible['etat'] !== 'en_cours' || $k === null || !isset($cible['plan']['etapes'][$k])) { annuler(); erreur('aucune étape à lancer', 409); }
+            $tache = lancer_etape($cible, $k);
+            if (!$tache) { annuler(); erreur('impossible de lancer cette étape (orchestrateur hors ligne ?)', 409); }
+        } elseif ($action === 'abandonner') {
+            $cible['etat'] = 'abandonne';
+        } else { annuler(); erreur('action inconnue'); }
+        $cible['maj'] = time();
+        unset($cible, $o);
+        objectifs_ecrire($l);
+        valider();
+        repondre(['ok' => true, 'task_id' => $tache]);
+
+    case 'w_plan': // plan proposé par l'atelier (outil definir_plan) : l'utilisateur le valide ou demande des ajustements
+        exiger_worker();
+        $etapes = [];
+        $connus = array_column(projets(), 'id');
+        foreach (array_slice((array)($in['etapes'] ?? []), 0, OBJECTIF_ETAPES_MAX) as $e) {
+            $titre = mb_substr(trim((string)($e['titre'] ?? '')), 0, 120);
+            $instr = trim((string)($e['instruction'] ?? ''));
+            if ($titre === '' || $instr === '' || mb_strlen($instr) > 6000) continue;
+            $pr = ($e['projet'] ?? null) ?: null;
+            $etapes[] = ['titre' => $titre, 'instruction' => $instr, 'projet' => $pr !== null && in_array($pr, $connus, true) ? $pr : null];
+        }
+        if (!$etapes) erreur('plan vide : 1 à ' . OBJECTIF_ETAPES_MAX . ' étapes {titre, instruction, projet}');
+        debut();
+        $l = objectifs_lire();
+        $trouve = false;
+        foreach ($l as &$o) {
+            if ($o['id'] !== (string)($in['objectif'] ?? '') || !in_array($o['etat'], ['atelier', 'plan_propose'], true)) continue;
+            $o['plan'] = ['resume' => mb_substr(trim((string)($in['resume'] ?? '')), 0, 2000), 'etapes' => $etapes, 'tache' => (string)($in['task_id'] ?? '')];
+            $o['etat'] = 'plan_propose';
+            $o['maj'] = time();
+            $trouve = true;
+        }
+        unset($o);
+        if (!$trouve) { annuler(); erreur('objectif introuvable ou déjà lancé', 404); }
+        objectifs_ecrire($l);
+        valider();
+        notifier();
+        repondre(['ok' => true, 'etapes' => count($etapes)]);
+
     case 'proposition_api': // ajout d'une proposition par un outil externe (clé d'API) : rien n'est lancé, elle attend dans la file
         exiger_cle_api();
-        $projet = $in['project'] ?? null;
-        if ($projet !== null && !in_array($projet, array_column(projets(), 'id'), true)) erreur('projet inconnu');
+        // Projet : identifiant ou nom (insensible à la casse) ; absent ou vide : idée de nouveau projet
+        $projet = trim((string)($in['project'] ?? '')) ?: null;
+        if ($projet !== null) {
+            $trouve = null;
+            foreach (projets() as $p) {
+                if ($p['id'] === $projet || mb_strtolower($p['name'] ?? '') === mb_strtolower($projet) || mb_strtolower($p['id']) === mb_strtolower($projet)) $trouve = $p['id'];
+            }
+            $projet = $trouve ?? erreur('projet inconnu : ' . implode(', ', array_column(projets(), 'id')) . ' (ou rien pour une idée de nouveau projet)');
+        }
         $source = preg_replace('/[^\w-]/u', '', (string)($in['source'] ?? '')) ?: 'api';
         debut();
         $m = memoire_lire();
-        $n = memoire_proposer($m, $projet, [['titre' => $in['titre'] ?? '', 'instruction' => $in['instruction'] ?? '']], mb_substr($source, 0, 30));
-        if (!$n) { annuler(); erreur('proposition vide, trop longue ou déjà présente'); }
+        $item = ['titre' => $in['titre'] ?? '', 'instruction' => $in['instruction'] ?? $in['description'] ?? ''];
+        $n = memoire_proposer($m, $projet, [$item], mb_substr($source, 0, 30), null, true);
+        if (!$n) { annuler(); erreur('idée vide, trop longue (10 000 caractères au plus) ou déjà présente'); }
         memoire_ecrire($m);
         valider();
-        repondre(['ok' => true, 'id' => proposition_id($projet, (string)$in['titre'])]);
+        $ajoutee = end($m['proposals']);
+        repondre(['ok' => true, 'id' => $ajoutee['id'], 'titre' => $ajoutee['titre'], 'project' => $projet,
+                  'kind' => $projet === null ? 'nouveau_projet' : 'projet']);
 
     case 'autopilote': // arme ou désarme le mode full auto
         exiger_session();
@@ -1679,7 +2173,11 @@ switch ($route) {
             $a['threshold'] = max(0.3, min(0.95, (float)($in['threshold'] ?? AUTO_SEUIL)));
             $a['max_per_day'] = max(1, min(50, (int)($in['max_per_day'] ?? AUTO_PAR_JOUR)));
             $a['max_parallel'] = max(1, min(AUTO_PARALLELE_MAX, (int)($in['max_parallel'] ?? 1)));
-            $a['projects'] = array_values(array_intersect(array_column(projets(), 'id'), array_map('strval', (array)($in['projects'] ?? []))));
+            $a['ideas'] = !isset($in['ideas']) || !empty($in['ideas']);
+            $a['external'] = !isset($in['external']) || !empty($in['external']);
+            $demandes = array_map('strval', (array)($in['projects'] ?? []));
+            $a['projects'] = array_values(array_intersect(array_column(projets(), 'id'), $demandes));
+            if ($demandes && !$a['projects']) erreur('aucun des projets choisis n\'existe encore');
         }
         autopilote_ecrire($a);
         repondre(autopilote_lire());
@@ -1691,18 +2189,28 @@ switch ($route) {
             if ($h['enabled']) alerte_ajouter('hard-fin', '📋 Mode hard terminé', 'Le compte rendu de ce qui a été fait est prêt dans le tableau de bord.');
             $h['enabled'] = false;
         } else {
+            $demandes = array_map('strval', (array)($in['projects'] ?? []));
+            $portee = array_values(array_intersect(array_column(projets(), 'id'), $demandes));
+            // Projets choisis tous inconnus (retirés entre-temps) : surtout pas « tous les projets »
+            if ($demandes && !$portee) erreur('aucun des projets choisis n\'existe encore');
             $h['enabled'] = true;
             $h['since'] = time();
-            $h['projects'] = array_values(array_intersect(array_column(projets(), 'id'), array_map('strval', (array)($in['projects'] ?? []))));
+            $h['projects'] = $portee;
             $h['until'] = time() + max(1, min(HARD_HEURES_MAX, (int)($in['hours'] ?? 8))) * 3600;
-            // Les validations déjà en attente sont approuvées : le mode s'applique tout de suite
-            q("UPDATE validations SET decision = 'approve' WHERE decision IS NULL");
+            // Les validations déjà en attente sont approuvées : le mode s'applique tout de suite, dans son périmètre seulement
+            if ($portee) {
+                q("UPDATE validations SET decision = 'approve' WHERE decision IS NULL AND tache_id IN (SELECT id FROM taches WHERE projet IN ("
+                  . implode(',', array_fill(0, count($portee), '?')) . '))', $portee);
+            } else {
+                q("UPDATE validations SET decision = 'approve' WHERE decision IS NULL");
+            }
             // Le full auto est armé par défaut, pour la même durée, sur les mêmes projets (auto = false : validations seules)
             if (!isset($in['auto']) || !empty($in['auto'])) {
                 $a = ['enabled' => true, 'until' => $h['until'], 'since' => time(), 'failures' => 0, 'stopped' => '',
                       'threshold' => max(0.3, min(0.95, (float)($in['threshold'] ?? 0.95))), 'projects' => $h['projects'],
                       'max_per_day' => max(1, min(50, (int)($in['max_per_day'] ?? 40))),
-                      'max_parallel' => max(1, min(AUTO_PARALLELE_MAX, (int)($in['max_parallel'] ?? 3)))] + autopilote_lire();
+                      'max_parallel' => max(1, min(AUTO_PARALLELE_MAX, (int)($in['max_parallel'] ?? 3))),
+                      'ideas' => !isset($in['ideas']) || !empty($in['ideas']), 'external' => !isset($in['external']) || !empty($in['external'])] + autopilote_lire();
                 autopilote_ecrire($a);
             }
         }
@@ -1772,19 +2280,45 @@ switch ($route) {
             valider();
             repondre(['task_id' => $id, 'titre' => 'Reprise : ' . mb_substr(preg_replace('/\s+/', ' ', $orig['instruction']), 0, 60)]);
         }
-        // 2. Puis les propositions, dans l'ordre où elles sont arrivées
+        $orch = projet_orchestrateur();
+        // 2. Les objectifs dont le plan est validé : leur prochaine étape, dans l'ordre du plan (une à la fois par objectif)
+        $objectifs = objectifs_lire();
+        foreach ($objectifs as &$o) {
+            if (($k = etape_suivante($o)) === null) continue;
+            $cibleProjet = projet_etape($o, $k);
+            if ($portee && !in_array($cibleProjet, $portee, true)) continue;
+            if (!$cibleProjet || !in_array($cibleProjet, $enLigne, true) || in_array($cibleProjet, $occupes, true)) continue;
+            $id = lancer_etape($o, $k, ['auto' => true]);
+            if (!$id) continue;
+            $titre = 'Objectif « ' . $o['titre'] . ' » — étape ' . ($k + 1) . ' : ' . $o['plan']['etapes'][$k]['titre'];
+            unset($o);
+            objectifs_ecrire($objectifs);
+            $a['launched_today']++;
+            $a['total']++;
+            $a['last'] = time();
+            autopilote_ecrire($a);
+            valider();
+            repondre(['task_id' => $id, 'titre' => $titre]);
+        }
+        unset($o);
+        // 3. Puis les propositions et les idées de nouveaux projets, dans l'ordre où elles sont arrivées
         $m = memoire_lire();
+        $ideesDuJour = (int)q("SELECT COUNT(*) FROM taches WHERE cree_le >= ? AND extra LIKE '%\"idee\":true%'", [strtotime('today')])->fetchColumn();
         $choix = null;
         foreach ($m['proposals'] as &$p) {
+            if (!proposition_eligible($p, $a, $portee)) continue;
+            // Une idée de nouveau projet : chez l'orchestrateur, une à la fois et quelques-unes par jour (chacune crée un pod)
+            $cibleProjet = $p['project'] ?? $orch;
+            if ($p['project'] === null && (!$orch || $ideesDuJour >= IDEES_PAR_JOUR)) continue;
             // Un projet à la fois : sa tâche automatique en cours doit être terminée avant d'en lancer une autre dessus
-            if ($p['etat'] === 'ouverte' && $p['project'] !== null && in_array($p['project'], $enLigne, true) && !in_array($p['project'], $occupes, true)
-                && (!$portee || in_array($p['project'], $portee, true))) { $choix = &$p; break; }
+            if (in_array($cibleProjet, $enLigne, true) && !in_array($cibleProjet, $occupes, true)) { $choix = &$p; break; }
         }
         if (!$choix) { unset($p); $refus('aucune proposition'); }
-        $id = creer_tache_racine($choix['instruction'], $choix['project'], ['auto' => true, 'proposal' => $choix['id']]);
+        $id = lancer_proposition($choix, ['auto' => true, 'proposal' => $choix['id']]);
         $choix['etat'] = 'lancee';
-        $choix['tache'] = $id;
+        $choix['lancee_par'] = $id;
         $choix['maj'] = time();
+        fermer_suites($m, conversation_de($id), $id, $choix['instruction']);
         $titre = $choix['titre'];
         unset($choix, $p);
         memoire_ecrire($m);
@@ -1857,7 +2391,7 @@ switch ($route) {
     case 'hard_apercu': // aperçu : ce que le mode hard compte faire sur les projets choisis (?projects=a,b ; vide : tous)
         exiger_session();
         $portee = array_values(array_filter(array_map('trim', explode(',', (string)($_GET['projects'] ?? '')))));
-        repondre(hard_apercu($portee));
+        repondre(hard_apercu($portee, ['ideas' => ($_GET['ideas'] ?? '1') !== '0', 'external' => ($_GET['external'] ?? '1') !== '0']));
 
     case 'memoire_init': // lance la création de la mémoire d'un projet (CLAUDE.md)
         exiger_session();

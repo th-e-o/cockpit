@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
-  <meta name="theme-color" content="#0b0c10">
+  <meta name="theme-color" content="#ffffff">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Cockpit">
@@ -18,17 +18,18 @@
 <body>
   <header>
     <span id="conn" class="dot" title="worker Onyxia"></span>
-    <h1>Cockpit</h1>
+    <div class="brand"><img src="static/icon.svg" alt="" width="28" height="28"><h1>Cockpit<span class="sub">Pilotage des agents</span></h1></div>
     <nav class="tabs" role="tablist" aria-label="vue">
-      <button type="button" role="tab" id="tabChat" data-view="chat" aria-selected="true">💬 Fil</button>
-      <button type="button" role="tab" id="tabDash" data-view="dash" aria-selected="false">📊 Pods <span id="tabCount" class="tabcount hidden"></span></button>
+      <button type="button" role="tab" id="tabChat" data-view="chat" aria-selected="true"><span data-ic="chat"></span> Activité</button>
+      <button type="button" role="tab" id="tabDash" data-view="dash" aria-selected="false"><span data-ic="dashboard"></span> Tableau de bord <span id="tabCount" class="tabcount hidden"></span></button>
     </nav>
-    <button id="dashToggle" class="icon" aria-label="masquer le tableau de bord" title="Masquer ou afficher le tableau de bord (Alt+D)">⇥</button>
-    <button id="pipBtn" class="icon hidden" aria-label="mini-fenêtre" title="Mini-fenêtre toujours visible, par-dessus tes autres fenêtres (Alt+P)">🪟</button>
+    <button id="dashToggle" class="icon" aria-label="masquer le tableau de bord" title="Masquer ou afficher le tableau de bord (Alt+D)"><span data-ic="panel"></span></button>
+    <button id="pipBtn" class="icon hidden" aria-label="mini-fenêtre" title="Mini-fenêtre toujours visible, par-dessus tes autres fenêtres (Alt+P)"><span data-ic="pip"></span></button>
     <button id="pendingBtn" class="badge hidden" aria-label="validations en attente">0</button>
-    <button id="menuBtn" class="icon" aria-label="menu">☰</button>
+    <button id="menuBtn" class="icon" aria-label="menu"><span data-ic="menu"></span></button>
   </header>
 
+  <div id="offlineBar" class="offline hidden" role="status">Relais injoignable : nouvel essai automatique…</div>
   <!-- Usage du forfait Claude (session de 5 h) : toucher pour le détail dans le tableau de bord -->
   <button type="button" id="usageBar" class="usagebar hidden" data-view="dash" aria-label="usage de Claude"><i></i><span></span></button>
   <div id="layout">
@@ -38,7 +39,7 @@
     <button type="button" class="btn ghost" id="foldAll">Tout replier</button>
     <button type="button" class="btn ghost" id="unfoldAll">Tout déplier</button>
   </div>
-  <main id="feed" aria-live="polite">
+  <main id="feed">
     <div class="empty">Envoie une instruction. Le cockpit choisit le projet si tu restes sur <b>Auto</b>.
       Les messages suivants continuent la conversation ; « Nouvelle conversation » lance un autre Claude en parallèle.</div>
   </main>
@@ -53,17 +54,19 @@
     </div>
     <div class="optrow">
       <select id="modelSel" class="mini" aria-label="modèle" title="Modèle auto : choisi à chaque message (Opus pour écrire du code, Sonnet ou Haiku pour les petites tâches)">
-        <option value="">🤖 Modèle auto</option><option value="rapide">⚡ Rapide</option>
+        <option value="">Modèle auto</option><option value="rapide">Rapide</option>
         <option value="standard">● Standard</option><option value="approfondi">◆ Approfondi</option>
       </select>
       <select id="variantSel" class="mini" aria-label="variantes" title="plusieurs Claude essaient chacun leur approche, à comparer">
-        <option value="1">×1</option><option value="2">🧬 ×2 variantes</option><option value="3">🧬 ×3 variantes</option>
+        <option value="1">1 version</option><option value="2">2 variantes</option><option value="3">3 variantes</option>
       </select>
       <div id="quick" class="chips quick" aria-label="commandes rapides"></div>
     </div>
     <form id="composer">
-      <textarea id="input" rows="1" placeholder="Ton instruction…" title="Ctrl+K ou / pour écrire depuis n'importe où" enterkeyhint="send"></textarea>
-      <button type="submit" id="send" aria-label="envoyer">➤</button>
+      <textarea id="input" rows="1" placeholder="Ton instruction…" title="Ctrl+K ou / pour écrire depuis n'importe où" enterkeyhint="enter"></textarea>
+      <button type="button" id="mic" class="hidden" aria-label="dicter" aria-pressed="false"
+              title="Commande vocale (Alt+M) : parle, le texte s'écrit ; finis par « envoie » pour envoyer directement"><span data-ic="mic"></span></button>
+      <button type="submit" id="send" aria-label="envoyer"><span data-ic="send"></span></button>
     </form>
   </footer>
   </div>
@@ -96,21 +99,20 @@
   </section>
 
   <dialog id="menuDlg">
-    <div class="dlghead"><h2>Menu</h2><button class="icon" data-close>✕</button></div>
+    <div class="dlghead"><h2>Menu</h2><button class="icon" data-close aria-label="fermer"><span data-ic="x"></span></button></div>
     <div class="menu">
-      <button class="btn hidden" id="mInstall">📲 Installer l'application</button>
-      <button class="btn hidden" id="mPip">🪟 Mini-fenêtre toujours visible (Alt+P)</button>
-      <button class="btn" id="mPod">🚀 Nouveau pod sur un dépôt git</button>
+      <button class="btn hidden" id="mInstall"><span data-ic="download"></span> Installer l'application</button>
+      <button class="btn" id="mPod"><span data-ic="server"></span> Nouveau pod sur un dépôt git</button>
       <div class="themesel" role="group" aria-label="thème">
-        <button type="button" class="btn" data-theme-set="auto">🌓 Auto</button>
-        <button type="button" class="btn" data-theme-set="light">☀️ Clair</button>
-        <button type="button" class="btn" data-theme-set="dark">🌙 Sombre</button>
+        <button type="button" class="btn" data-theme-set="auto"><span data-ic="monitor"></span> Auto</button>
+        <button type="button" class="btn" data-theme-set="light"><span data-ic="sun"></span> Clair</button>
+        <button type="button" class="btn" data-theme-set="dark"><span data-ic="moon"></span> Sombre</button>
       </div>
-      <button class="btn" id="mProjects">🗂 Gérer les projets</button>
-      <button class="btn" id="mRules">🔓 Règles d'autorisation</button>
-      <button class="btn" id="mAudit">📜 Journal d'audit</button>
-      <button class="btn" id="mNotif">🔔 Activer les notifications</button>
-      <button class="btn" id="mDevices">🔑 Passkeys et appareils</button>
+      <button class="btn" id="mProjects"><span data-ic="folder"></span> Gérer les projets</button>
+      <button class="btn" id="mRules"><span data-ic="shield"></span> Règles d'autorisation</button>
+      <button class="btn" id="mAudit"><span data-ic="list"></span> Journal d'audit</button>
+      <button class="btn" id="mNotif"><span data-ic="bell"></span> Activer les notifications</button>
+      <button class="btn" id="mDevices"><span data-ic="key"></span> Passkeys et appareils</button>
       <button class="btn bad" id="mLogout">Se déconnecter</button>
     </div>
     <p class="hint" id="workerInfo"></p>
@@ -118,7 +120,7 @@
 
   <!-- Nouveau pod Onyxia : clone d'un dépôt git, lancé par l'orchestrateur -->
   <dialog id="podDlg">
-    <div class="dlghead"><h2>Nouveau pod</h2><button class="icon" data-close>✕</button></div>
+    <div class="dlghead"><h2>Nouveau pod</h2><button class="icon" data-close aria-label="fermer"><span data-ic="x"></span></button></div>
     <form id="podForm" class="podform">
       <div class="seg podmode" role="group" aria-label="source du projet">
         <button type="button" data-pod-mode="existing" aria-pressed="true">Dépôt existant</button>
@@ -141,22 +143,26 @@
         <label>Nom du pod<input id="podName" required maxlength="30" autocomplete="off"></label>
         <label>Branche<input id="podBranch" placeholder="par défaut" autocomplete="off"></label>
       </div>
+      <details class="adv"><summary>Ressources : 2 CPU · 8 Go · disque 10 Go (modifier)</summary>
       <div class="row3">
         <label>CPU<select id="podCpu"><option>1</option><option selected>2</option><option>4</option><option>8</option></select></label>
         <label>Mémoire<select id="podMem"><option>4Gi</option><option selected>8Gi</option><option>16Gi</option><option>32Gi</option></select></label>
         <label>Disque<select id="podDisk"><option selected>10Gi</option><option>20Gi</option><option>50Gi</option><option>100Gi</option></select></label>
       </div>
       <label class="check"><input type="checkbox" id="podGpu"> 1 GPU</label>
-      <label class="check"><input type="checkbox" id="podPreview"> 👁 Aperçu web public (port 5000, URL accessible sans connexion)</label>
+      </details>
+      <label class="check"><input type="checkbox" id="podPreview"> Aperçu web public (port 5000, URL accessible sans connexion)</label>
       <p class="hint" id="podHint"></p>
-      <button type="submit" id="podSubmit">🚀 Lancer le pod</button>
+      <button type="submit" id="podSubmit">Lancer le pod</button>
     </form>
   </dialog>
 
   <dialog id="hardDlg">
-    <div class="dlghead"><h2 id="hardTitle">☠ Mode hard</h2><button class="icon" data-close>✕</button></div>
+    <div class="dlghead"><h2 id="hardTitle">Autonomie</h2><button class="icon" data-close aria-label="fermer"><span data-ic="x"></span></button></div>
     <form id="hardForm" class="podform">
       <p class="hint" id="hardIntro"></p>
+      <!-- Une seule autonomie : le mode hard en est l'option « sans validations » -->
+      <label class="check hardmode"><input type="checkbox" id="hardMode"> <b>Sans validations</b> (mode hard) : Claude ne te demande plus rien</label>
       <div class="hardsel"><span class="muted">Projets :</span>
         <button type="button" class="btn ghost" id="hardAll">Tous</button>
         <button type="button" class="btn ghost" id="hardOnline">En ligne</button>
@@ -166,18 +172,53 @@
         <label>Durée (heures)<input id="hardHours" type="number" min="1" max="336" value="8"></label>
         <label>Projets de front<input id="hardParallel" type="number" min="1" max="6" value="3"></label>
       </div>
-      <div class="row2">
-        <label>Tâches par jour au plus<input id="hardPerDay" type="number" min="1" max="50" value="12"></label>
-        <label>Seuil de session (%)<input id="hardThreshold" type="number" min="30" max="95" value="85"></label>
-      </div>
-      <label class="check" id="hardAutoRow"><input type="checkbox" id="hardAuto" checked> 🤖 Armer aussi le full auto (enchaîne les propositions)</label>
+      <label class="check" id="hardAutoRow"><input type="checkbox" id="hardAuto" checked> Enchaîner aussi les propositions et les idées (décoché : seulement plus de validations)</label>
+      <!-- Options affichées seulement quand de telles idées attendent -->
+      <label class="check hidden" id="hardIdeasRow"><input type="checkbox" id="hardIdeas" checked> <span id="hardIdeasText"></span></label>
+      <label class="check hidden" id="hardExternalRow"><input type="checkbox" id="hardExternal" checked> <span id="hardExternalText"></span></label>
+      <details class="adv"><summary>Réglages avancés</summary>
+        <div class="row2">
+          <label>Tâches par jour au plus<input id="hardPerDay" type="number" min="1" max="50" value="12"></label>
+          <label>Seuil de session (%)<input id="hardThreshold" type="number" min="30" max="95" value="85"></label>
+        </div>
+      </details>
       <div class="hardpreview" id="hardPreview"></div>
-      <button type="submit" id="hardGo">☠ Activer le mode hard</button>
+      <button type="submit" id="hardGo">Armer l'autonomie</button>
+    </form>
+  </dialog>
+
+  <!-- Nouvelle idée : pour un projet existant, ou idée de nouveau projet (l'orchestrateur créera le dépôt et le pod) -->
+  <!-- Nouvel objectif : un atelier de décision s'ouvre (options, arbitrages, questions), puis un plan à valider -->
+  <dialog id="objDlg">
+    <div class="dlghead"><h2>Nouvel objectif</h2><button class="icon" data-close aria-label="fermer"><span data-ic="x"></span></button></div>
+    <form id="objForm" class="podform">
+      <label>Objectif<textarea id="objText" rows="4" required maxlength="4000"
+        placeholder="Ex. : rendre le projet drones présentable pour une démonstration vendredi"></textarea></label>
+      <div class="row2">
+        <label>Projet<select id="objProject"></select></label>
+        <label>Échéance (facultatif)<input id="objHorizon" maxlength="40" placeholder="vendredi, fin du mois…" autocomplete="off"></label>
+      </div>
+      <p class="hint" id="objHint">Claude ouvre un atelier de décision : il étudie la situation, vous propose plusieurs options avec leurs
+        avantages et leurs risques, pose les questions qui tranchent, puis un plan d'étapes. Rien n'est modifié avant que vous validiez le plan.</p>
+      <button type="submit">Ouvrir l'atelier</button>
+    </form>
+  </dialog>
+
+  <dialog id="ideaDlg">
+    <div class="dlghead"><h2>Nouvelle idée</h2><button class="icon" data-close aria-label="fermer"><span data-ic="x"></span></button></div>
+    <form id="ideaForm" class="podform">
+      <label>Pour<select id="ideaProject"></select></label>
+      <label>Ce que Claude doit faire<textarea id="ideaText" rows="5" required maxlength="10000"
+        placeholder="Ex. : un bot Telegram qui me pose chaque matin 10 cartes Anki"></textarea></label>
+      <label>Titre (facultatif)<input id="ideaTitle" maxlength="120" autocomplete="off" placeholder="tiré des premiers mots sinon"></label>
+      <p class="hint" id="ideaHint">Elle attend dans les propositions : ▶ Lancer quand tu veux, ou le full auto / mode hard s’en charge. Nouveau projet : le dépôt et le pod sont créés au lancement
+        (utile pour dépenser les tokens qui restent en fin de semaine).</p>
+      <button type="submit">Ajouter l'idée</button>
     </form>
   </dialog>
 
   <dialog id="cmdDlg">
-    <div class="dlghead"><h2>Commandes rapides</h2><button class="icon" data-close>✕</button></div>
+    <div class="dlghead"><h2>Commandes rapides</h2><button class="icon" data-close aria-label="fermer"><span data-ic="x"></span></button></div>
     <form id="cmdForm" class="podform">
       <label>Pour<select id="cmdScope"></select></label>
       <div id="cmdRows" class="cmdrows"></div>
@@ -188,7 +229,7 @@
   </dialog>
 
   <dialog id="memDlg">
-    <div class="dlghead"><h2 id="memTitle">Mémoire</h2><button class="icon" data-close>✕</button></div>
+    <div class="dlghead"><h2 id="memTitle">Mémoire</h2><button class="icon" data-close aria-label="fermer"><span data-ic="x"></span></button></div>
     <form id="memForm" class="podform">
       <p class="hint">Fichier CLAUDE.md du projet : Claude le lit au début de chaque tâche (conventions, commandes, choix).</p>
       <textarea id="memText" class="memtext" rows="16" spellcheck="false"></textarea>
@@ -198,13 +239,13 @@
   </dialog>
 
   <dialog id="imgDlg" class="imgdlg">
-    <div class="dlghead"><h2>Capture</h2><button class="icon" data-close>✕</button></div>
+    <div class="dlghead"><h2>Capture</h2><button class="icon" data-close aria-label="fermer"><span data-ic="x"></span></button></div>
     <img id="imgFull" alt="">
     <p class="hint" id="imgCaption"></p>
   </dialog>
 
   <dialog id="listDlg">
-    <div class="dlghead"><h2 id="listTitle"></h2><button class="icon" data-close>✕</button></div>
+    <div class="dlghead"><h2 id="listTitle"></h2><button class="icon" data-close aria-label="fermer"><span data-ic="x"></span></button></div>
     <div id="listBody"></div>
   </dialog>
 

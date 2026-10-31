@@ -16,8 +16,22 @@ import yaml
 ALLOW, ASK, DENY = "allow", "ask", "deny"
 _RANK = {ALLOW: 0, ASK: 1, DENY: 2}
 
-# Séparateurs de commandes shell : chaque segment est évalué séparément.
-_SPLIT = re.compile(r"&&|\|\||;|\||\n")
+# Séparateurs de commandes shell : chaque segment est évalué séparément. Un « & » seul (arrière-plan) sépare aussi deux
+# commandes ; pas celui des redirections (2>&1, &>fichier).
+_SPLIT = re.compile(r"&&|\|\||;|\|&?|(?<![<>&])&(?![>&])|\n")
+# Options globales placées avant la sous-commande (« git -C dossier push », « kubectl -n ns delete ») : retirées avant
+# l'analyse, sinon « git -C x push --force » ou « kubectl -n x delete » échapperaient aux motifs.
+_GLOBAL_OPTS = [
+    (re.compile(r"\bgit((?:\s+(?:-[Cc]\s+\S+|--(?:git-dir|work-tree|namespace|exec-path)(?:=|\s+)\S+|--no-pager|--bare|-P))+)(?=\s)"), "git"),
+    (re.compile(r"\b(kubectl|helm)((?:\s+(?:-n|--namespace|--context|--kube-context|--kubeconfig|--cluster|--user|-s|--server)(?:=|\s+)\S+)+)(?=\s)"), r"\1"),
+]
+
+
+def normaliser(cmd: str) -> str:
+    """Commande sans les options globales de git, kubectl et helm (voir _GLOBAL_OPTS)."""
+    for rx, repl in _GLOBAL_OPTS:
+        cmd = rx.sub(repl, cmd)
+    return cmd
 # Constructions qui empêchent d'analyser la commande de façon fiable.
 _OPAQUE = re.compile(r"`|\$\(|<\(|>\(|\beval\b|\bsource\b|^\s*\.\s|\bbash\s+-c|\bsh\s+-c")
 # Redirection vers un fichier (hors /dev/null et 2>&1).
@@ -92,7 +106,7 @@ class Policy:
         return Decision(ALLOW, "écriture dans le projet")
 
     def _bash(self, command: str) -> Decision:
-        cmd = command.strip()
+        cmd = normaliser(command.strip())
         if not cmd:
             return Decision(ASK, "commande vide")
         for rx in self.bash_deny:
@@ -138,7 +152,7 @@ class Policy:
             if tool.endswith("creer_depot") and tool_input.get("prive") is False:
                 return False  # un dépôt public reste toujours validé
             return tool in self.trust_tools
-        cmd = tool_input.get("command", "").strip()
+        cmd = normaliser(tool_input.get("command", "").strip())
         if any(rx.search(cmd) for rx in self.trust_never):
             return False
         if (_OPAQUE.search(cmd) or _REDIRECT.search(cmd)) and not self.trust_opaque:
@@ -171,8 +185,11 @@ class Policy:
         if not self.user_rules or self.evaluate(tool, tool_input, cwd).action == DENY:
             return None
         if tool == "Bash":
-            cmd = tool_input.get("command", "").strip()
+            cmd = normaliser(tool_input.get("command", "").strip())
             if _OPAQUE.search(cmd):
+                return None
+            # Une règle « Toujours autoriser » ne couvre jamais ce qui reste toujours demandé (trust.never)
+            if any(rx.search(cmd) for rx in self.trust_never):
                 return None
             rules = [rx for t, rx in self.user_rules if t == "Bash" and rx]
             segs = [s.strip() for s in _SPLIT.split(cmd) if s.strip() and self._segment(s.strip()).action != ALLOW]

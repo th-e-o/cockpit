@@ -1,11 +1,54 @@
 'use strict';
 
 const $ = (s) => document.querySelector(s);
+
+// Icônes vectorielles (traits, couleur du texte) : remplacent les emojis dans l'interface. ic('send') -> <svg>.
+const ICONS = {
+  chat: '<path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/>',
+  dashboard: '<rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/>',
+  menu: '<path d="M4 6h16M4 12h16M4 18h16"/>',
+  panel: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M15 3v18"/>',
+  pip: '<path d="M21 10V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h5"/><rect x="13" y="13" width="9" height="7" rx="1"/>',
+  mic: '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M19 10v1a7 7 0 0 1-14 0v-1M12 18v4"/>',
+  send: '<path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/>',
+  check: '<path d="M20 6 9 17l-5-5"/>', x: '<path d="M18 6 6 18M6 6l12 12"/>',
+  alert: '<path d="m10.3 3.9-8.2 14A2 2 0 0 0 3.8 21h16.4a2 2 0 0 0 1.7-3.1l-8.2-14a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>', play: '<path d="m7 4 13 8-13 8z"/>',
+  branch: '<circle cx="6" cy="5" r="2"/><circle cx="6" cy="19" r="2"/><circle cx="18" cy="7" r="2"/><path d="M6 7v10M18 9c0 5-7 3-11 8"/>',
+  pr: '<circle cx="6" cy="6" r="2"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="18" r="2"/><path d="M6 8v8M13 6h3a2 2 0 0 1 2 2v8"/>',
+  flask: '<path d="M9 3h6M10 3v6l-5.5 9.5A1.7 1.7 0 0 0 6 21h12a1.7 1.7 0 0 0 1.5-2.5L14 9V3"/>',
+  data: '<path d="M3 3v18h18"/><path d="M8 16v-3M13 16V9M18 16V6"/>',
+  book: '<path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"/><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"/>',
+  server: '<rect x="3" y="3" width="18" height="7" rx="1.5"/><rect x="3" y="14" width="18" height="7" rx="1.5"/><path d="M7 6.5h.01M7 17.5h.01"/>',
+  key: '<circle cx="8" cy="15" r="4"/><path d="m11 12 9-9M17 6l3 3"/>',
+  eye: '<path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7S2 12 2 12z"/><circle cx="12" cy="12" r="3"/>',
+  external: '<path d="M15 3h6v6M10 14 21 3M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>',
+  plus: '<path d="M12 5v14M5 12h14"/>', download: '<path d="M12 3v12M7 10l5 5 5-5M5 21h14"/>',
+  file: '<path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6M8 13h8M8 17h6"/>',
+  bolt: '<path d="M13 2 4 14h7l-1 8 9-12h-7z"/>', shield: '<path d="M12 3 5 6v6c0 4.5 3 7.5 7 9 4-1.5 7-4.5 7-9V6z"/>',
+  unlock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 7.8-1.2"/>',
+  lock: '<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 0 1 8 0v4"/>',
+  help: '<circle cx="12" cy="12" r="9"/><path d="M9.5 9a2.5 2.5 0 1 1 3.5 2.3c-.6.3-1 .9-1 1.7M12 17h.01"/>',
+  pause: '<path d="M9 5v14M15 5v14"/>', stop: '<rect x="6" y="6" width="12" height="12" rx="1.5"/>',
+  idea: '<path d="M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7c.6.5 1 1.3 1 2.3h6c0-1 .4-1.8 1-2.3A7 7 0 0 0 12 2z"/>',
+  refresh: '<path d="M21 12a9 9 0 1 1-3-6.7L21 8M21 3v5h-5"/>', edit: '<path d="M12 20h9M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z"/>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
+  moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>', monitor: '<rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/>',
+  folder: '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/>',
+  list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
+  bell: '<path d="M18 8a6 6 0 1 0-12 0c0 7-3 9-3 9h18s-3-2-3-9M13.7 21a2 2 0 0 1-3.4 0"/>',
+  plug: '<path d="M9 2v6M15 2v6M6 8h12v4a6 6 0 0 1-12 0zM12 18v4"/>',
+};
+/** Pastille d'état d'une tâche terminée ou en attente (icône colorée, sans emoji). */
+const stIcon = (status) => ic({ done: 'check', error: 'x', cancelled: 'stop', needs_project: 'help', paused: 'pause' }[status] || 'clock', `st-${status}`);
+const ic = (name, cls = '') => `<svg class="ic${cls ? ` ${cls}` : ''}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[name] || ''}</svg>`;
+const hydrateIcons = (root = document) => root.querySelectorAll('[data-ic]').forEach((el) => { el.outerHTML = ic(el.dataset.ic); });
+hydrateIcons();
 // replyTo : tâche dont le prochain message est la suite (undefined tant que l'historique n'est pas chargé)
 const state = { projects: [], selected: null, tasks: new Map(), order: [], lastId: 0, workerOnline: false, replay: false, replyTo: undefined,
   workers: [], diffs: new Map(), view: 'chat', bilan: null, bilanAt: 0, bilanJours: 7, repos: null,
   commands: {}, review: new Map(), model: '', variants: 1, memory: null, autopilot: null, hard: null, week: null, deleted: {}, report: null, reportAt: 0 };
-const MODELES = { rapide: '⚡ Rapide', standard: '● Standard', approfondi: '◆ Approfondi' };
+const MODELES = { rapide: 'Rapide', standard: 'Standard', approfondi: 'Approfondi' };
 /** « claude-opus-5-5 » -> « Opus 5.5 » ; « claude-sonnet-4-5-20250929 » -> « Sonnet 4.5 ». */
 function modelName(id) {
   const m = String(id || '').match(/claude-(?:(\d+(?:-\d+)?)-)?(opus|sonnet|haiku|fable)(?:-(\d{1,2})(?!\d)(?:-(\d{1,2})(?!\d))?)?/i);
@@ -58,11 +101,14 @@ function md(src) {
 
 class AuthError extends Error {}
 
-async function api(route, body, params = '') {
-  const res = await fetch(`api.php?r=${route}${params}`, body === undefined ? { credentials: 'same-origin' } : {
-    method: 'POST', credentials: 'same-origin',
+/** Appel au relais. timeout (ms) : une requête qui ne répond jamais (réseau qui change, app suspendue par iOS) est abandonnée. */
+async function api(route, body, params = '', timeout = 30000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeout);
+  const res = await fetch(`api.php?r=${route}${params}`, body === undefined ? { credentials: 'same-origin', signal: ctrl.signal } : {
+    method: 'POST', credentials: 'same-origin', signal: ctrl.signal,
     headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-  });
+  }).finally(() => clearTimeout(timer));
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && !route.startsWith('passkey') && route !== 'appairer') throw new AuthError(data.detail);
   if (!res.ok) throw new Error(data.detail || res.statusText);
@@ -109,6 +155,7 @@ async function createPasskey() {
   if (!r.getPublicKey) throw new Error('Navigateur trop ancien pour les passkeys.');
   await api('passkey_creer', {
     id: cred.id, clientDataJSON: b64u.enc(r.clientDataJSON), publicKey: b64u.enc(r.getPublicKey()),
+    attestationObject: b64u.enc(r.attestationObject),
     alg: r.getPublicKeyAlgorithm(), name: deviceName(),
   });
 }
@@ -185,7 +232,7 @@ $('#pairForm').addEventListener('submit', async (ev) => {
 
 function afterPairing() {
   return new Promise((resolve) => authScreen({
-    title: `${/iPhone|iPad|Android/.test(navigator.userAgent) ? 'Téléphone' : 'Ordinateur'} connecté ✓`,
+    title: `${/iPhone|iPad|Android/.test(navigator.userAgent) ? 'Téléphone' : 'Ordinateur'} connecté`,
     text: /iPhone|iPad|Android/.test(navigator.userAgent)
       ? 'Crée une passkey : tu te reconnecteras d\'un regard, sans jamais taper de code.'
       : 'Crée une passkey (Windows Hello, Touch ID, clé de sécurité ou ton téléphone) : tu te reconnecteras sans code.',
@@ -217,8 +264,8 @@ function onEvent(evt) {
 }
 
 // ---------- rendu
-const SERVICE_TOOLS = { lancer_service: '🚀 Lancer un service', arreter_service: '🛑 Arrêter un service', lancer_en_parallele: '🔀 Claude en parallèle',
-  creer_depot: '📦 Nouveau dépôt GitHub' };
+const SERVICE_TOOLS = { lancer_service: 'Lancer un service', arreter_service: 'Arrêter un service', lancer_en_parallele: 'Claude en parallèle',
+  creer_depot: 'Nouveau dépôt GitHub' };
 
 /** Carte dédiée au lancement / à l'arrêt d'un service Onyxia : ressources lisibles, quota dans la raison. */
 function serviceInput(a) {
@@ -273,7 +320,7 @@ async function openProjects() {
   const hosted = (id) => state.workers.some((w) => w.orchestrator && (w.projects || []).includes(id));
   const rows = state.projects.map((p) => `<div class="dev"><div>${esc(p.name || p.id)}
       <small>${p.online ? '● pod en ligne' : '○ pod hors ligne'} · ${plural(count.get(p.id) || 0, 'tâche')}${p.worker_name ? ` · ${esc(p.worker_name)}` : ''}</small></div>
-      ${hosted(p.id) ? '<small title="Hébergé par l\'orchestrateur : à retirer de config/projects.yaml">🔒</small>'
+      ${hosted(p.id) ? `<small title="Hébergé par l'orchestrateur : à retirer de config/projects.yaml">${ic('lock')}</small>`
         : `<button class="btn ghost" data-del-project="${esc(p.id)}">Supprimer</button>`}</div>`).join('');
   const gone = Object.entries(state.deleted || {}).map(([id, d]) => `<div class="dev"><div>${esc(d.name || id)} <small>retiré ${ago(d.at)}</small></div>
       <button class="btn ghost" data-restore-project="${esc(id)}">Restaurer</button></div>`).join('');
@@ -295,14 +342,14 @@ function approvalHtml(a) {
     : a.tool_input.file_path ? `${a.tool_input.file_path}\n\n${a.tool_input.content ?? a.tool_input.new_string ?? ''}`
     : JSON.stringify(a.tool_input, null, 2);
   const done = a.decision
-    ? `<div class="timer">${{ approve: '✅ approuvé', deny: '⛔ refusé', timeout: '⌛ expiré (refusé)' }[a.decision]}</div>`
+    ? `<div class="timer">${{ approve: `${ic('check')} Approuvé`, deny: `${ic('x')} Refusé`, timeout: `${ic('clock')} Expiré (refusé)` }[a.decision]}</div>`
     : `<div class="actions">
          <button class="btn ok" data-approve="${esc(a.id)}">Approuver</button>
          <button class="btn bad" data-deny="${esc(a.id)}">Refuser</button>
          ${ruleFor(a) ? `<button class="btn ghost always" data-always="${esc(a.id)}" title="approuve et ne demande plus pour : ${esc(ruleFor(a).label)}">Toujours autoriser « ${esc(ruleFor(a).short)} »</button>` : ''}
        </div><div class="timer" data-expires="${Number(a.expires)}"></div>`;
   return `<div class="approval ${a.decision ? 'resolved' : ''}">
-    <div class="why">${service ? esc(service) : `⚠️ ${esc(a.tool)}`} — ${esc(a.reason)}</div>
+    <div class="why">${ic('alert')} ${service ? esc(service) : esc(a.tool)} — ${esc(a.reason)}</div>
     <pre><code>${esc(String(input).slice(0, 4000))}</code></pre>${done}</div>`;
 }
 
@@ -312,7 +359,8 @@ const duree = (s) => (s < 60 ? `${Math.max(1, Math.round(s))} s` : `${Math.floor
 function stepsOf(e) {
   const steps = [];
   for (const x of e.events) {
-    if (x.type === 'tool_use' && x.label !== null) steps.push({ label: x.label || `🔧 ${x.tool}`, detail: x.text });
+    // Pictogramme en tête du libellé envoyé par le worker (« 📖 Lit … ») retiré : l'interface reste sobre
+    if (x.type === 'tool_use' && x.label !== null) steps.push({ label: (x.label || x.tool).replace(/^\p{Extended_Pictographic}\uFE0F?\s*/u, ''), detail: x.text });
     else if (x.type === 'tool_error' && steps.length) steps[steps.length - 1].error = x.text;
   }
   return steps;
@@ -331,7 +379,7 @@ function progressHtml(e, active) {
   if (!steps.length) {
     return html + (active && e.task.status === 'running' ? '<div class="now"><span class="spin"></span> Réfléchit…</div>' : '');
   }
-  const row = (s) => `<div class="step${s.error ? ' err' : ''}" title="${esc(s.detail || '')}">${esc(s.label)}${s.error ? ' <b>✗</b>' : ''}</div>`;
+  const row = (s) => `<div class="step${s.error ? ' err' : ''}" title="${esc(s.detail || '')}">${esc(s.label)}${s.error ? ` ${ic('x')}` : ''}</div>`;
   if (active) {
     // En cours : les étapes précédentes repliées, l'étape actuelle mise en avant avec le temps écoulé.
     const cur = steps[steps.length - 1];
@@ -356,28 +404,29 @@ function taskHtml(e) {
   const lastText = active && texts.length ? texts[texts.length - 1].text : '';
 
   let body = progressHtml(e, active);
-  body += e.events.filter((x) => x.type === 'steer').map((x) => `<div class="steer">✋ ${esc(x.text)}</div>`).join('');
-  body += e.events.filter((x) => x.type === 'steer_late').map((x) => `<div class="hint">✋ Message arrivé après la fin de la tâche :
+  body += e.events.filter((x) => x.type === 'steer').map((x) => `<div class="steer">${ic('chat')} ${esc(x.text)}</div>`).join('');
+  body += e.events.filter((x) => x.type === 'steer_late').map((x) => `<div class="hint">Message arrivé après la fin de la tâche :
     « ${esc(x.text)} » <button class="btn ghost" data-resend="${esc(t.id)}" data-text="${esc(x.text)}">Envoyer comme suite</button></div>`).join('');
   body += imagesHtml(e);
   const limited = [...e.events].reverse().find((x) => x.type === 'rate_limited');
-  if (limited && active) body += `<div class="blocked">⏳ Limite d'usage de Claude atteinte${limited.resets_at ? ` · ${esc(resetLabel(limited.resets_at))}` : ''}</div>`;
+  if (limited && active) body += `<div class="blocked">${ic('clock')} Limite d'usage de Claude atteinte${limited.resets_at ? ` · ${esc(resetLabel(limited.resets_at))}` : ''}</div>`;
   const auto = e.events.filter((x) => x.type === 'trusted');
   if (auto.length) {
-    body += `<details class="trusted" data-k="trusted"><summary>🛡 ${auto.length} validation${auto.length > 1 ? 's' : ''} passée${auto.length > 1 ? 's' : ''} automatiquement</summary>
+    body += `<details class="trusted" data-k="trusted"><summary>${ic('shield')} ${auto.length} validation${auto.length > 1 ? 's' : ''} passée${auto.length > 1 ? 's' : ''} automatiquement</summary>
       ${auto.map((x) => `<div class="step">${esc(x.tool)} : ${esc(x.text)}</div>`).join('')}</details>`;
   }
-  body += blocked.map((x) => `<div class="blocked">⛔ ${esc(x.tool)} : ${esc(x.text)}</div>`).join('');
+  body += blocked.map((x) => `<div class="blocked">${ic('x')} ${esc(x.tool)} : ${esc(x.text)}</div>`).join('');
   body += [...e.approvals.values()].map(approvalHtml).join('');
   if (lastText) body += `<div class="text">${md(lastText)}</div>`;
-  if (t.status === 'paused') body += `<div class="hint">⏸ En pause : limite d'usage atteinte${t.resume_at ? ` · reprise ${esc(resetLabel(t.resume_at))}` : ''} (reprise automatique si le full auto ou le mode hard est armé, ou avec le bouton ▶ Reprendre).</div>`;
-  if (t.status === 'pending' && t.waiting_project) body += `<div class="hint">⏳ En attente du pod « ${esc(t.project)} » : la tâche partira dès que son worker sera connecté (1 à 3 min après le lancement).</div>`;
+  if (t.status === 'paused') body += `<div class="hint">${ic('pause')} En pause : limite d'usage atteinte${t.resume_at ? ` · reprise ${esc(resetLabel(t.resume_at))}` : ''} (reprise automatique si le full auto ou le mode hard est armé, ou avec le bouton ▶ Reprendre).</div>`;
+  if (t.status === 'pending' && t.waiting_project) body += `<div class="hint">${ic('clock')} En attente du pod « ${esc(t.project)} » : la tâche partira dès que son worker sera connecté (1 à 3 min après le lancement).</div>`;
   else if (t.status === 'pending' && !state.workerOnline) body += '<div class="hint">Le worker Onyxia est hors ligne : la tâche partira dès sa reconnexion.</div>';
   if (t.status === 'needs_project') {
     body += `<div class="text">Je n'ai pas pu déterminer le projet${t.route_reason ? ` (${esc(t.route_reason)})` : ''}. Lequel ?</div>
       <div class="actions">${state.projects.map((p) => `<button class="btn" data-choose="${esc(p.id)}">${esc(p.name)}</button>`).join('')}</div>`;
   }
   if (t.result && !ACTIVE.has(t.status)) body += `<div class="result">${md(t.result)}</div>`;
+  body += dataHtml(e) + planHtml(e) + reviewHtml(e);
   if (openQuestion(e)) body += questionHtml(t);
   if (!active) body += changesHtml(e) + testsHtml(e) + ciPrHtml(e) + worktreeHtml(e) + nextStepsHtml(e);
 
@@ -385,11 +434,11 @@ function taskHtml(e) {
       <span class="pill st-${esc(t.status)}">${STATUS[t.status] || esc(t.status)}</span>
       ${proj ? `<span class="pill">${esc(proj.name)}</span>` : ''}
       ${t.route_reason && t.project ? `<span title="${esc(t.route_reason)}">auto</span>` : ''}
-      ${t.worktree ? `<span class="pill wt" title="Claude en parallèle, dans son propre worktree git">🌿 ${esc(t.worktree.branch)}</span>` : ''}
-      ${t.parent ? `<span class="pill" title="lancée par un autre Claude (lancer_en_parallele)">🔀 sous-tâche</span>` : ''}
+      ${t.worktree ? `<span class="pill wt" title="Claude en parallèle, dans son propre worktree git">${ic('branch')} ${esc(t.worktree.branch)}</span>` : ''}
+      ${t.parent ? `<span class="pill" title="lancée par un autre Claude (lancer_en_parallele)">sous-tâche</span>` : ''}
       ${modelPill(t)}
       ${costPill(t)}
-      ${t.group ? `<span class="pill var" title="variantes de la même demande, à comparer">🧬 Variante ${variantIndex(t)}</span>` : ''}
+      ${t.group ? `<span class="pill var" title="variantes de la même demande, à comparer">Variante ${variantIndex(t)}</span>` : ''}
       ${ACTIVE.has(t.status) ? `<button class="btn ghost" data-cancel="${esc(t.id)}">Arrêter</button>`
         : t.status === 'paused' ? `<button class="btn" data-resume="${esc(t.id)}">▶ Reprendre</button>`
         : t.id !== state.replyTo && t.kind !== 'service' ? `<button class="btn ghost" data-reply="${esc(t.id)}">Répondre</button>` : ''}
@@ -438,7 +487,7 @@ const GROUPS_KEY = 'cockpit_groups';  // projet -> ouvert (true) ou replié (fal
 const groupPrefs = () => { try { return JSON.parse(localStorage.getItem(GROUPS_KEY) || '{}'); } catch { return {}; } };
 const saveGroupPref = (id, open) => { try { localStorage.setItem(GROUPS_KEY, JSON.stringify({ ...groupPrefs(), [id]: open })); } catch { /* sans importance */ } };
 const groupId = (project) => project || '_auto';
-const groupName = (project) => (project ? state.projects.find((p) => p.id === project)?.name || project : '💬 Sans projet (Auto)');
+const groupName = (project) => (project ? state.projects.find((p) => p.id === project)?.name || project : 'Sans projet (Auto)');
 const groupEl = (id) => [...document.querySelectorAll('#feed details.pgroup')].find((d) => d.dataset.g === id);
 
 /** Ouvre ou ferme un menu par programme, sans que cela passe pour un choix de l'utilisateur. */
@@ -485,8 +534,8 @@ function updateGroups() {
     const i = info.get(d.dataset.g);
     if (!i) continue;
     const parts = [plural(i.n, 'tâche')];
-    if (i.active) parts.push(`⚙ ${i.active} en cours`);
-    if (i.pending) parts.push(`⚠ ${i.pending} à valider`);
+    if (i.active) parts.push(`${i.active} en cours`);
+    if (i.pending) parts.push(`${i.pending} à valider`);
     d.querySelector('.pname').textContent = groupName(d.dataset.g === '_auto' ? null : d.dataset.g);
     d.querySelector('.pmeta').textContent = parts.join(' · ');
     d.classList.toggle('working', i.active > 0);
@@ -538,7 +587,7 @@ function changesLine(c) {
 
 function branchLine(c) {
   if (!c.branch || c.branch === 'HEAD') return '';
-  const push = !c.upstream ? 'non publiée' : c.ahead ? `${c.ahead} commit(s) à pousser` : 'à jour sur le dépôt ✓';
+  const push = !c.upstream ? 'non publiée' : c.ahead ? `${c.ahead} commit(s) à pousser` : 'à jour sur le dépôt';
   return `<div class="branch">⎇ <b>${esc(c.branch)}</b> · ${push}</div>`;
 }
 
@@ -558,7 +607,7 @@ function changesHtml(e) {
   }).join('');
   const more = c.file_count > (c.files || []).length ? `<div class="hint">… et ${c.file_count - c.files.length} autre(s)</div>` : '';
   const commits = (c.commits || []).map((x) => `<div class="commit"><code>${esc(x.sha)}</code> ${esc(x.subject)}</div>`).join('');
-  return `<div class="changes"><div class="chhead">📝 ${changesLine(c)}</div>${branchLine(c)}
+  return `<div class="changes"><div class="chhead">${changesLine(c)}</div>${branchLine(c)}
     <div class="files">${files}${more}</div>${commits ? `<div class="commits">${commits}</div>` : ''}${patches ? reviewBar(e.task) : ''}</div>`;
 }
 
@@ -593,11 +642,11 @@ const lastOfConversation = (id) => [...state.order].reverse().find((x) => conver
 function worktreeHtml(e) {
   const t = e.task;
   const msgs = e.events.filter((x) => x.type === 'worktree')
-    .map((x) => `<div class="wtmsg ${x.ok ? 'ok' : 'bad'}">${x.ok ? '✓' : '⚠️'} ${esc(x.text)}</div>`).join('');
+    .map((x) => `<div class="wtmsg ${x.ok ? 'ok' : 'bad'}">${ic(x.ok ? 'check' : 'alert')} ${esc(x.text)}</div>`).join('');
   if (!t.worktree) return msgs;
   const st = t.worktree.state;
-  let html = `<div class="wtbox"><div>🌿 Travail en parallèle sur la branche <b>${esc(t.worktree.branch)}</b>${
-    st === 'merged' ? ' — fusionnée ✓' : st === 'discarded' ? ' — jetée' : ''}</div>`;
+  let html = `<div class="wtbox"><div>${ic('branch')} Travail en parallèle sur la branche <b>${esc(t.worktree.branch)}</b>${
+    st === 'merged' ? ' — fusionnée' : st === 'discarded' ? ' — jetée' : ''}</div>`;
   if (st === 'active' && lastOfConversation(t.id) === t.id) {
     html += `<div class="actions"><button class="btn ok" data-wt="merge" data-task-id="${esc(t.id)}">Fusionner dans le projet</button>
       <button class="btn bad" data-wt="discard" data-task-id="${esc(t.id)}">Jeter la branche</button></div>`;
@@ -617,7 +666,7 @@ function questionHtml(t, compact = false) {
       ${it.options?.length ? `<div class="qopts">${it.options.map((o) => `<button type="button" class="btn" data-pick="${esc(o)}" aria-pressed="false">${esc(o)}</button>`).join('')}</div>` : ''}
     </div>`).join('');
   return `<form class="question${compact ? ' compact' : ''}" data-question="${esc(t.id)}">
-    <div class="qhead">❓ Claude attend ta réponse</div>
+    <div class="qhead">${ic('help')} Claude attend ta réponse</div>
     <div class="qtext">${md(q.text)}</div>${items}
     ${!items && q.options?.length ? `<div class="qopts">${q.options.map((o) => `<button type="button" class="btn" data-answer="${esc(t.id)}" data-text="${esc(o)}">${esc(o)}</button>`).join('')}</div>` : ''}
     <div class="qrow"><textarea rows="2" placeholder="${items ? 'Précisions ou réponses libres (facultatif)…' : 'Ta réponse…'}" aria-label="ta réponse"></textarea>
@@ -704,23 +753,23 @@ const STATUS_RX = /\b(où en est|ou en est|avancement|état d(u|e|es)|statut|ça
 /** Conseil affiché sous la saisie, le plus utile d'abord (ou rien). */
 function costTip(text) {
   const cur = state.replyTo && state.tasks.get(state.replyTo)?.task;
-  if (STATUS_RX.test(text)) return { text: '💡 L\'avancement des projets est visible gratuitement dans le tableau de bord (tâches, modifications, tests, PR).', action: 'Voir', act: 'view-dash' };
+  if (STATUS_RX.test(text)) return { text: 'L\'avancement des projets est visible gratuitement dans le tableau de bord (tâches, modifications, tests, PR).', action: 'Voir', act: 'view-dash' };
   if (!cur && !state.selected) {
     const proj = state.projects.find((p) => p.name.length > 3 && new RegExp(`\\b${p.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i').test(text));
-    if (proj) return { text: `💡 Ta demande concerne « ${proj.name} » : choisis sa puce pour l'envoyer directement, sans passer par l'orchestrateur.`, action: `Choisir ${proj.name}`, act: `project:${proj.id}` };
+    if (proj) return { text: `Ta demande concerne « ${proj.name} » : choisis sa puce pour l'envoyer directement, sans passer par l'orchestrateur.`, action: `Choisir ${proj.name}`, act: `project:${proj.id}` };
   }
   if (state.model === 'approfondi' && text.trim().length > 0 && text.trim().length < 60 && !cur) {
-    return { text: '💡 Opus pour une demande courte : « Modèle auto » choisirait un modèle plus léger si c\'est une simple question.', action: 'Modèle auto', act: 'model-auto' };
+    return { text: 'Opus pour une demande courte : « Modèle auto » choisirait un modèle plus léger si c\'est une simple question.', action: 'Modèle auto', act: 'model-auto' };
   }
   if (cur && !ACTIVE.has(cur.status)) {
     const conv = conversationTasks(cur.id);
     const relu = conv.reduce((n, t) => Math.max(n, (t.tokens?.cache_read || 0) + (t.tokens?.input || 0)), 0);
     const pause = Date.now() / 1000 - (cur.updated || cur.created) > 300;
     if (conv.length >= 8 || relu > 300000) {
-      return { text: `💡 Conversation longue (${conv.length} échanges) : chaque message relit tout l'historique${pause ? ', et le cache a expiré après la pause' : ''}. Pour un nouveau sujet, une nouvelle conversation coûte bien moins.`, action: 'Nouvelle conversation', act: 'new-conv' };
+      return { text: `Conversation longue (${conv.length} échanges) : chaque message relit tout l'historique${pause ? ', et le cache a expiré après la pause' : ''}. Pour un nouveau sujet, une nouvelle conversation coûte bien moins.`, action: 'Nouvelle conversation', act: 'new-conv' };
     }
     if (pause && relu > 100000) {
-      return { text: '💡 Pause de plus de 5 min : le cache de Claude a expiré, ce message relira l\'historique de la conversation à plein tarif.', action: 'Nouvelle conversation', act: 'new-conv' };
+      return { text: 'Pause de plus de 5 min : le cache de Claude a expiré, ce message relira l\'historique de la conversation à plein tarif.', action: 'Nouvelle conversation', act: 'new-conv' };
     }
   }
   return null;
@@ -752,12 +801,12 @@ function variantIndex(t) {
 function updateComposer() {
   const cur = state.replyTo && state.tasks.get(state.replyTo)?.task;
   const steering = !!cur && ACTIVE.has(cur.status);
-  input.placeholder = steering ? '✋ Recadrer Claude pendant qu\'il travaille…' : 'Ton instruction…';
+  input.placeholder = steering ? 'Recadrer Claude pendant qu\'il travaille…' : 'Ton instruction…';
   $('#composer').classList.toggle('steering', steering);
   if (cur) {
     const txt = shownInstruction(cur.instruction);
     const proj = state.projects.find((p) => p.id === cur.project);
-    $('#threadText').textContent = `${steering ? '✋ Recadrer' : '↪ Suite de'} « ${txt.length > 40 ? `${txt.slice(0, 40)}…` : txt} »`
+    $('#threadText').textContent = `${steering ? 'Recadrer' : 'Suite de'} « ${txt.length > 40 ? `${txt.slice(0, 40)}…` : txt} »`
       + (proj ? ` · ${proj.name}` : '');
   }
   $('#variantSel').classList.toggle('hidden', !!state.replyTo);
@@ -766,10 +815,10 @@ function updateComposer() {
 }
 
 const DEFAULT_COMMANDS = [
-  { titre: '🧪 Tests', instruction: 'Lance les tests du projet et corrige ce qui échoue.' },
-  { titre: '📋 État du projet', instruction: 'Résume l\'état du projet : ce qui marche, ce qui est en cours, les problèmes connus et les prochaines étapes.' },
-  { titre: '🔍 Relis mon travail', instruction: 'Relis les modifications non publiées et le dernier commit : bugs, cas oubliés, simplifications possibles. Corrige ce qui est sûr, liste le reste.' },
-  { titre: '🚀 Publie', instruction: 'Commite le travail en cours avec un message clair, pousse-le sur une branche de travail et ouvre une pull request.' },
+  { titre: 'Tests', instruction: 'Lance les tests du projet et corrige ce qui échoue.' },
+  { titre: 'État du projet', instruction: 'Résume l\'état du projet : ce qui marche, ce qui est en cours, les problèmes connus et les prochaines étapes.' },
+  { titre: 'Relis mon travail', instruction: 'Relis les modifications non publiées et le dernier commit : bugs, cas oubliés, simplifications possibles. Corrige ce qui est sûr, liste le reste.' },
+  { titre: 'Publie', instruction: 'Commite le travail en cours avec un message clair, pousse-le sur une branche de travail et ouvre une pull request.' },
 ];
 const currentProject = () => state.selected || (state.replyTo && state.tasks.get(state.replyTo)?.task.project) || null;
 const commandsFor = (key) => state.commands[key] || (key === '*' ? DEFAULT_COMMANDS : []);
@@ -778,7 +827,7 @@ function renderQuick() {
   const proj = currentProject();
   const list = [...commandsFor('*'), ...(proj ? commandsFor(proj) : [])];
   const html = list.map((c, i) => `<button type="button" class="chip qc" data-quick="${i}" title="${esc(c.instruction)}">${esc(c.titre)}</button>`).join('')
-    + '<button type="button" class="chip qc edit" id="editQuick" title="modifier les commandes rapides">✎</button>';
+    + '<button type="button" class="chip qc edit" id="editQuick" title="modifier les commandes rapides">' + ic('edit') + '</button>';
   if ($('#quick').dataset.html !== html) { $('#quick').innerHTML = html; $('#quick').dataset.html = html; }
   state.quickList = list;
 }
@@ -802,7 +851,7 @@ function fillCommandRows() {
   $('#cmdRows').innerHTML = rows.map((c) => commandRow(c)).join('') || '<p class="hint">Aucune commande : ajoute-en une.</p>';
 }
 const commandRow = (c = { titre: '', instruction: '' }) => `<div class="cmdrow">
-  <input class="ct" maxlength="60" placeholder="Titre (ex. 🧪 Tests)" value="${esc(c.titre)}">
+  <input class="ct" maxlength="60" placeholder="Titre (ex. Tests)" value="${esc(c.titre)}">
   <textarea class="ci" rows="2" placeholder="Instruction envoyée à Claude">${esc(c.instruction)}</textarea>
   <button type="button" class="btn ghost" data-del-cmd>Supprimer</button></div>`;
 
@@ -821,7 +870,7 @@ $('#cmdForm').addEventListener('submit', async (ev) => {
 // ---------- mémoire du projet (CLAUDE.md, lu par Claude au début de chaque tâche)
 async function openMemory(project) {
   const p = state.projects.find((x) => x.id === project);
-  $('#memTitle').textContent = `🧠 Mémoire · ${p?.name || project}`;
+  $('#memTitle').textContent = `Mémoire · ${p?.name || project}`;
   $('#memText').value = '';
   $('#memHint').textContent = 'Chargement…';
   $('#memDlg').dataset.project = project;
@@ -844,6 +893,120 @@ $('#memForm').addEventListener('submit', async (ev) => {
 });
 
 // ---------- captures, tests, CI, pull request, revue
+/** Relecture par un second agent : avis et remarques (corrigées ou à voir). */
+function reviewHtml(e) {
+  const r = [...e.events].reverse().find((x) => x.type === 'relecture');
+  if (!r) return '';
+  const grav = { bloquant: 'bad', important: 'warn', mineur: '' };
+  const items = (r.remarques || []).map((x) => `<li class="${grav[x.gravite] || ''}"><span class="rvtag">${esc(x.gravite)}</span>
+      ${x.fichier ? `<code>${esc(x.fichier)}</code> ` : ''}${esc(x.texte)}${x.corrigee ? ` <span class="okt">${ic('check')} corrigée</span>` : ''}</li>`).join('');
+  const n = (r.remarques || []).length, fixed = (r.remarques || []).filter((x) => x.corrigee).length;
+  return `<details class="reviewbox ${r.erreur ? 'err' : n ? '' : 'clean'}" data-k="relecture"${n && n > fixed ? ' open' : ''}>
+    <summary>${ic('shield')} ${r.erreur ? 'Relecture non faite' : n ? `Relu par un second agent : ${n} remarque(s), ${fixed} corrigée(s)` : 'Relu par un second agent : rien à signaler'}</summary>
+    ${r.avis ? `<p>${esc(r.avis)}</p>` : ''}${items ? `<ul>${items}</ul>` : ''}</details>`;
+}
+
+/** Plan proposé par un atelier d'objectif, avec la décision : valider (et lancer), ou demander des ajustements. */
+function planHtml(e) {
+  const p = [...e.events].reverse().find((x) => x.type === 'plan');
+  if (!p) return '';
+  const o = (state.objectives || []).find((x) => x.id === e.task.objective || x.conversation === conversationOf(e.task.id));
+  const pending = o?.etat === 'plan_propose';
+  return `<div class="planbox"><div class="datatitle">${ic('list')} Plan proposé</div>${p.resume ? `<p>${esc(p.resume)}</p>` : ''}
+    <ol>${(p.etapes || []).map((x) => `<li><b>${esc(x.titre)}</b>${x.projet ? ` <span class="muted">· ${esc(projectName(x.projet))}</span>` : ''}
+      <div class="hint">${esc(String(x.instruction).slice(0, 240))}</div></li>`).join('')}</ol>
+    ${pending ? `<div class="actions"><button class="btn primary" data-obj="valider" data-id="${esc(o.id)}" data-lancer="1">${ic('play')} Valider et lancer l'étape 1</button>
+      <button class="btn" data-obj="valider" data-id="${esc(o.id)}">Valider sans lancer</button>
+      <button class="btn ghost" data-obj="ajuster" data-task="${esc(e.task.id)}">${ic('chat')} Demander des ajustements</button></div>`
+    : o ? `<div class="hint">${{ en_cours: 'Plan validé : en cours.', atteint: 'Objectif atteint.', abandonne: 'Objectif abandonné.' }[o.etat] || ''}</div>` : ''}</div>`;
+}
+
+const OBJ_ETATS = { atelier: 'Atelier de décision', plan_propose: 'Plan à valider', en_cours: 'En cours', atteint: 'Atteint', abandonne: 'Abandonné' };
+
+/** Objectifs : atelier en cours, plan à valider, étapes enchaînées et avancement ; « ＋ Objectif » ouvre un atelier. */
+function objectivesHtml() {
+  const list = (state.objectives || []).filter((o) => o.etat !== 'abandonne' && !(o.etat === 'atteint' && Date.now() / 1000 - o.maj > 7 * 86400));
+  const stIc = { faite: stIcon('done'), en_cours: '<span class="spin"></span>', erreur: stIcon('error'), a_faire: '<span class="todo-dot"></span>' };
+  const cards = list.map((o) => {
+    const n = o.etapes.length, pct = n ? Math.round((o.faites / n) * 100) : 0;
+    const steps = n ? `<ol class="objsteps">${o.etapes.map((x, i) => `<li class="${x.etat}">${stIc[x.etat] || ''}<span>${esc(x.titre)}</span>
+        ${x.tache ? `<button class="btn ghost" data-jump="${esc(x.tache)}">Voir</button>` : ''}
+        ${x.etat === 'erreur' ? `<button class="btn ghost" data-obj="etape" data-id="${esc(o.id)}" data-etape="${i}">${ic('refresh')} Relancer</button>` : ''}</li>`).join('')}</ol>` : '';
+    const actions = {
+      atelier: `<button class="btn" data-jump="${esc(o.conversation)}">${ic('chat')} Ouvrir l'atelier</button>`,
+      plan_propose: `<button class="btn primary" data-obj="valider" data-id="${esc(o.id)}" data-lancer="1">${ic('play')} Valider et lancer</button>
+        <button class="btn" data-jump="${esc(o.conversation)}">Voir le plan et ajuster</button>`,
+      en_cours: `${o.suivante != null ? `<button class="btn primary" data-obj="etape" data-id="${esc(o.id)}">${ic('play')} Lancer l'étape ${o.suivante + 1}</button>` : ''}
+        <button class="btn ghost" data-obj="abandonner" data-id="${esc(o.id)}">Abandonner</button>`,
+    }[o.etat] || '';
+    return `<article class="objcard ${o.etat}"><div class="fhead"><b>${esc(o.titre)}</b><span class="objstate ${o.etat}">${OBJ_ETATS[o.etat] || o.etat}</span></div>
+      <div class="muted">${o.projet ? esc(projectName(o.projet)) : 'Projet choisi par Claude'}${o.horizon ? ` · échéance : ${esc(o.horizon)}` : ''}</div>
+      ${n ? `<div class="meter objmeter"><span>${o.faites}/${n}</span><div class="bar"><i data-w="${pct}"></i></div><span class="mv">${pct} %</span></div>` : ''}
+      ${o.resume ? `<div class="hint">${esc(o.resume)}</div>` : ''}${steps}<div class="actions">${actions}</div></article>`;
+  }).join('');
+  return `<section class="sect"><div class="secthead"><h3>Objectifs${list.length ? ` <span class="count">${list.length}</span>` : ''}</h3>
+    <button type="button" class="btn ghost" data-obj="nouveau">${ic('plus')} Objectif</button></div>
+    ${cards ? `<div class="objs">${cards}</div>` : '<div class="emptyd">Donnez un objectif (« rendre le projet présentable vendredi ») : Claude vous aide à décider comment l\'atteindre, puis enchaîne les étapes.</div>'}</section>`;
+}
+
+function openObjective() {
+  const opts = state.projects.filter((p) => p.id).map((p) => `<option value="${esc(p.id)}">${esc(p.name || p.id)}</option>`).join('');
+  $('#objProject').innerHTML = `<option value="">Choisi par Claude</option>${opts}`;
+  $('#objProject').value = state.selected || '';
+  $('#objText').value = '';
+  $('#objHorizon').value = '';
+  $('#objDlg').showModal();
+  $('#objText').focus();
+}
+$('#objForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  try {
+    const r = await api('objectif_creer', { texte: $('#objText').value.trim(), project: $('#objProject').value || null, horizon: $('#objHorizon').value.trim() });
+    $('#objDlg').close();
+    state.pendingJump = r.task_id;
+    setView('chat');
+    await poll();
+  } catch (e) { $('#objHint').textContent = e.message; }
+});
+
+async function objectiveAction(b) {
+  const a = b.dataset.obj;
+  if (a === 'nouveau') return openObjective();
+  if (a === 'ajuster') {  // la demande d'ajustement est un message de l'atelier
+    setReplyTo(b.dataset.task);
+    setView('chat');
+    input.placeholder = 'Ce que vous voulez changer dans le plan…';
+    input.focus();
+    return;
+  }
+  if (a === 'abandonner' && !confirm('Abandonner cet objectif ? Les étapes déjà faites restent.')) return;
+  b.disabled = true;
+  const r = await api('objectif', { action: a, id: b.dataset.id, ...(b.dataset.lancer ? { lancer: true } : {}),
+    ...(b.dataset.etape ? { etape: Number(b.dataset.etape) } : {}) });
+  if (r.task_id) state.pendingJump = r.task_id;
+  poll();
+}
+
+/** Espace Données : tableau agrégé (cases sous le seuil masquées « s »), graphique, requête ; rapport Quarto à télécharger. */
+function dataHtml(e) {
+  let out = '';
+  for (const d of e.events.filter((x) => x.type === 'donnees')) {
+    // SVG produit par le worker (valeurs échappées) ; refusé s'il contient autre chose que du dessin
+    const svg = /^<svg[\s>]/.test(d.svg || '') && !/<script|\son\w+=|href|<foreignObject/i.test(d.svg) ? d.svg : '';
+    const rows = (d.lignes || []).map((r) => `<tr>${r.map((v) => `<td class="${v === 's' ? 'secret' : typeof v === 'number' ? 'num' : ''}">${
+      esc(typeof v === 'number' && !(Number.isInteger(v) && v >= 1900 && v <= 2100) ? v.toLocaleString('fr-FR', { maximumFractionDigits: 2 }) : v ?? '')}</td>`).join('')}</tr>`).join('');
+    out += `<div class="databox"><div class="datatitle">${ic('data')} ${esc(d.titre || '')}</div>${svg ? `<div class="datachart">${svg}</div>` : ''}
+      <div class="datatable"><table><thead><tr>${(d.colonnes || []).map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>${rows}</tbody></table></div>
+      <div class="hint">${d.masquees ? `${d.masquees} case(s) masquée(s) « s » : moins de ${Number(d.seuil)} individus. ` : ''}Résultat agrégé, calculé sur S3 en lecture seule.</div>
+      <details class="datasql"><summary>Requête SQL</summary><pre><code>${esc(d.sql || '')}</code></pre></details>
+      ${e.task.status === 'done' ? `<div class="fhead"><button class="btn ghost" data-rapport="${esc(e.task.id)}">${ic('file')} Rapport Quarto de cette conversation</button></div>` : ''}</div>`;
+  }
+  for (const f of e.events.filter((x) => x.type === 'fichier')) {
+    out += `<div class="fhead"><a class="btn" href="api.php?r=fichier&amp;id=${encodeURIComponent(f.id)}" download="${esc(f.nom)}">${ic('download')} ${esc(f.nom)}</a></div>`;
+  }
+  return out;
+}
+
 function imagesHtml(e) {
   const shots = e.events.filter((x) => x.type === 'image');
   if (!shots.length) return '';
@@ -855,8 +1018,8 @@ function imagesHtml(e) {
 function testsHtml(e) {
   const r = [...e.events].reverse().find((x) => x.type === 'tests');
   if (!r) return '';
-  if (r.skipped) return `<div class="hint">🧪 ${esc(r.skipped)}</div>`;
-  return `<details class="tests ${r.ok ? 'ok' : 'ko'}" data-k="tests"><summary>🧪 Tests ${r.ok ? '✅ réussis' : '❌ en échec'} · ${duree(r.duration_s || 1)}
+  if (r.skipped) return `<div class="hint">${ic('flask')} ${esc(r.skipped)}</div>`;
+  return `<details class="tests ${r.ok ? 'ok' : 'ko'}" data-k="tests"><summary>${ic('flask')} Tests ${r.ok ? 'réussis' : 'en échec'} · ${duree(r.duration_s || 1)}
     <code>${esc(r.command)}</code></summary><pre>${esc(r.output || '')}</pre></details>`;
 }
 
@@ -865,7 +1028,7 @@ function ciPrHtml(e) {
   let html = '';
   const ci = [...e.events].reverse().find((x) => x.type === 'ci');
   if (ci && ci.state !== 'none') {
-    const lab = { pending: '⏳ CI en cours', success: '✅ CI réussie', failure: '❌ CI en échec' }[ci.state] || ci.state;
+    const lab = { pending: 'CI en cours', success: 'CI réussie', failure: 'CI en échec' }[ci.state] || ci.state;
     const failed = (ci.checks || []).filter((c) => c.conclusion && !['success', 'neutral', 'skipped'].includes(c.conclusion)).map((c) => c.name);
     html += `<div class="ci ${esc(ci.state)}">${lab} · <code>${esc(ci.sha)}</code>${failed.length ? ` · ${esc(failed.join(', '))}` : ''}
       ${ci.url ? `· <a href="${esc(ci.url)}" target="_blank" rel="noopener">détails</a>` : ''}</div>`;
@@ -875,7 +1038,7 @@ function ciPrHtml(e) {
   const conv = state.order.filter((id) => conversationOf(id) === conversationOf(t.id));
   const hasPr = conv.some((id) => prsOf(state.tasks.get(id)).length);
   if (t.status === 'done' && c?.branch && !['main', 'master', 'HEAD'].includes(c.branch) && !hasPr && lastOfConversation(t.id) === t.id) {
-    html += `<div class="actions"><button class="btn" data-open-pr="${esc(t.id)}">🔀 Ouvrir une pull request</button></div>`;
+    html += `<div class="actions"><button class="btn" data-open-pr="${esc(t.id)}">${ic('pr')} Ouvrir une pull request</button></div>`;
   }
   return html;
 }
@@ -902,8 +1065,8 @@ function prBox(pr, taskId, compact = false) {
   const merged = !!done;
   const repo = pr.url.replace(/^https:\/\/github\.com\/|\/pull\/\d+$/g, '');
   return `<div class="prbox${done === 'merged' ? ' merged' : ''}${done === 'closed' ? ' closed' : ''}${compact ? ' compact' : ''}">
-    <div class="prtitle">🔀 Pull request #${esc(pr.number)}${pr.title ? ` · ${esc(pr.title)}` : ''}</div>
-    <div class="muted prmeta">${esc(repo)}${pr.head ? ` · ${esc(pr.head)} → ${esc(pr.base)}` : ''}${done === 'merged' ? ' · <b class="okt">✅ fusionnée</b>' : done === 'closed' ? ' · <b>fermée</b>' : ''}</div>
+    <div class="prtitle">${ic('pr')} Pull request #${esc(pr.number)}${pr.title ? ` · ${esc(pr.title)}` : ''}</div>
+    <div class="muted prmeta">${esc(repo)}${pr.head ? ` · ${esc(pr.head)} → ${esc(pr.base)}` : ''}${done === 'merged' ? ' · <b class="okt">fusionnée</b>' : done === 'closed' ? ' · <b>fermée</b>' : ''}</div>
     <div class="actions"><a class="btn" href="${esc(pr.url)}" target="_blank" rel="noopener">Voir sur GitHub</a>
       ${merged ? '' : `<button class="btn ok" data-merge-url="${esc(pr.url)}" data-task-id="${esc(taskId)}">Fusionner</button>`}</div></div>`;
 }
@@ -913,7 +1076,7 @@ function prsSection(tasks) {
   const seen = new Map();
   for (const e of tasks) for (const pr of prsOf(e)) if (!merged.has(pr.url) && !seen.has(pr.url)) seen.set(pr.url, { pr, e });
   if (!seen.size) return '';
-  return `<section class="sect"><h3>🔀 Pull requests à valider · ${seen.size}</h3><div class="follows">${[...seen.values()].map(({ pr, e }) =>
+  return `<section class="sect"><h3>Pull requests à valider <span class="count">${seen.size}</span></h3><div class="follows">${[...seen.values()].map(({ pr, e }) =>
     `<article class="follow"><div class="fhead"><b>${esc(state.projects.find((p) => p.id === e.task.project)?.name || e.task.project || '')}</b>
       <button class="btn ghost" data-jump="${esc(e.task.id)}">Voir la tâche</button></div>${prBox(pr, e.task.id, true)}</article>`).join('')}</div></section>`;
 }
@@ -934,10 +1097,10 @@ function numberedDiff(patch) {
 
 function reviewBar(t) {
   const list = state.review.get(t.id) || [];
-  if (!list.length) return '<div class="hint rvhint">💬 Touche une ligne d\'un diff pour la commenter : tes remarques partent ensemble à Claude.</div>';
-  return `<div class="review"><div class="rvhead">💬 Revue · ${list.length} commentaire${list.length > 1 ? 's' : ''}</div>
+  if (!list.length) return '<div class="hint rvhint">Touche une ligne d\'un diff pour la commenter : tes remarques partent ensemble à Claude.</div>';
+  return `<div class="review"><div class="rvhead">Revue · ${list.length} commentaire${list.length > 1 ? 's' : ''}</div>
     ${list.map((r, i) => `<div class="rvitem"><code>${esc(r.path)}:${esc(r.ln)}</code> ${esc(r.text)}
-      <button class="btn ghost" data-rv-del="${esc(t.id)}" data-i="${i}" aria-label="retirer">✕</button></div>`).join('')}
+      <button class="btn ghost" data-rv-del="${esc(t.id)}" data-i="${i}" aria-label="retirer">${ic('x')}</button></div>`).join('')}
     <div class="actions"><button class="btn ok" data-rv-send="${esc(t.id)}">Envoyer la revue à Claude</button></div></div>`;
 }
 
@@ -954,7 +1117,7 @@ document.addEventListener('click', (ev) => {
   det.querySelector('.rvform')?.remove();
   const form = document.createElement('form');
   form.className = 'rvform';
-  form.innerHTML = `<label>💬 ${esc(det.dataset.path)} · ligne ${esc(line.dataset.ln)}</label>
+  form.innerHTML = `<label>${esc(det.dataset.path)} · ligne ${esc(line.dataset.ln)}</label>
     <textarea rows="2" placeholder="Ta remarque (ex. gère le cas vide)" required></textarea>
     <div class="actions"><button type="submit" class="btn ok">Ajouter à la revue</button><button type="button" class="btn ghost" data-rv-cancel>Annuler</button></div>`;
   line.closest('.diff').appendChild(form);
@@ -985,21 +1148,9 @@ function stepsList(t, steps) {
 function nextStepsHtml(e) {
   const steps = pendingSteps(e);
   if (!steps) return '';
-  return `<div class="nexts"><div class="nhead"><span>💡 Prochaines étapes</span>
+  return `<div class="nexts"><div class="nhead"><span>Prochaines étapes</span>
       <button class="btn ghost" data-dismiss="${esc(e.task.id)}">Ignorer</button></div>${stepsList(e.task, steps)}
     <div class="hint">Toucher une étape la prépare dans la saisie ; ▶ la lance tout de suite.</div></div>`;
-}
-
-function followHtml(items) {
-  if (!items.length) return '';
-  return `<section class="sect"><h3>Prochaines étapes · ${items.length}</h3><div class="follows">${items.map((e) => {
-    const proj = state.projects.find((p) => p.id === e.task.project);
-    return `<article class="follow"><div class="fhead"><b>${esc(proj?.name || e.task.project || '')}</b>
-        <span class="muted" data-ago="${Number(e.task.updated || e.task.created)}"></span>
-        <button class="btn ghost" data-dismiss="${esc(e.task.id)}">Ignorer</button></div>
-      <button class="forigin" data-jump="${esc(e.task.id)}">↳ ${esc(e.task.instruction || '')}</button>
-      ${stepsList(e.task, pendingSteps(e))}</article>`;
-  }).join('')}</div></section>`;
 }
 
 async function runNextStep(id, i, now) {
@@ -1036,18 +1187,18 @@ function meter(label, ratio, text, title) {
   if (ratio == null || Number.isNaN(ratio)) return `<div class="meter"><span>${label}</span><div class="bar"></div><span class="mv">—</span></div>`;
   const r = Math.min(1, Math.max(0, ratio));
   const level = r >= 0.95 ? 'bad' : r >= 0.85 ? 'warn' : '';
-  const flag = level === 'bad' ? '⛔ ' : level === 'warn' ? '⚠ ' : '';
+  const flag = level ? `${ic('alert')} ` : '';  // pas seulement la couleur : une icône signale le seuil
   return `<div class="meter" title="${esc(title || '')}"><span>${label}</span>
     <div class="bar ${level}" role="meter" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.round(r * 100)}" aria-label="${label}"><i data-w="${(r * 100).toFixed(1)}"></i></div>
-    <span class="mv">${flag}${text}</span></div>`;
+    <span class="mv ${level}">${flag}${text}</span></div>`;
 }
 
 function currentStep(e) {
-  if (e.task.status === 'waiting_approval') return '⚠️ Attend ta validation';
-  if (e.task.status === 'queued') return '⏳ En file d\'attente';
-  if (e.task.status === 'routing') return '🧭 Choisit le projet';
-  if (e.task.status === 'pending') return e.task.waiting_project ? `⏳ Attend le pod « ${e.task.project} »`
-    : state.workerOnline ? '⏳ Transmise au pod' : '⏳ Pod hors ligne';
+  if (e.task.status === 'waiting_approval') return 'Attend ta validation';
+  if (e.task.status === 'queued') return 'En file d\'attente';
+  if (e.task.status === 'routing') return 'Choisit le projet';
+  if (e.task.status === 'pending') return e.task.waiting_project ? `Attend le pod « ${e.task.project} »`
+    : state.workerOnline ? 'Transmise au pod' : 'Pod hors ligne';
   const steps = stepsOf(e);
   return steps.length ? steps[steps.length - 1].label : 'Réfléchit…';
 }
@@ -1064,6 +1215,31 @@ function liveCard(e) {
       <span class="since" data-since="${Number(t.created)}"></span></div>
     <div class="linst">${esc(t.instruction || '')}</div>
     <div class="lstep">${t.status === 'running' ? '<span class="spin"></span>' : ''}<span>${esc(currentStep(e))}</span></div>${plan}</button>`;
+}
+
+/** Mémoire d'un projet (CLAUDE.md, lue par Claude au début de chaque tâche) : la voir, ou la créer si elle manque. */
+function memoryBadge(pid) {
+  const mm = state.memory?.projects.find((x) => x.id === pid)?.memory;
+  const creating = [...state.tasks.values()].some((e) => e.task.project === pid && e.task.memory_init && ACTIVE.has(e.task.status));
+  if (creating) return `<span class="membadge">${ic('book')} mémoire en cours d'écriture…</span>`;
+  if (mm?.state === 'absente' && mm.size) {  // une mémoire trop courte (moins de 150 caractères) reste lisible et modifiable
+    return `<button class="btn mem warn" data-memory="${esc(pid)}" title="mémoire trop courte pour guider Claude : complète-la, ou laisse Claude la réécrire au prochain travail">${ic('alert')} Mémoire trop courte</button>`;
+  }
+  if (mm?.state === 'absente') {
+    return `<button class="btn mem warn" data-memo-init="${esc(pid)}" title="Claude lit le dépôt et écrit CLAUDE.md : objectif, commandes, conventions, état, prochaines étapes">${ic('alert')} Sans mémoire · Créer</button>`;
+  }
+  return `<button class="btn ghost mem" data-memory="${esc(pid)}" title="mémoire du projet (CLAUDE.md), lue par Claude au début de chaque tâche">${ic('book')} Mémoire${mm?.lines ? ` · ${mm.lines} l.` : ''}</button>`;
+}
+
+/** Pod lancé depuis le cockpit qui démarre : carte provisoire avec l'étape en cours, jusqu'à la connexion de son worker. */
+function startingPodCard(e) {
+  const t = e.task;
+  const nom = (t.instruction.match(/Nouveau pod « ([^»]+) »/) || [])[1] || '';
+  return `<article class="podcard starting"><div class="podhead"><span class="dot"></span><b>${esc(nom)}</b>
+      <span class="tag">démarrage</span><span class="muted podseen" data-ago="${Number(t.created)}"></span></div>
+    <div class="hint">${esc(currentStep(e) || 'Création du pod')}</div>
+    <div class="hint">Le projet apparaît ici dès que son worker est connecté (1 à 3 min). Claude écrit ensuite sa mémoire (CLAUDE.md) s'il n'en a pas.</div>
+    <div><button class="btn ghost" data-jump="${esc(t.id)}">Suivre le démarrage</button></div></article>`;
 }
 
 function podCard(w) {
@@ -1086,8 +1262,7 @@ function podCard(w) {
       g.ahead ? `↑${g.ahead} à pousser` : '', g.behind ? `↓${g.behind} en retard` : '',
     ].filter(Boolean).join(' · ');
     const last = g?.last_commit ? `<div class="lastc" title="${esc(g.last_commit.sha)}">${esc(g.last_commit.subject)} · <span data-ago="${g.last_commit.ts}"></span></div>` : '';
-    return `<div class="proj"><div class="pname">${esc(p?.name || pid)}
-        <button class="btn ghost mem" data-memory="${esc(pid)}" title="mémoire du projet (CLAUDE.md)">🧠 Mémoire</button></div>
+    return `<div class="proj"><div class="pname">${esc(p?.name || pid)}${memoryBadge(pid)}</div>
       <div class="pgit">${git}</div>${last}</div>`;
   }).join('');
   const wts = (st.worktrees || []).map((wt) => {
@@ -1095,16 +1270,16 @@ function podCard(w) {
     const e = id && state.tasks.get(id);
     const busy = e && ACTIVE.has(e.task.status);
     const btns = e?.task.worktree && !busy ? `<button class="btn ghost" data-wt="merge" data-task-id="${esc(id)}">Fusionner</button><button class="btn ghost" data-wt="discard" data-task-id="${esc(id)}">Jeter</button>` : '';
-    return `<div class="wtrow"><span>🌿 <b>${esc(wt.branch)}</b> <span class="muted">${esc(wt.project)}</span>${busy ? ' · <span class="acc">en cours</span>' : ''}</span>
+    return `<div class="wtrow"><span>${ic('branch')} <b>${esc(wt.branch)}</b> <span class="muted">${esc(wt.project)}</span>${busy ? ' · <span class="acc">en cours</span>' : ''}</span>
       <span class="wtbtns">${e ? `<button class="btn ghost" data-jump="${esc(id)}">Voir</button>` : ''}${btns}</span></div>`;
   }).join('');
   return `<article class="podcard${w.online ? '' : ' off'}">
     <div class="podhead"><span class="dot${w.online ? ' on' : ''}"></span><b>${esc(w.name)}</b>
       <span class="tag">${w.orchestrator ? 'orchestrateur' : 'projet'}</span>
       <span class="muted podseen">${w.online ? (st.started ? `actif depuis <span data-uptime="${st.started}"></span>` : 'en ligne') : `hors ligne · vu <span data-ago="${w.seen}"></span>`}</span></div>
-    ${st.vscode?.url && w.online ? `<div class="podlinks"><a class="btn" href="${esc(st.vscode.url)}" target="_blank" rel="noopener">🖥 Ouvrir VSCode</a>
-      ${st.vscode.password ? `<button class="btn ghost" data-copy-pw="${esc(w.id)}" title="copie le mot de passe de VSCode">🔑 Mot de passe</button>` : ''}</div>` : ''}
-    ${slots}${st.preview?.url && w.online ? `<a class="preview" href="${esc(st.preview.url)}" target="_blank" rel="noopener">👁 Aperçu de l'application · port ${esc(st.preview.port)}</a>` : ''}
+    ${st.vscode?.url && w.online ? `<div class="podlinks"><a class="btn" href="${esc(st.vscode.url)}" target="_blank" rel="noopener">${ic('external')} Ouvrir VSCode</a>
+      ${st.vscode.password ? `<button class="btn ghost" data-copy-pw="${esc(w.id)}" title="copie le mot de passe de VSCode">${ic('key')} Mot de passe</button>` : ''}</div>` : ''}
+    ${slots}${st.preview?.url && w.online ? `<a class="preview" href="${esc(st.preview.url)}" target="_blank" rel="noopener">${ic('eye')} Aperçu de l'application · port ${esc(st.preview.port)}</a>` : ''}
     ${meters ? `<div class="meters">${meters}</div>` : ''}
     ${projects ? `<div class="projs">${projects}</div>` : ''}
     ${wts ? `<div class="wts"><div class="sub">Branches parallèles</div>${wts}</div>` : ''}
@@ -1128,17 +1303,26 @@ function variantsHtml(tasks) {
           ${t.model ? `<span class="muted">${esc(MODELES[t.model] || '')}</span>` : ''}</div>
         ${shot ? `<button class="shot" data-img="${esc(shot.image)}" data-caption="${esc(shot.caption || '')}"><img src="api.php?r=image&amp;id=${esc(shot.image)}" alt="capture" loading="lazy"></button>` : ''}
         <div class="rmeta">${c && (c.file_count || c.commits?.length) ? changesLine(c) : ACTIVE.has(t.status) ? esc(currentStep(e)) : 'aucune modification'}
-          ${tests ? ` · 🧪 ${tests.ok ? '✅' : '❌'}` : ''}</div>
+          ${tests ? ` · tests ${tests.ok ? 'réussis' : 'en échec'}` : ''}</div>
         <div class="actions"><button class="btn ghost" data-jump="${esc(t.id)}">Voir</button>
-          ${allDone && t.worktree?.state === 'active' ? `<button class="btn ok" data-keep="${esc(t.id)}">✓ Garder</button>` : ''}</div></div>`;
+          ${allDone && t.worktree?.state === 'active' ? `<button class="btn ok" data-keep="${esc(t.id)}">${ic('check')} Garder</button>` : ''}</div></div>`;
     }).join('')}</div></article>`;
   }).join('')}</section>`;
+}
+
+/** Validations en attente, en tête du tableau de bord et avec leurs boutons : on approuve sans chercher la carte dans le fil. */
+function approvalsSection(tasks) {
+  const items = [];
+  for (const e of tasks) for (const a of e.approvals.values()) if (!a.decision) items.push([e, a]);
+  if (!items.length) return '';
+  return `<section class="sect attn"><h3>À valider <span class="count">${items.length}</span></h3>${items.map(([e, a]) =>
+    `<div class="dapproval" data-task="${esc(e.task.id)}"><button type="button" class="linkish" data-jump="${esc(e.task.id)}">${esc(projectName(e.task.project) || '')} · ${esc(shownInstruction(e.task.instruction).slice(0, 80))}</button>${approvalHtml(a)}</div>`).join('')}</section>`;
 }
 
 function questionsSection(tasks) {
   const open = tasks.filter(openQuestion);
   if (!open.length) return '';
-  return `<section class="sect"><h3>❓ En attente de ta réponse · ${open.length}</h3><div class="follows">${open.map((e) => {
+  return `<section class="sect"><h3>En attente de ta réponse <span class="count">${open.length}</span></h3><div class="follows">${open.map((e) => {
     const proj = state.projects.find((p) => p.id === e.task.project);
     return `<article class="follow ask"><div class="fhead"><b>${esc(proj?.name || e.task.project || '')}</b>
       <button class="btn ghost" data-jump="${esc(e.task.id)}">Voir</button></div>
@@ -1150,10 +1334,10 @@ function recentRow(e) {
   const t = e.task;
   const { c } = changesOf(e);
   const proj = state.projects.find((p) => p.id === t.project);
-  const icon = { done: '✅', error: '❌', cancelled: '⏹', needs_project: '❓', paused: '⏸' }[t.status] || '•';
+  const icon = stIcon(t.status);
   return `<button class="recent" data-jump="${esc(t.id)}"><span class="ri">${icon}</span>
     <span class="rbody"><span class="rinst">${esc(t.instruction || '')}</span>
-      <span class="rmeta">${esc(proj?.name || t.project || '')}${c && (c.file_count || c.commits?.length) ? ` · ${changesLine(c)}` : ''}${t.worktree ? ' · 🌿' : ''}</span></span>
+      <span class="rmeta">${esc(proj?.name || t.project || '')}${c && (c.file_count || c.commits?.length) ? ` · ${changesLine(c)}` : ''}${t.worktree ? ' · branche parallèle' : ''}</span></span>
     <span class="rtime" data-ago="${Number(t.updated || t.created)}"></span></button>`;
 }
 
@@ -1190,19 +1374,18 @@ function bilanCard(b, p) {
   const w = state.workers.find((x) => (x.projects || []).includes(p.project));
   const g = w?.state?.projects?.[p.project];
   const stat = (v, l, sub = '') => `<div class="bstat"><div class="v">${v}</div><div class="l">${l}</div>${sub ? `<div class="s">${sub}</div>` : ''}</div>`;
-  const statuts = [p.done ? `✅ ${p.done}` : '', p.error ? `❌ ${p.error}` : '', p.active ? `◐ ${p.active}` : ''].filter(Boolean).join(' · ');
+  const statuts = [p.done ? `${p.done} terminée(s)` : '', p.error ? `${p.error} en erreur` : '', p.active ? `${p.active} en cours` : ''].filter(Boolean).join(' · ');
   const git = g ? [`⎇ ${esc(g.branch || '?')}`, g.dirty ? `<span class="warnt">● ${g.dirty} non commité${g.dirty > 1 ? 's' : ''}</span>` : '<span class="okt">propre</span>',
     g.ahead ? `↑${g.ahead} à pousser` : ''].filter(Boolean).join(' · ') : '';
   const files = p.top_files.length ? `<div class="bsub">Fichiers les plus touchés</div>${p.top_files.map((f) => {
     const i = f.path.lastIndexOf('/');
     return `<div class="tfile"><span class="fp"><span class="dir">${esc(f.path.slice(0, i + 1))}</span>${esc(f.path.slice(i + 1))}</span><span class="muted">×${f.count}</span></div>`;
   }).join('')}` : '';
-  const icon = { done: '✅', error: '❌', cancelled: '⏹', needs_project: '❓', paused: '⏸' };
-  const recent = p.recent.map((t) => `<button class="brecent" data-jump="${esc(t.id)}"><span>${icon[t.status] || '◐'}</span>
+  const recent = p.recent.map((t) => `<button class="brecent" data-jump="${esc(t.id)}"><span>${stIcon(t.status)}</span>
     <span class="rinst">${esc(t.instruction)}</span><span class="rtime" data-ago="${t.updated}"></span></button>`).join('');
   return `<article class="bcard">
     <div class="podhead"><b>${esc(proj?.name || p.project)}</b>${w ? `<span class="tag"><span class="dot${w.online ? ' on' : ''}"></span>${esc(w.name)}</span>` : ''}
-      <button class="btn ghost mem" data-memory="${esc(p.project)}" title="mémoire du projet (CLAUDE.md)">🧠</button>
+      <button class="btn ghost mem" data-memory="${esc(p.project)}" title="mémoire du projet (CLAUDE.md)">${ic('book')}</button>
       <span class="muted podseen">actif <span data-ago="${p.last}"></span></span></div>
     ${git ? `<div class="pgit">${git}</div>` : ''}
     <div class="bstats">
@@ -1254,14 +1437,15 @@ async function openPodDialog() {
   delete $('#newRepoName').dataset.touched;
   delete $('#podName').dataset.touched;
   setPodMode('existing');
-  $('#podHint').textContent = '';
+  $('#podHint').textContent = 'Le pod démarre (1 à 3 min) et clone le dépôt ; tu suis chaque étape sur sa carte. Une fois connecté, '
+    + 'Claude écrit la mémoire du projet (CLAUDE.md : objectif, commandes, état) avant tout, pour savoir par où partir.';
   $('#podSubmit').disabled = false;
   $('#podDlg').showModal();
   renderRepos();
   try {
     const r = await api('depots');
     state.repos = r.depots;
-    if (!r.orchestrateur) $('#podHint').textContent = '⚠️ Orchestrateur hors ligne : le pod ne pourra pas être lancé.';
+    if (!r.orchestrateur) $('#podHint').textContent = 'Orchestrateur hors ligne : le pod ne pourra pas être lancé.';
     else if (!r.depots.length) $('#podHint').textContent = 'Liste des dépôts indisponible : colle l\'URL du dépôt.';
   } catch (e) {
     state.repos = [];
@@ -1278,7 +1462,7 @@ function renderRepos() {
   const sel = $('#podRepo').value;
   $('#repoList').innerHTML = hits.map((r) => `<button type="button" class="repo" role="option" aria-selected="${r.url === sel}"
       data-repo="${esc(r.url)}" data-branch="${esc(r.branch)}">
-      <span class="rn">${r.private ? '🔒 ' : ''}${esc(r.name)}</span>
+      <span class="rn">${r.private ? ic('lock') + ' ' : ''}${esc(r.name)}</span>
       <span class="rd">${esc(r.description || '')}</span>
       <span class="rp">${r.pushed ? `poussé ${ago(Date.parse(r.pushed) / 1000)}` : ''}</span></button>`).join('')
     || `<div class="hint">${list.length ? 'Aucun dépôt ne correspond.' : ''}</div>`;
@@ -1333,7 +1517,7 @@ function resetLabel(ts) {
 function usageHtml(u) {
   if (!u) return '';
   const rows = u.limits.map((l) => meter(USAGE_LABELS[l.type] || l.type, l.utilization,
-    l.utilization == null ? (l.status === 'rejected' ? '⛔ limite atteinte' : '—') : `${Math.round(l.utilization * 100)} %`,
+    l.utilization == null ? (l.status === 'rejected' ? 'limite atteinte' : '—') : `${Math.round(l.utilization * 100)} %`,
     resetLabel(l.resets_at)) + (l.resets_at ? `<div class="ureset">${esc(resetLabel(l.resets_at))}</div>` : '')).join('');
   return `<section class="sect"><h3>Usage de Claude</h3><div class="usagecard"><div class="meters">${rows}</div>
     <div class="hint">Mis à jour ${ago(u.ts)}${u.source === 'agent' ? ' (signalé pendant les tâches)' : ''}</div></div></section>`;
@@ -1372,6 +1556,8 @@ function renderDash() {
   const duJour = tasks.filter((e) => e.task.created >= debutJour && e.task.tokens?.total);
   const tokensJour = duJour.reduce((n, e) => n + e.task.tokens.total, 0);
   const gourmandes = duJour.sort((a, b) => b.task.tokens.total - a.task.tokens.total).slice(0, 3);
+  // Pods lancés depuis le cockpit qui démarrent encore (la tâche de lancement suit le pod jusqu'à la connexion de son worker)
+  const starting = tasks.filter((e) => e.task.kind === 'service' && ACTIVE.has(e.task.status) && /Nouveau pod/.test(e.task.instruction || ''));
   const recent = tasks.filter((e) => !ACTIVE.has(e.task.status) && e.task.instruction)
     .sort((a, b) => (b.task.updated || b.task.created) - (a.task.updated || a.task.created)).slice(0, 8);
 
@@ -1379,6 +1565,8 @@ function renderDash() {
   // L'essentiel d'abord (ce qui attend une action, l'autonomie, le travail en cours, les pods) ; le détail est replié.
   const weekIncite = state.week && state.week.hours_left <= 48 && state.week.remaining >= 0.2 && !state.hard?.enabled;
   const html = `<div class="dashwrap">
+    ${approvalsSection(tasks)}
+    ${objectivesHtml()}
     ${questionsSection(tasks)}
     ${prsSection(tasks)}
     ${variantsHtml(tasks)}
@@ -1388,34 +1576,34 @@ function renderDash() {
     ${usageHtml(latestUsage())}
     <section class="sect"><h3>En cours</h3>${active.length
       ? `<div class="lives">${active.map(liveCard).join('')}</div>`
-      : '<div class="emptyd">Aucun Claude ne travaille. Écris une instruction, ou arme le full auto.</div>'}</section>
+      : '<div class="emptyd">Aucun Claude ne travaille. Écris une instruction, ou arme l\'autonomie.</div>'}</section>
     ${proposalsHtml()}
-    <section class="sect"><div class="secthead"><h3>Pods · ${online.length} en ligne</h3><button type="button" class="btn ghost" id="newPod">＋ Nouveau pod</button></div>${state.workers.length
-      ? `<div class="pods">${state.workers.map(podCard).join('')}</div>`
-      : '<div class="emptyd">Aucun pod connecté. Lance « ./run.sh » dans un service VSCode Onyxia.</div>'}</section>
+    <section class="sect"><div class="secthead"><h3>Projets et pods · ${online.length} en ligne</h3><button type="button" class="btn ghost" id="newPod">＋ Nouveau pod</button></div>${state.workers.length || starting.length
+      ? `<div class="pods">${starting.map(startingPodCard).join('')}${state.workers.map(podCard).join('')}</div>`
+      : '<div class="emptyd">Aucun pod connecté. Lance « ./run.sh » dans le service VSCode Onyxia qui servira d\'orchestrateur, puis « ＋ Nouveau pod » pour chaque projet.</div>'}</section>
     ${recent.length ? `<section class="sect"><h3>Terminées récemment</h3><div class="recents">${recent.slice(0, 5).map(recentRow).join('')}</div></section>` : ''}
     <details class="more" data-more ${state.dashMore ? 'open' : ''}><summary>Plus de détails</summary><div class="dashwrap">
     <div class="kpis">
       ${kpi(`${working}<small>/${capacity || '—'}</small>`, 'Claude au travail', '', 'agents actifs / capacité des pods en ligne')}
-      ${kpi(pending ? `⚠ ${pending}` : '0', 'Validation(s) en attente', pending ? 'warn' : '')}
       ${kpi(today, 'Tâches aujourd\'hui')}
       ${kpi(fmtTokens(tokensJour), 'Tokens aujourd\'hui', '', 'tokens consommés par les tâches du jour (cache compris)')}
     </div>
     ${gourmandes.length ? `<section class="sect"><h3>Tâches les plus gourmandes aujourd'hui</h3><div class="recents">${gourmandes.map((e) =>
-      `<button class="recent" data-jump="${esc(e.task.id)}"><span class="ri">🔥</span><span class="rbody"><span class="rinst">${esc(shownInstruction(e.task.instruction))}</span>
+      `<button class="recent" data-jump="${esc(e.task.id)}"><span class="ri">${ic('bolt')}</span><span class="rbody"><span class="rinst">${esc(shownInstruction(e.task.instruction))}</span>
         <span class="rmeta">${esc(state.projects.find((p) => p.id === e.task.project)?.name || '')} · ≈ ${fmtTokens(e.task.tokens.total)} tokens${e.task.session_delta != null ? ` · +${Math.round(e.task.session_delta * 100)} % session` : ''}${e.task.model_used ? ` · ${esc(modelName(e.task.model_used))}` : ''}</span></span></button>`).join('')}</div>
       <p class="hint">Pour économiser : une conversation par sujet, la puce du projet plutôt qu'Auto, le tableau de bord pour l'avancement, « Modèle auto ».</p></section>` : ''}
     ${weekIncite ? '' : weekHtml()}
     ${state.hard?.enabled ? '' : reportHtml()}
-    ${followHtml(tasks.filter(pendingSteps).sort((a, b) => (b.task.updated || b.task.created) - (a.task.updated || a.task.created)).slice(0, 6))}
-    ${state.memory && !state.memory.proposals.length ? `<section class="sect"><div class="secthead"><h3>Propositions</h3><button type="button" class="btn ghost" data-prop="ajouter">＋ Ajouter</button></div>
-      <div class="emptyd">Rien en attente : les prochaines étapes des tâches terminées arrivent ici, et le full auto en génère quand la file est vide.</div></section>` : ''}
+    ${state.memory && !state.memory.proposals.length ? `<section class="sect"><div class="secthead"><h3>Propositions</h3><button type="button" class="btn ghost" data-prop="ajouter">＋ Idée</button></div>
+      <div class="emptyd">Rien en attente : les prochaines étapes des tâches terminées arrivent ici, tes idées aussi, et le full auto en génère quand la file est vide.</div></section>` : ''}
     ${projectsHtml()}
     ${bilanHtml()}
     </div></details>
   </div>`;
   // Reconstruit seulement si le contenu change (survol, focus et clics préservés) ; les durées vivent dans tick().
-  if (html !== state.dashHtml) { $('#dash').innerHTML = html; state.dashHtml = html; restoreQuestions($('#dash')); sizes($('#dash')); tick(); }
+  // Pas de reconstruction pendant une saisie dans le tableau de bord (le clavier du téléphone se fermerait) : elle attend le blur.
+  const typing = $('#dash').contains(document.activeElement) && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+  if (html !== state.dashHtml && !typing) { $('#dash').innerHTML = html; state.dashHtml = html; restoreQuestions($('#dash')); sizes($('#dash')); tick(); }
   loadBilan();
   loadReport();
 }
@@ -1429,15 +1617,18 @@ function weekHtml() {
   const w = state.week;
   if (!w) return '';
   const incite = w.hours_left <= 48 && w.remaining >= 0.2 && !state.hard?.enabled;
+  const queued = state.memory?.proposals?.length || 0;
   const est = w.remaining_tokens != null
     ? `≈ <b>${fmtTokens(w.remaining_tokens)}</b> de tokens à dépenser${w.tasks_estimate ? ` · ≈ ${w.tasks_estimate} tâche(s) de taille moyenne` : ''}`
     : 'Estimation en tokens disponible après quelques tâches.';
-  return `<section class="sect"><div class="secthead"><h3>⏳ Reste de la semaine</h3></div>
+  return `<section class="sect"><div class="secthead"><h3>Reste de la semaine</h3></div>
     <div class="weekcard ${incite ? 'incite' : ''}">
       ${meter('Semaine', w.utilization, `${Math.round(w.utilization * 100)} %`, `Limite hebdomadaire : ${Math.round(w.utilization * 100)} % utilisée`)}
       <div class="wkline"><span>Réinitialisation dans <b>${fmtLeft(w.hours_left)}</b></span><span>${est}</span></div>
       ${incite ? `<div class="wkincite">Il reste ${Math.round(w.remaining * 100)} % de ta semaine : sans activité, ces tokens seront perdus.</div>` : ''}
-      ${state.hard?.enabled ? '' : `<button class="btn ${incite ? '' : 'ghost'}" data-hard="on" data-hours="${Math.max(1, Math.min(336, Math.ceil(w.hours_left)))}">☠ Utiliser le reste avec le mode hard</button>`}
+      <div class="wkline"><span>${queued ? `${queued} idée(s) et proposition(s) en file pour les dépenser` : 'Aucune idée en file : Claude en proposera à partir de tes projets.'}</span>
+        <button type="button" class="btn ghost" data-prop="ajouter">＋ Idée</button></div>
+      ${state.hard?.enabled ? '' : `<button class="btn ${incite ? '' : 'ghost'}" data-hard="on" data-hours="${Math.max(1, Math.min(336, Math.ceil(w.hours_left)))}">Utiliser le reste sans validations</button>`}
       <div class="hint">Estimation prudente : le budget est déduit des tokens consommés par les tâches du cockpit cette semaine.</div>
     </div></section>`;
 }
@@ -1454,37 +1645,36 @@ function liveAutonomy(name) {
   if (!state.autopilot?.enabled && !state.hard?.enabled) return '';
   const live = state.workers.find((w) => w.orchestrator && w.online)?.state?.autopilot;
   const running = [...state.tasks.values()].filter((e) => e.task.auto && ACTIVE.has(e.task.status));
-  const lines = running.map((e) => `<button class="live" data-jump="${esc(e.task.id)}">⚙ <b>${esc(name(e.task.project))}</b> — ${esc(shownInstruction(e.task.instruction).slice(0, 90))}
+  const lines = running.map((e) => `<button class="live" data-jump="${esc(e.task.id)}"><span class="spin"></span> <b>${esc(name(e.task.project))}</b> — ${esc(shownInstruction(e.task.instruction).slice(0, 90))}
     <span class="muted">${esc(currentStep(e))}</span></button>`);
-  if (live?.waiting) lines.push(`<div class="live wait">⏳ ${esc(live.waiting.replace(/^en attente : /, 'En attente : '))}</div>`);
+  if (live?.waiting) lines.push(`<div class="live wait">${ic('clock')} ${esc(live.waiting.replace(/^en attente : /, 'En attente : '))}</div>`);
   for (const [id, w] of Object.entries(live?.woken || {})) {
-    lines.push(`<div class="live ${w.ok ? '' : 'bad'}">${w.ok ? '⏻' : '⚠'} <b>${esc(name(id))}</b> — ${w.ok ? 'worker du pod relancé' : `pod non relancé : ${esc(w.text)}`}
+    lines.push(`<div class="live ${w.ok ? '' : 'bad'}">${ic(w.ok ? 'refresh' : 'alert')} <b>${esc(name(id))}</b> — ${w.ok ? 'worker du pod relancé' : `pod non relancé : ${esc(w.text)}`}
       <span class="muted">${ago(w.ts)}</span></div>`);
   }
-  if (!lines.length) lines.push('<div class="live wait">⏳ Rien en cours : le prochain lancement part dans la minute si une proposition ou une reprise attend.</div>');
+  if (!lines.length) lines.push('<div class="live wait">Rien en cours : le prochain lancement part dans la minute si une proposition ou une reprise attend.</div>');
   return `<div class="autolive"><div class="hint">En direct</div>${lines.join('')}</div>`;
 }
 
 function autonomyHtml(name) {
   const a = state.autopilot, h = state.hard;
+  const on = !!(a?.enabled || h?.enabled);
   const chip = (t) => `<span class="chip">${t}</span>`;
   const scope = (ids) => (ids?.length ? ids.map((id) => chip(esc(name(id)))).join('') : chip('tous les projets'));
-  const auto = autoRow({
-    icon: '🤖', title: 'Full auto', on: !!a?.enabled,
-    chips: a?.enabled ? scope(a.projects) + chip(`${a.max_parallel || 1} de front`) + chip(`${a.launched_today}/${a.max_per_day} aujourd'hui`)
-      + chip(`seuil ${Math.round(a.threshold * 100)} %`) + chip(`jusqu'au ${esc(fmtWhen(a.until))}`) : '',
-    text: a?.enabled ? 'Enchaîne le travail resté en plan puis les propositions, repart après chaque réinitialisation. Seules les opérations destructrices restent demandées.'
-      : `${a?.stopped ? `Arrêté : ${esc(a.stopped)}. ` : ''}Enchaîne seul le travail resté en plan puis les propositions. Tu choisis les projets et vois ce qu'il compte faire avant d'armer.`,
-    button: a?.enabled ? '<button class="btn ghost" data-auto="off">Désarmer</button>' : '<button class="btn" data-auto="on">🤖 Armer le full auto…</button>',
-  });
-  const hard = autoRow({
-    icon: '☠', title: 'Mode hard', on: !!h?.enabled,
-    chips: h?.enabled ? scope(h.projects) + chip(`jusqu'au ${esc(fmtWhen(h.until))}`) + (a?.enabled ? chip('full auto armé') : chip('sans full auto')) : '',
-    text: h?.enabled ? 'Plus aucune validation, questions tranchées par Claude. Un compte rendu est dressé ci-dessous.'
-      : 'Pleine autonomie : validations approuvées, questions tranchées par Claude, full auto armé par défaut, compte rendu à la fin.',
-    button: h?.enabled ? '<button class="btn ghost" data-hard="off">Désactiver</button>' : '<button class="btn" data-hard="on">☠ Activer le mode hard…</button>',
-  });
-  return `<section class="sect"><div class="secthead"><h3>⚡ Autonomie</h3></div><div class="autocard">${auto}${hard}</div>${liveAutonomy(name)}</section>`;
+  const until = Math.max(a?.enabled ? a.until : 0, h?.enabled ? h.until : 0);
+  const chips = on ? (h?.enabled ? chip('sans validations') : '') + scope(a?.enabled ? a.projects : h.projects)
+    + (a?.enabled ? chip(`${a.max_parallel || 1} de front`) + chip(`${a.launched_today}/${a.max_per_day} aujourd'hui`) + chip(`seuil ${Math.round(a.threshold * 100)} %`)
+      : chip('validations seules, rien n\'est enchaîné'))
+    + chip(`jusqu'au ${esc(fmtWhen(until))}`) : '';
+  const text = !on
+    ? `${a?.stopped ? `Arrêtée : ${esc(a.stopped)}. ` : ''}Claude enchaîne seul le travail resté en plan, les propositions et tes idées, tant que l'usage le permet. Option « sans validations » (mode hard) pour qu'il ne te demande plus rien. Tu vois ce qu'il compte faire avant d'armer.`
+    : h?.enabled ? 'Plus aucune validation, questions tranchées par Claude. Un compte rendu est dressé ci-dessous.'
+      : 'Enchaîne le travail resté en plan puis les propositions, repart après chaque réinitialisation. Les opérations destructrices restent demandées.';
+  const buttons = !on ? `<button class="btn primary" data-autonomy="on">${ic('bolt')} Armer l'autonomie…</button>`
+    : `<button class="btn ghost" data-autonomy="off">Arrêter</button>${h?.enabled ? '' : ` <button class="btn ghost" data-hard="on">${ic('unlock')} Passer sans validations…</button>`}`;
+  return `<section class="sect"><div class="secthead"><h3>Autonomie</h3></div><div class="autocard">${autoRow({
+    icon: ic(h?.enabled ? 'unlock' : on ? 'refresh' : 'bolt'), title: h?.enabled ? 'Sans validations (mode hard)' : on ? 'Full auto' : 'Autonomie', on, chips, text, button: buttons,
+  })}</div>${liveAutonomy(name)}</section>`;
 }
 
 const projectName = (id) => state.projects.find((p) => p.id === id)?.name || state.memory?.projects.find((p) => p.id === id)?.name || id || 'Auto';
@@ -1493,15 +1683,18 @@ const projectName = (id) => state.projects.find((p) => p.id === id)?.name || sta
 function proposalsHtml() {
   const m = state.memory;
   if (!m?.proposals.length) return '';
-  const proposals = m.proposals.map((x) => `<article class="follow"><div class="fhead"><b>${esc(x.titre)}</b><span class="muted">${esc(projectName(x.project))}</span></div>
+  const origin = (x) => (x.source === 'suite' && state.tasks.get(x.tache)
+    ? `<button class="forigin" data-jump="${esc(x.tache)}">↳ suite de « ${esc(shownInstruction(state.tasks.get(x.tache).task.instruction).slice(0, 70))} »</button>` : '');
+  const proposals = m.proposals.map((x) => `<article class="follow"><div class="fhead"><b>${esc(x.titre)}</b><span class="muted">${x.externe ? `${ic('plug')} ${esc(x.source || 'externe')} · ` : ''}${x.project ? esc(projectName(x.project)) : 'nouveau projet'}</span></div>${origin(x)}
       <div class="hint">${esc(x.instruction.replace(/\n\n\(Tâche lancée par le mode full auto[^)]*\)/, '').slice(0, 220))}</div>
       <div class="fhead"><button class="btn" data-prop="lancer" data-id="${esc(x.id)}">▶ Lancer</button>
         <button class="btn ghost" data-prop="ignorer" data-id="${esc(x.id)}">Ignorer</button></div></article>`).join('');
-  return `<section class="sect"><div class="secthead"><h3>Propositions · ${m.proposals.length}</h3><button type="button" class="btn ghost" data-prop="ajouter">＋ Ajouter</button></div>
+  return `<section class="sect"><div class="secthead"><h3>Propositions · ${m.proposals.length}</h3><button type="button" class="btn ghost" data-prop="ajouter">＋ Idée</button></div>
     <div class="follows">${proposals}</div></section>`;
 }
 
-/** Mémoire de chaque projet (CLAUDE.md) et son état. */
+/** Projets suivis : dernier résultat et activité ; la mémoire (CLAUDE.md) n'y figure que pour les projets absents des cartes de pod. */
+const shownInPods = (pid) => state.workers.some((w) => (w.projects || []).includes(pid));
 function projectsHtml() {
   const m = state.memory;
   if (!m) return '';
@@ -1509,25 +1702,27 @@ function projectsHtml() {
     const mm = p.memory;
     if (!mm) return '';
     if (mm.state === 'ok') {
-      return `<div class="memline ok">🧠 Mémoire · ${plural(mm.lines, 'ligne')}${mm.updated ? ` · ${ago(mm.updated)}` : ''}
+      return `<div class="memline ok">${ic('book')} Mémoire · ${plural(mm.lines, 'ligne')}${mm.updated ? ` · ${ago(mm.updated)}` : ''}
         <button class="btn ghost" data-memory="${esc(p.id)}">Voir / modifier</button></div>`;
     }
     if (mm.state === 'absente') {
-      return `<div class="memline bad">⚠ Pas de mémoire : c'est la première chose que Claude fera sur ce projet.
-        <button class="btn" data-memo-init="${esc(p.id)}">🧠 Créer maintenant</button></div>`;
+      return `<div class="memline bad">${ic('alert')} Pas de mémoire : c'est la première chose que Claude fera sur ce projet.
+        <button class="btn" data-memo-init="${esc(p.id)}">Créer maintenant</button></div>`;
     }
-    return '<div class="memline">🧠 Mémoire pas encore lue (pod hors ligne ?)</div>';
+    return '<div class="memline">Mémoire pas encore lue (pod hors ligne ?)</div>';
   };
   const projects = m.projects.map((p) => `<article class="follow ${p.memory?.state === 'absente' ? 'ask' : p.active ? '' : 'ask'}"><div class="fhead"><b>${esc(p.name || p.id)}</b>
-      <span class="muted">${p.updated ? `<span data-ago="${Number(p.updated)}"></span>` : ''}</span><span>${p.active ? `⚙ ${p.active} en cours` : p.status === 'en_pause' ? '⏸ en pause' : p.status === 'nouveau' ? '✨ nouveau' : ''}</span></div>
-      ${memoryLine(p)}${p.summary ? `<div class="hint">${esc(p.summary)}</div>` : ''}</article>`).join('');
-  return `<section class="sect"><div class="secthead"><h3>Mémoire · ${m.projects.length} projet(s)</h3></div>
+      <span class="muted">${p.updated ? `<span data-ago="${Number(p.updated)}"></span>` : ''}</span><span>${p.active ? `${p.active} en cours` : p.status === 'en_pause' ? 'en pause' : p.status === 'nouveau' ? 'nouveau' : ''}</span></div>
+      ${shownInPods(p.id) ? '' : memoryLine(p)}${p.summary ? `<div class="hint">${esc(p.summary)}</div>` : ''}</article>`).join('');
+  return `<section class="sect"><div class="secthead"><h3>Projets suivis · ${m.projects.length}</h3></div>
     <div class="follows">${projects || '<div class="emptyd">Aucun projet connu.</div>'}</div></section>`;
 }
 
-async function autoToggle(on) {
-  if (on) return openHardDialog('auto');
-  await api('autopilote', { enabled: false });
+/** Arrêt de l'autonomie : le mode hard (avec son compte rendu) et le full auto qu'il a armé. */
+async function autonomyOff() {
+  if (state.hard?.enabled) await api('mode_hard', { enabled: false });
+  if (state.autopilot?.enabled) await api('autopilote', { enabled: false });
+  state.reportAt = 0;
   poll();
 }
 
@@ -1541,25 +1736,36 @@ async function hardToggle(on, hours = 0) {
 const hardChosen = () => [...document.querySelectorAll('#hardProjects input:checked')].map((i) => i.value);
 
 /** Dialogue commun au full auto et au mode hard : projets concernés, durée, parallélisme, plafonds, et aperçu de ce que Claude compte faire. */
+/** Réglages par défaut selon l'option « sans validations » : le mode hard dépense plus vite (plus de tâches, seuil plus haut). */
 const DIALOG_MODES = {
-  hard: { title: '☠ Mode hard', go: '☠ Activer le mode hard', hours: 8, perDay: 40, threshold: 95,
-    intro: 'Pleine autonomie : plus aucune validation, questions tranchées par Claude, compte rendu à la fin. Choisis les projets concernés ; les autres ne sont pas touchés.' },
-  auto: { title: '🤖 Full auto', go: '🤖 Armer le full auto', hours: 24, perDay: 12, threshold: 85,
-    intro: 'Claude enchaîne seul les propositions et reprend le travail resté en plan, tant que l\'usage de la session reste sous le seuil, et repart après chaque réinitialisation. Seules les opérations destructrices restent demandées (refusées au bout de 15 min sans réponse). Choisis les projets concernés.' },
+  hard: { go: 'Armer sans validations', hours: 8, perDay: 40, threshold: 95,
+    intro: 'Claude ne te demande plus rien (écrire partout dans le pod, pousser sur main, cluster, sudo), tranche ses questions seul et dresse un compte rendu. Seuls les refus (deny) restent bloqués. Les projets non cochés ne sont pas touchés.' },
+  auto: { go: 'Armer l\'autonomie', hours: 24, perDay: 12, threshold: 85,
+    intro: 'Claude enchaîne seul le travail resté en plan, les propositions et tes idées, tant que l\'usage de la session reste sous le seuil, et repart après chaque réinitialisation. Les opérations destructrices restent demandées (refusées au bout de 15 min sans réponse).' },
 };
-let dialogMode = 'hard';
+let dialogMode = 'auto';
 
-function openHardDialog(mode = 'hard', hours = 0) {
+function setDialogMode(mode, hours = 0) {
   dialogMode = mode;
   const m = DIALOG_MODES[mode];
-  $('#hardTitle').textContent = m.title;
+  $('#hardMode').checked = mode === 'hard';
   $('#hardIntro').textContent = m.intro;
   $('#hardGo').textContent = m.go;
   $('#hardHours').value = hours || m.hours;
   $('#hardPerDay').value = m.perDay;
   $('#hardThreshold').value = m.threshold;
   $('#hardAutoRow').classList.toggle('hidden', mode !== 'hard');
-  $('#hardAuto').checked = true;  // le mode hard arme le full auto par défaut
+  $('#hardDlg').classList.toggle('hardon', mode === 'hard');
+}
+$('#hardMode').addEventListener('change', () => setDialogMode($('#hardMode').checked ? 'hard' : 'auto', Number($('#hardHours').value) || 0));
+
+/** Dialogue unique de l'autonomie ; mode « hard » : option sans validations cochée d'emblée (incitation de fin de semaine). */
+function openHardDialog(mode = 'auto', hours = 0) {
+  setDialogMode(mode, hours);
+  $('#hardAuto').checked = true;  // sans validations : les propositions sont enchaînées par défaut
+  $('#hardIdeas').checked = $('#hardExternal').checked = true;
+  $('#hardIdeasRow').classList.add('hidden');
+  $('#hardExternalRow').classList.add('hidden');
   const list = state.projects;
   $('#hardProjects').innerHTML = list.length ? list.map((p) => `<label class="check"><input type="checkbox" value="${esc(p.id)}" ${p.online ? 'checked' : ''}>
       <span>${esc(p.name || p.id)}</span><span class="off">${p.online ? '● pod en ligne' : '○ pod hors ligne'}</span></label>`).join('')
@@ -1575,7 +1781,7 @@ function tokenLine(r) {
   const t = r.tokens || {};
   const est = t.plan ? `≈ ${fmtTokens(t.plan)} tokens pour ${r.total} tâche(s) (≈ ${fmtTokens(t.avg_task)} par tâche)` : '';
   const left = t.remaining ? `${est ? ' · ' : ''}il reste ≈ ${fmtTokens(t.remaining)} cette semaine (${Math.round(t.remaining_ratio * 100)} %)` : '';
-  return est || left ? `<div class="muted">💰 ${est}${left}</div>` : '';
+  return est || left ? `<div class="muted">${est}${left}</div>` : '';
 }
 
 let hardPreviewTimer = 0;
@@ -1586,23 +1792,31 @@ function refreshHardPreview() {
     if (!ids.length) { $('#hardPreview').textContent = 'Choisis au moins un projet.'; $('#hardGo').disabled = true; return; }
     $('#hardGo').disabled = false;
     try {
-      const r = await api('hard_apercu', undefined, `&projects=${encodeURIComponent(ids.join(','))}`);
+      const r = await api('hard_apercu', undefined, `&projects=${encodeURIComponent(ids.join(','))}`
+        + `&ideas=${$('#hardIdeas').checked ? 1 : 0}&external=${$('#hardExternal').checked ? 1 : 0}`);
+      const c = r.counts || {};
+      $('#hardIdeasRow').classList.toggle('hidden', !c.ideas);
+      $('#hardIdeasText').textContent = `Réaliser aussi les idées de nouveaux projets (${c.ideas}) : dépôt et pod créés, ${r.ideas_per_day} par jour au plus`;
+      $('#hardExternalRow').classList.toggle('hidden', !c.external);
+      $('#hardExternalText').textContent = `Inclure les idées envoyées par tes outils (${c.external}), par exemple ton bot`;
       const name = (id) => r.projects.find((p) => p.id === id)?.name || id || 'Auto';
-      const kind = { memoire: '🧠 mémoire', reprise: '↻ reprise', proposition: '💡' };
+      const kind = { memoire: 'Mémoire :', reprise: 'Reprise :', proposition: '', idee: 'Nouveau projet :' };
       const offline = r.projects.filter((p) => !p.online);
-      const lines = r.plan.map((x) => `<li>${kind[x.kind] || ''} <b>${esc(name(x.project))}</b> — ${esc(x.titre)}${x.online ? '' : ' <span class="muted">(pod hors ligne : en attente)</span>'}
+      const lines = r.plan.map((x) => `<li>${kind[x.kind] || ''} ${x.kind === 'idee' ? '' : `<b>${esc(name(x.project))}</b> — `}${esc(x.titre)}${x.external ? ` ${ic('plug')}` : ''}${x.online ? '' : ` <span class="muted">(${x.kind === 'idee' ? 'orchestrateur' : 'pod'} hors ligne : en attente)</span>`}
         <span class="muted">· ${ago(x.since)}</span></li>`).join('');
-      $('#hardPreview').innerHTML = `<b>Ce que le mode hard compte faire</b>
+      $('#hardPreview').innerHTML = `<b>Ce que Claude compte faire</b>
         ${r.plan.length ? `<ol>${lines}</ol>${r.total > r.plan.length ? `<div class="muted">… et ${r.total - r.plan.length} de plus</div>` : ''}
           <div class="muted">Dans l'ordre : d'abord le travail resté en plan (le plus ancien en premier), puis les propositions.</div>`
         : '<div class="muted">Rien en mémoire pour ces projets : Claude proposera d\'abord des tâches à partir de l\'historique de chaque projet.</div>'}
         ${tokenLine(r)}
-        ${offline.length ? `<div class="muted">⏸ Hors ligne, donc à l'arrêt tant que leur pod ne revient pas : ${offline.map((p) => `${esc(p.name)}${p.waiting ? ` (${p.waiting} tâche(s) en attente depuis ${ago(p.waiting_since)})` : ''}`).join(', ')}.</div>` : ''}`;
+        ${offline.length ? `<div class="muted">Hors ligne, donc à l'arrêt tant que leur pod ne revient pas : ${offline.map((p) => `${esc(p.name)}${p.waiting ? ` (${p.waiting} tâche(s) en attente depuis ${ago(p.waiting_since)})` : ''}`).join(', ')}.</div>` : ''}`;
     } catch (e) { $('#hardPreview').textContent = e.message; }
   }, 250);
 }
 
 $('#hardProjects').addEventListener('change', refreshHardPreview);
+$('#hardIdeas').addEventListener('change', refreshHardPreview);
+$('#hardExternal').addEventListener('change', refreshHardPreview);
 const hardSelect = (pick) => {
   document.querySelectorAll('#hardProjects input').forEach((i) => { i.checked = pick(state.projects.find((p) => p.id === i.value)); });
   refreshHardPreview();
@@ -1615,13 +1829,10 @@ $('#hardForm').addEventListener('submit', async (ev) => {
   const projects = hardChosen();
   const hours = Number($('#hardHours').value), parallel = Number($('#hardParallel').value);
   const body = { enabled: true, hours, max_parallel: parallel, projects, max_per_day: Number($('#hardPerDay').value) || undefined,
-    threshold: (Number($('#hardThreshold').value) || 85) / 100 };
+    threshold: (Number($('#hardThreshold').value) || 85) / 100, ideas: $('#hardIdeas').checked, external: $('#hardExternal').checked };
   if (!projects.length || !hours || !parallel) return;
   const hard = dialogMode === 'hard';
-  const sure = hard
-    ? `Activer le mode hard pendant ${hours} h sur ${projects.length} projet(s), ${parallel} de front${$('#hardAuto').checked ? ', full auto armé' : ', sans full auto'} ?\nClaude ne te demandera plus rien : validations approuvées (écrire n'importe où dans le pod, pousser sur main, cluster, sudo), questions tranchées par lui. Un compte rendu sera dressé. Seuls les outils interdits (deny) restent bloqués.`
-    : `Armer le full auto pendant ${hours} h sur ${projects.length} projet(s), ${parallel} de front, ${body.max_per_day || 12} tâche(s) par jour au plus ?`;
-  if (!confirm(sure)) return;
+  // Le dialogue montre déjà le plan et ses risques : pas de seconde confirmation
   $('#hardGo').disabled = true;
   try {
     await api(hard ? 'mode_hard' : 'autopilote', hard ? { ...body, auto: $('#hardAuto').checked } : body);
@@ -1644,30 +1855,47 @@ function reportHtml() {
   const r = state.report;
   if (!state.hard?.since || !r?.since) return '';
   const t = r.totals || {};
-  const icon = { done: '✅', error: '❌', cancelled: '⏹' };
   const projects = r.projects.map((p) => `<article class="follow ${p.tasks.some((x) => x.status === 'error') ? 'ask' : ''}"><div class="fhead"><b>${esc(state.projects.find((x) => x.id === p.project)?.name || p.project)}</b>
-      <span class="muted">${p.tasks.length} tâche(s)</span></div>${p.tasks.map((x) => `<div class="hint"><button class="forigin" data-jump="${esc(x.id)}">${icon[x.status] || '⏳'} ${esc(x.instruction)}${x.answered ? ' · 🤖 question tranchée' : ''}</button>
+      <span class="muted">${p.tasks.length} tâche(s)</span></div>${p.tasks.map((x) => `<div class="hint"><button class="forigin" data-jump="${esc(x.id)}">${stIcon(x.status)} ${esc(x.instruction)}${x.answered ? ' · question tranchée par Claude' : ''}</button>
       ${x.result ? `<div>${esc(x.result.replace(/\*\*|`/g, '').slice(0, 260))}</div>` : ''}
       ${x.files || x.commits.length ? `<div class="muted">${x.files} fichier(s) +${x.added} −${x.removed}${x.commits.length ? ` · ${x.commits.length} commit(s)` : ''}${x.branch ? ` · ${esc(x.branch)}` : ''}${x.tests ? (x.tests.ok ? ' · tests ✓' : ' · tests ✗') : ''}</div>` : ''}</div>`).join('')}</article>`).join('');
-  const sensitive = r.sensitive?.length ? `<div class="hint">⚠ Opérations sensibles passées sans validation : ${r.sensitive.map((x) => `<code>${esc(x.what)}</code>`).join(' · ')}</div>` : '';
-  return `<section class="sect"><div class="secthead"><h3>📋 Compte rendu · ${r.enabled ? 'en cours' : 'terminé'}</h3></div>
+  const sensitive = r.sensitive?.length ? `<div class="hint">${ic('alert')} Opérations sensibles passées sans validation : ${r.sensitive.map((x) => `<code>${esc(x.what)}</code>`).join(' · ')}</div>` : '';
+  return `<section class="sect"><div class="secthead"><h3>Compte rendu · ${r.enabled ? 'en cours' : 'terminé'}</h3></div>
     <div class="hint">Depuis ${esc(new Date(r.since * 1000).toLocaleString('fr-FR', { weekday: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }))} :
-      ${t.tasks || 0} tâche(s) · ✅ ${t.done || 0}${t.error ? ` · ❌ ${t.error}` : ''}${t.active ? ` · ⏳ ${t.active}` : ''} · ${t.files || 0} fichier(s) +${t.added || 0} −${t.removed || 0} · ${t.commits || 0} commit(s)
+      ${t.tasks || 0} tâche(s) · ${t.done || 0} terminée(s)${t.error ? ` · ${t.error} en erreur` : ''}${t.active ? ` · ${t.active} en cours` : ''} · ${t.files || 0} fichier(s) +${t.added || 0} −${t.removed || 0} · ${t.commits || 0} commit(s)
       · ${t.approved || 0} validation(s) passée(s) automatiquement${t.questions ? ` · ${t.questions} question(s) tranchée(s) par Claude` : ''}</div>
     ${sensitive}<div class="follows">${projects || '<div class="emptyd">Aucune tâche pour l\'instant.</div>'}</div></section>`;
 }
 
 async function propositionAction(b) {
   if (b.dataset.prop === 'ajouter') {
-    const titre = prompt('Titre de la proposition'); if (!titre) return;
-    const instruction = prompt('Instruction complète pour Claude'); if (!instruction) return;
-    await api('proposition', { action: 'ajouter', titre, instruction, project: state.selected || null });
+    openIdea();
+    return;
   } else {
     b.disabled = true;
     await api('proposition', { action: b.dataset.prop, id: b.dataset.id });
   }
   poll();
 }
+
+function openIdea() {
+  const opts = state.projects.filter((p) => p.id).map((p) => `<option value="${esc(p.id)}">${esc(p.name || p.id)}</option>`).join('');
+  $('#ideaProject').innerHTML = `<option value="">Nouveau projet (dépôt et pod créés)</option>${opts}`;
+  $('#ideaProject').value = state.selected || '';
+  $('#ideaText').value = '';
+  $('#ideaTitle').value = '';
+  $('#ideaDlg').showModal();
+  $('#ideaText').focus();
+}
+$('#ideaForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  try {
+    await api('proposition', { action: 'ajouter', instruction: $('#ideaText').value.trim(), titre: $('#ideaTitle').value.trim(),
+      project: $('#ideaProject').value || null });
+    $('#ideaDlg').close();
+    poll();
+  } catch (e) { $('#ideaHint').textContent = e.message; }
+});
 
 function setView(v) {
   state.view = v;
@@ -1715,8 +1943,9 @@ function updatePending() {
   for (const e of state.tasks.values()) for (const a of e.approvals.values()) if (!a.decision) n++;
   const q = [...state.tasks.values()].filter(openQuestion).length;
   const b = $('#pendingBtn');
-  b.textContent = n && q ? `${n} · ❓${q}` : n ? `${n}` : `❓ ${q}`;
+  b.textContent = n && q ? `${n} · ${q} ?` : n ? `${n}` : `${q} ?`;
   b.title = [n ? `${n} validation(s) en attente` : '', q ? `${q} question(s) de Claude en attente de ta réponse` : ''].filter(Boolean).join(' · ');
+  b.setAttribute('aria-label', b.title || 'rien en attente');
   b.classList.toggle('hidden', n + q === 0);
   b.classList.toggle('ask', !n && q > 0);
   document.title = n + q ? `(${n + q}) Cockpit` : 'Cockpit';
@@ -1785,10 +2014,10 @@ function pipHtml() {
     <div class="lstep">${e.task.status === 'running' ? '<span class="spin"></span>' : ''}<span>${esc(currentStep(e))}</span></div></div>`).join('');
   html += finished.map((e) => {
     const { c } = changesOf(e);
-    const icon = { done: '✅', error: '❌', cancelled: '⏹', needs_project: '❓', paused: '⏸' }[e.task.status] || '•';
+    const icon = stIcon(e.task.status);
     return `<div class="pipcard done">${icon} ${where(e)}${c && (c.file_count || c.commits?.length) ? `<div class="rmeta">${changesLine(c)}</div>` : ''}</div>`;
   }).join('');
-  if (!approvals.length && !questions.length && !active.length && !finished.length) html += '<div class="emptyd">Rien à faire pour l\'instant 👌</div>';
+  if (!approvals.length && !questions.length && !active.length && !finished.length) html += '<div class="emptyd">Rien à faire pour l\'instant.</div>';
   return { html, attention: approvals.length + questions.length };
 }
 
@@ -1834,13 +2063,17 @@ async function openPip() {
 }
 let polling = false;
 
+let pollFailures = 0;
 async function poll() {
-  if (polling) return;
-  polling = true;
+  // Une requête bloquée plus de 20 s n'empêche plus les suivantes (sinon le cockpit reste figé sans le dire).
+  if (polling && Date.now() - polling < 20000) return;
+  polling = Date.now();
   clearTimeout(pollTimer);
   try {
     // h : empreintes des blocs déjà reçus ; le relais n'envoie que ceux qui ont changé (les autres sont absents de s)
-    const s = await api('etat', undefined, `&since=${state.lastId}&h=${encodeURIComponent(state.etatH || '')}`);
+    const s = await api('etat', undefined, `&since=${state.lastId}&h=${encodeURIComponent(state.etatH || '')}`, 15000);
+    pollFailures = 0;
+    $('#offlineBar').classList.add('hidden');
     state.etatH = s.h || '';
     state.replay = state.lastId === 0;
     const touched = new Set();
@@ -1866,6 +2099,11 @@ async function poll() {
     }
     $('#conn').classList.toggle('on', s.worker_online);
     $('#conn').title = s.worker_online ? 'worker Onyxia connecté' : 'worker Onyxia hors ligne';
+    if ('objectives' in s) {  // avant le rendu : le plan d'un atelier affiche ses boutons selon l'état de l'objectif
+      state.objectives = s.objectives || [];
+      const convs = new Set(state.objectives.map((o) => o.conversation));
+      for (const id of state.order) if (convs.has(conversationOf(id))) touched.add(id);
+    }
     render(touched);
     if (state.pendingJump && document.getElementById(`t-${state.pendingJump}`)) { jumpTo(state.pendingJump); state.pendingJump = null; }
     if ('workers' in s) state.workers = s.workers || [];
@@ -1881,10 +2119,16 @@ async function poll() {
   } catch (e) {
     $('#conn').classList.remove('on');
     if (e instanceof AuthError) { polling = false; return start(); }
+    pollFailures++;
+    if (pollFailures >= 2) $('#offlineBar').classList.remove('hidden');  // un échec isolé ne mérite pas d'alerte
+    $('#conn').title = 'relais injoignable : nouvel essai automatique';
   }
   polling = false;
-  if (!document.hidden || pip) pollTimer = setTimeout(poll, 2000);  // la mini-fenêtre reste à jour
+  // Hors ligne : nouvel essai de plus en plus espacé (au plus 30 s) ; la mini-fenêtre reste à jour
+  const wait = pollFailures ? Math.min(30000, 2000 * 2 ** Math.min(pollFailures, 4)) : 2000;
+  if (!document.hidden || pip) pollTimer = setTimeout(poll, wait);
 }
+addEventListener('online', () => { pollFailures = 0; poll(); });
 
 document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
 
@@ -1923,7 +2167,15 @@ async function onClick(ev) {
       b.disabled = true;
       await api('reprendre', { task_id: b.dataset.resume });
       poll();
+    } else if (b.dataset.obj) {
+      await objectiveAction(b);
+    } else if (b.dataset.rapport) {
+      b.disabled = true;
+      const t = await api('tache', { instruction: 'Fais-en un rapport Quarto', reply_to: b.dataset.rapport });
+      onEvent({ kind: 'task', task_id: t.id, task: t });
+      poll();
     } else if (b.dataset.cancel) {
+      if (!confirm('Arrêter ce Claude ? Le travail en cours est interrompu.')) return;
       await api('annuler', { task_id: b.dataset.cancel });
       poll();
     } else if (b.dataset.quick) {
@@ -1980,8 +2232,8 @@ async function onClick(ev) {
       const pw = state.workers.find((x) => x.id === b.dataset.copyPw)?.state?.vscode?.password;
       if (pw) {
         await navigator.clipboard.writeText(pw);
-        b.textContent = '✓ Copié';
-        setTimeout(() => { b.textContent = '🔑 Mot de passe'; }, 2000);
+        b.textContent = 'Copié';
+        setTimeout(() => { b.innerHTML = `${ic('key')} Mot de passe`; }, 2000);
       }
     } else if (b.dataset.mergeUrl) {
       const n = b.dataset.mergeUrl.split('/').pop();
@@ -1993,7 +2245,7 @@ async function onClick(ev) {
     } else if (b.dataset.always) {
       const a = [...state.tasks.values()].flatMap((e) => [...e.approvals.values()]).find((x) => x.id === b.dataset.always);
       const r = a && ruleFor(a);
-      if (!r || !confirm(`Approuver, et ne plus jamais demander pour ${r.label} (dans tous les pods) ?\nTu pourras supprimer cette règle dans ☰ → Règles d'autorisation.`)) return;
+      if (!r || !confirm(`Approuver, et ne plus jamais demander pour ${r.label} (dans tous les pods) ?\nTu pourras supprimer cette règle dans Menu → Règles d'autorisation.`)) return;
       b.parentElement.querySelectorAll('button').forEach((x) => (x.disabled = true));
       await api('regle_ajouter', { tool: r.tool, pattern: r.pattern, label: r.label, example: r.example });
       await api('decider', { approval_id: a.id, decision: 'approve' });
@@ -2036,8 +2288,8 @@ async function onClick(ev) {
       await runNextStep(b.dataset.nextEdit || b.dataset.nextRun, Number(b.dataset.i), !!b.dataset.nextRun);
     } else if (b.dataset.hard) {
       await hardToggle(b.dataset.hard === 'on', Number(b.dataset.hours) || 0);
-    } else if (b.dataset.auto) {
-      await autoToggle(b.dataset.auto === 'on');
+    } else if (b.dataset.autonomy) {
+      if (b.dataset.autonomy === 'on') openHardDialog('auto'); else await autonomyOff();
     } else if (b.dataset.prop) {
       await propositionAction(b);
     } else if (b.dataset.dismiss) {
@@ -2053,7 +2305,7 @@ async function onClick(ev) {
       setTheme(b.dataset.themeSet);
     } else if (b.id === 'dashToggle') {
       setDashHidden(!document.body.classList.contains('dash-hidden'));
-    } else if (b.id === 'mPip' || b.id === 'pipBtn') {
+    } else if (b.id === 'pipBtn') {
       $('#menuDlg').close();
       await openPip();
     } else if ('pipFocus' in b.dataset) {
@@ -2083,13 +2335,18 @@ async function onClick(ev) {
       poll();
     } else if ('project' in b.dataset) {
       state.selected = b.dataset.project || null;
+      // Une puce d'un autre projet quitte la conversation suivie : le message ne doit pas recadrer le Claude d'un autre projet.
+      const cur = state.replyTo && state.tasks.get(state.replyTo)?.task;
+      if (cur && state.selected && cur.project && cur.project !== state.selected) setReplyTo(null);
       renderProjects();
     } else if ('close' in b.dataset) {
       b.closest('dialog').close();
     } else if (b.id === 'pendingBtn') {
       if (state.view === 'dash' && !matchMedia('(min-width: 1100px)').matches) setView('chat');
-      (document.querySelector('#feed .approval:not(.resolved)') || document.querySelector('#feed form.question'))
-        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      const target = document.querySelector('#feed .approval:not(.resolved)') || document.querySelector('#feed form.question');
+      const sec = target?.closest('section[data-task]');
+      if (sec) openGroupOf(sec.dataset.task);  // le menu du projet peut être replié
+      target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     } else if (b.dataset.pick !== undefined) {
       // Un choix par question : le choix touché remplace le précédent (et se retire s'il est touché à nouveau)
       const on = b.getAttribute('aria-pressed') !== 'true';
@@ -2103,7 +2360,7 @@ async function onClick(ev) {
       await answerQuestion(b.dataset.answer, b.dataset.text);
     } else if (b.id === 'menuBtn') {
       $('#mNotif').classList.toggle('hidden', window.Notification?.permission === 'granted' && localStorage.getItem('cockpit_push') === '1');
-      $('#workerInfo').textContent = state.workerOnline ? '🟢 Worker Onyxia connecté' : '🔴 Worker Onyxia hors ligne (lance ./run.sh dans ton service VSCode)';
+      $('#workerInfo').textContent = state.workerOnline ? 'Worker Onyxia connecté' : 'Worker Onyxia hors ligne (lance ./run.sh dans ton service VSCode)';
       $('#menuDlg').showModal();
     } else if (b.id === 'mNotif') {
       await enableNotifications();
@@ -2114,7 +2371,14 @@ async function onClick(ev) {
     } else if (b.id === 'mDevices') {
       await openDevices();
     } else if (b.dataset.delDevice) {
-      if (confirm('Supprimer cette passkey ?')) { await api('appareil_supprimer', { id: b.dataset.delDevice }); await openDevices(); }
+      if (confirm('Supprimer cette passkey ? Les autres appareils connectés seront aussi déconnectés (celui-ci reste connecté).')) {
+        await api('appareil_supprimer', { id: b.dataset.delDevice }); await openDevices();
+      }
+    } else if (b.id === 'closeSessions') {
+      if (confirm('Déconnecter tous les autres appareils ? Ils devront se reconnecter avec leur passkey.')) {
+        const r = await api('sessions_fermer', {});
+        alert(`${r.closed} session(s) fermée(s).`);
+      }
     } else if (b.id === 'addPasskey') {
       await createPasskey();
       await openDevices();
@@ -2150,7 +2414,8 @@ async function openDevices() {
   const fmt = (ts) => (ts ? new Date(ts * 1000).toLocaleDateString('fr-FR') : 'jamais');
   showList('Passkeys', list.map((d) => `<div class="dev"><div>${esc(d.nom)}<small>créée le ${fmt(d.cree_le)} · utilisée ${fmt(d.utilisee_le)}</small></div>
     <button class="btn ghost" data-del-device="${esc(d.id)}">Supprimer</button></div>`).join('')
-    + '<div class="actions"><button class="btn ok" id="addPasskey">+ Ajouter une passkey sur cet appareil</button></div>'
+    + '<div class="actions"><button class="btn ok" id="addPasskey">+ Ajouter une passkey sur cet appareil</button>'
+    + '<button class="btn bad" id="closeSessions">Déconnecter les autres appareils</button></div>'
     + '<p class="hint">Les passkeys iCloud / Google se synchronisent entre tes appareils. Pour un appareil d\'un autre écosystème : « ./run.sh pair ».</p>');
 }
 
@@ -2161,10 +2426,17 @@ input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey && !matchMedia('(pointer: coarse)').matches) { e.preventDefault(); $('#composer').requestSubmit(); }
 });
 
+// Brouillon gardé sur l'appareil : une PWA rechargée en arrière-plan (iOS) ne perd pas une instruction à moitié écrite.
+const DRAFT_KEY = 'cockpit_draft';
+input.addEventListener('input', () => { try { localStorage.setItem(DRAFT_KEY, input.value); } catch { /* sans importance */ } });
+try { const d = localStorage.getItem(DRAFT_KEY); if (d && !input.value) { input.value = d; input.style.height = `${input.scrollHeight}px`; } } catch { /* sans importance */ }
+
+let sending = false;
 $('#composer').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   const instruction = input.value.trim();
-  if (!instruction) return;
+  if (!instruction || sending) return;  // Entrée deux fois ou dictée : un seul envoi
+  sending = true;
   $('#send').disabled = true;
   try {
     let cur = state.replyTo && state.tasks.get(state.replyTo)?.task;
@@ -2187,14 +2459,66 @@ $('#composer').addEventListener('submit', async (ev) => {
       onEvent({ kind: 'task', task_id: t.id, task: t });
       setReplyTo(t.id);
     }
-    input.value = '';
-    input.style.height = 'auto';
+    // Ce qui a été tapé pendant l'envoi est gardé
+    if (input.value.trim() === instruction) { input.value = ''; input.style.height = 'auto'; }
+    try { localStorage.setItem(DRAFT_KEY, input.value); } catch { /* sans importance */ }
     await poll();
   } catch (e) {
     if (e instanceof AuthError) start(); else alert(e.message);
   }
+  sending = false;
   $('#send').disabled = false;
 });
+
+// ---------- commande vocale : dictée dans la saisie (reconnaissance vocale du navigateur, en français).
+// Finir par « envoie » (ou « envoyer ») envoie l'instruction ; « annule » efface la dictée en cours.
+const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
+let voice = null;
+function stopVoice() { voice?.stop(); }
+function startVoice() {
+  if (!Speech || voice) return;
+  const rec = new Speech();
+  rec.lang = 'fr-FR';
+  rec.continuous = true;
+  rec.interimResults = true;
+  const before = input.value.trim();
+  let said = '';
+  const show = (extra = '') => {
+    input.value = [before, (said + extra).trim()].filter(Boolean).join(' ');
+    input.dispatchEvent(new Event('input'));
+  };
+  rec.onresult = (ev) => {
+    let interim = '';
+    for (let i = ev.resultIndex; i < ev.results.length; i++) {
+      const r = ev.results[i];
+      if (r.isFinal) said += ` ${r[0].transcript}`; else interim += ` ${r[0].transcript}`;
+    }
+    if (/\bannul(e|er|ez)[\s.!]*$/i.test(said)) { said = ''; show(); rec.abort(); return; }
+    const send = /\s*\benvo(ie|ies|yer|yez)[\s.!]*$/i;
+    if (send.test(said)) {
+      said = said.replace(send, '');
+      show();
+      rec.abort();
+      if (input.value.trim()) $('#composer').requestSubmit();
+      return;
+    }
+    show(interim);
+  };
+  rec.onerror = (ev) => {
+    if (ev.error === 'not-allowed' || ev.error === 'service-not-allowed') alert('Micro refusé : autorise-le pour le cockpit dans les réglages du navigateur.');
+  };
+  rec.onend = () => {
+    voice = null;
+    $('#mic').setAttribute('aria-pressed', 'false');
+    $('#mic').setAttribute('aria-label', 'dicter');
+  };
+  try { rec.start(); } catch { return; }
+  voice = rec;
+  $('#mic').setAttribute('aria-pressed', 'true');
+  $('#mic').setAttribute('aria-label', 'arrêter la dictée');
+}
+if (Speech) $('#mic').classList.remove('hidden');
+$('#mic').addEventListener('click', () => (voice ? stopVoice() : startVoice()));
 
 $('#modelSel').addEventListener('change', () => {
   state.model = $('#modelSel').value;
@@ -2230,7 +2554,7 @@ function setChatWidth(px, save = true) {
 
 function setDashHidden(hidden) {
   document.body.classList.toggle('dash-hidden', hidden);
-  $('#dashToggle').textContent = hidden ? '⇤' : '⇥';
+  $('#dashToggle').classList.toggle('flip', hidden);
   $('#dashToggle').setAttribute('aria-label', hidden ? 'afficher le tableau de bord' : 'masquer le tableau de bord');
   try { localStorage.setItem('cockpit_dash_hidden', hidden ? '1' : ''); } catch { /* sans importance */ }
   renderDash();
@@ -2278,7 +2602,7 @@ function applyLaunchParams() {
   if (q.get('action') === 'pod') openPodDialog();
 }
 
-// Clavier : « / » ou Ctrl/⌘+K pour écrire, Échap pour quitter la saisie, Alt+1 / Alt+2 pour changer de vue.
+// Clavier : « / » ou Ctrl/⌘+K pour écrire, Échap pour quitter la saisie, Alt+1 / Alt+2 pour changer de vue, Alt+M pour dicter.
 document.addEventListener('keydown', (e) => {
   const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName);
   if ((e.key === 'k' && (e.ctrlKey || e.metaKey)) || (e.key === '/' && !typing)) {
@@ -2290,6 +2614,9 @@ document.addEventListener('keydown', (e) => {
   } else if (e.altKey && e.key.toLowerCase() === 'd') {
     e.preventDefault();
     setDashHidden(!document.body.classList.contains('dash-hidden'));
+  } else if (e.altKey && e.key.toLowerCase() === 'm' && Speech) {
+    e.preventDefault();
+    if (voice) stopVoice(); else startVoice();
   } else if (e.altKey && e.key.toLowerCase() === 'p') {
     e.preventDefault();
     openPip();
@@ -2313,7 +2640,7 @@ async function start() {
   }
 }
 
-if (pipSupported() && !matchMedia('(pointer: coarse)').matches) { $('#mPip').classList.remove('hidden'); $('#pipBtn').classList.remove('hidden'); }
+if (pipSupported() && !matchMedia('(pointer: coarse)').matches) $('#pipBtn').classList.remove('hidden');
 try {
   setTheme(localStorage.getItem('cockpit_theme') || 'auto');
   if (localStorage.getItem('cockpit_dash_hidden')) setDashHidden(true);
@@ -2331,6 +2658,21 @@ if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').catch(console.error);
   // Notification touchée alors que le cockpit est ouvert : aller à la tâche concernée.
   navigator.serviceWorker.addEventListener('message', (e) => { if (e.data?.jump) { state.pendingJump = e.data.jump; poll(); } });
+  // Nouvelle version déployée : l'app installée, ouverte pendant des jours, se recharge d'elle-même, quand on n'écrit pas
+  // (le brouillon de la saisie est gardé). Sans cela elle resterait sur l'ancienne interface.
+  const hadController = !!navigator.serviceWorker.controller;
+  let updateReady = false;
+  const reloadIfIdle = () => {
+    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName) || document.querySelector('dialog[open]');
+    if (updateReady && !typing) location.reload();
+  };
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) { updateReady = true; reloadIfIdle(); } });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    navigator.serviceWorker.getRegistration().then((r) => r?.update()).catch(() => {});
+    reloadIfIdle();
+  });
+  document.addEventListener('focusout', () => setTimeout(reloadIfIdle, 500));
 }
 // Lien d'appairage ouvert alors que le cockpit est déjà affiché : seul le #hash change.
 window.addEventListener('hashchange', () => { if (location.hash.includes('pair=')) start(); });

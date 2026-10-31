@@ -120,9 +120,17 @@ def test_lancement_depuis_le_telephone(tmp_path, monkeypatch):
 
     monkeypatch.setattr(svc, "lister", lister)
     monkeypatch.setattr(svc, "lancer", lancer)
+    monkeypatch.setattr(worker_mod, "STARTUP_POLL", 0)
 
     async def scenario():
         w = worker_mod.Worker(Relay("http://relais.invalid", "k"))
+
+        async def etat(nom):  # le pod démarre, puis son worker se connecte au relais
+            w.all_projects[nom] = worker_mod.Project(id=nom, name=nom.title(), cwd="")
+            w._online[nom] = True
+            return {"etape": "pret", "echec": False, "detail": ""}
+
+        monkeypatch.setattr(svc, "etat_demarrage", etat)
         ok = Task(id="t1", instruction="pod")
         await w.run_action(ok, {"type": "lancer_service", "nom": "drones", "depot_git": "https://github.com/a/drones"})
         dup = Task(id="t2", instruction="pod")
@@ -132,7 +140,7 @@ def test_lancement_depuis_le_telephone(tmp_path, monkeypatch):
         return ok, dup, bad
 
     ok, dup, bad = asyncio.run(scenario())
-    assert ok.status == "done" and ok.result == "Service cockpit-drones lancé."
+    assert ok.status == "done" and ok.result.startswith("Service cockpit-drones lancé.") and "Projet « Drones » prêt" in ok.result
     assert launched[0].depot_git == "https://github.com/a/drones" and launched[0].cpu == "2"
     assert dup.status == "error" and "existe déjà" in dup.result
     assert bad.status == "error" and "nom invalide" in bad.result and len(launched) == 1
@@ -234,3 +242,65 @@ def test_git_values_cache_jamais_a_zero(monkeypatch):
     assert svc.git_values()["cache"] == "600"
     monkeypatch.delenv("GIT_CREDENTIALS_CACHE_DURATION")
     assert svc.git_values()["cache"] == svc.GIT_CACHE_DEFAUT
+
+
+def test_suivi_du_demarrage_d_un_pod(tmp_path, monkeypatch):
+    """La carte de lancement suit le pod : étapes affichées, échec expliqué (image, plantage), délai dépassé signalé."""
+    from cockpit import worker as worker_mod
+    from cockpit.relay import Relay
+    from cockpit.store import Task
+
+    monkeypatch.setattr(worker_mod, "DATA", tmp_path)
+    monkeypatch.setattr(worker_mod, "STARTUP_POLL", 0)
+    w = worker_mod.Worker(Relay("http://relais.invalid", "k"))
+    etapes = iter([{"etape": "planification", "echec": False, "detail": "0/3 nodes available"},
+                   {"etape": "image", "echec": False, "detail": ""},
+                   {"etape": "echec", "echec": True, "detail": "CrashLoopBackOff : back-off\ngit clone: repository not found"}])
+
+    async def etat(nom):
+        return next(etapes)
+
+    monkeypatch.setattr(svc, "etat_demarrage", etat)
+    t = Task(id="t1", instruction="pod")
+    w.store.tasks["t1"] = t
+    text, status = asyncio.run(w.follow_startup(t, "drones", "Service lancé."))
+    assert status == "error" and "repository not found" in text and "CrashLoopBackOff" in text
+    labels = [e["label"] for e in t.events if e.get("type") == "tool_use"]
+    assert labels == ["⏳ En attente de ressources dans le cluster — 0/3 nodes available", "📦 Téléchargement de l'image"]
+
+    # Jamais connecté : erreur au bout du délai, avec quoi regarder
+    monkeypatch.setattr(worker_mod, "STARTUP_TIMEOUT", 0.05)
+
+    async def toujours(nom):
+        return {"etape": "pret", "echec": False, "detail": ""}
+
+    monkeypatch.setattr(svc, "etat_demarrage", toujours)
+    text, status = asyncio.run(w.follow_startup(t, "drones", "Service lancé."))
+    assert status == "error" and "worker.log" in text
+
+
+def test_etat_demarrage_lit_le_pod(monkeypatch):
+    """Lecture de l'état du pod : planification, image, conteneur qui plante (avec la fin de son journal), prêt."""
+    import json
+
+    pods = {}
+
+    async def run(*cmd, timeout=300, stdin=None):
+        if cmd[1] == "logs":
+            return "fatal: dépôt introuvable"
+        return json.dumps(pods)
+
+    monkeypatch.setattr(svc, "_run", run)
+    monkeypatch.setattr(svc, "namespace", lambda: "ns")
+    pods.update(items=[])
+    assert asyncio.run(svc.etat_demarrage("x"))["etape"] == "attente"
+    pods.update(items=[{"metadata": {"name": "p"}, "status": {"phase": "Pending", "conditions": [
+        {"type": "PodScheduled", "status": "False", "message": "Insufficient cpu"}]}}])
+    assert asyncio.run(svc.etat_demarrage("x")) == {"etape": "planification", "echec": False, "detail": "Insufficient cpu"}
+    pods.update(items=[{"metadata": {"name": "p"}, "status": {"phase": "Running", "containerStatuses": [
+        {"name": "vscode", "ready": False, "state": {"waiting": {"reason": "CrashLoopBackOff", "message": "back-off"}}}]}}])
+    e = asyncio.run(svc.etat_demarrage("x"))
+    assert e["echec"] and "CrashLoopBackOff" in e["detail"] and "dépôt introuvable" in e["detail"]
+    pods.update(items=[{"metadata": {"name": "p"}, "status": {"phase": "Running", "initContainerStatuses": [{"name": "init", "ready": False,
+        "state": {"terminated": {"exitCode": 0}}}], "containerStatuses": [{"name": "vscode", "ready": True, "state": {"running": {}}}]}}])
+    assert asyncio.run(svc.etat_demarrage("x"))["etape"] == "pret"

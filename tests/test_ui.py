@@ -267,10 +267,11 @@ def test_tableau_de_bord(relay):
         # L'essentiel d'abord ; chiffres du jour, bilan et mémoire sont repliés sous « Plus de détails »
         assert page.is_hidden(".kpis")
         page.click("details[data-more] > summary")
-        assert "⚠ 1" in page.inner_text(".kpis")
+        assert "Tâches aujourd'hui" in page.inner_text(".kpis")
+        assert page.inner_text("#dash .sect.attn h3 .count") == "1"  # en tête, avec ses boutons (plus en chiffre caché)
         assert page.locator(".live", has_text="Refactorise le routeur").count() == 1 and page.locator(".live.alert", has_text="mlflow").count() == 1
         assert "Plan 2/4" in page.inner_text(".lives") and "Lance les tests du routeur" in page.inner_text(".lives")
-        assert "⚠ 8,9 Go / 9,8 Go" in page.inner_text(".podcard")  # disque presque plein : alerte avec icône
+        assert page.locator(".podcard .mv.bad .ic, .podcard .mv.warn .ic").count() >= 1 and "8,9 Go / 9,8 Go" in page.inner_text(".podcard")  # disque presque plein : icône d'alerte
         assert page.locator(f".wtrow >> text=cockpit/{t1}").count() == 1
         assert page.evaluate("document.documentElement.scrollWidth <= innerWidth")  # pas de défilement horizontal
         page.screenshot(path=SHOTS / "7-pods-mobile.png", full_page=True)
@@ -295,22 +296,23 @@ def test_tableau_de_bord(relay):
         assert page.locator(".repo").count() == 1
         page.click(".repo")
         assert page.input_value("#podName") == "drones-vols" and "main" in page.get_attribute("#podBranch", "placeholder")
+        page.click("#podDlg details.adv > summary")  # ressources repliées par défaut
         page.select_option("#podMem", "16Gi")
         page.screenshot(path=SHOTS / "7c-nouveau-pod.png")
         page.click("#podSubmit")
         page.wait_for_selector("#podDlg", state="hidden")
         page.wait_for_selector(".live >> text=Nouveau pod « drones-vols »")
         # Retour au fil depuis une tâche du tableau de bord : résumé des modifications, diff à la demande
-        # Prochaines étapes : suivi dans le tableau de bord
-        follow = page.locator(".follow", has_text="Corrige le calcul des altitudes")
-        assert follow.locator(".nmain").count() == 2
+        # Prochaines étapes : dans les propositions du tableau de bord (une seule liste), rattachées à leur conversation
+        follow = page.locator("#dash .follow", has_text="Ajouter un test de l'altitude")
+        assert "suite de « Corrige le calcul des altitudes" in follow.locator(".forigin").inner_text()
         follow.screenshot(path=SHOTS / "7d-suivi.png")
-        follow.locator(".nmain", has_text="Ajouter un test").click()  # préparée dans la saisie, modifiable
-        page.wait_for_selector("#feed", state="visible")
+        page.click("#tabChat")
+        card4 = page.locator("section", has=page.locator(".user", has_text="Corrige le calcul des altitudes")).first
+        card4.locator(".nmain", has_text="Ajouter un test").click()  # préparée dans la saisie, modifiable
         assert page.input_value("#input").startswith("Ajoute un test unitaire")
         assert "Corrige le calcul des altitudes" in page.inner_text("#threadText")
         page.fill("#input", "")
-        card4 = page.locator("section", has=page.locator(".user", has_text="Corrige le calcul des altitudes")).first
         card4.locator(".nexts").scroll_into_view_if_needed()
         page.screenshot(path=SHOTS / "8b-prochaines-etapes.png")
         card4.locator(".nrun").nth(1).click()  # ▶ : lancée tout de suite, dans la conversation
@@ -395,7 +397,7 @@ def test_notifications_du_service_worker(relay):
     assert ask["title"] == "❓ Claude attend ta réponse" and ask["body"] == "Quel format ?" and ask["urgent"]
     assert [a["action"] for a in ask["actions"]] == ["answer-0", "answer-1"] and ask["data"]["options"] == ["Anki", "CSV"]
     assert v["body"] == "opération sensible : rm\nrm -rf build" and [a["action"] for a in v["actions"]] == ["approve", "deny"]
-    assert v["data"] == {"approval": "a1"} and v["urgent"]
+    assert v["data"] == {"approval": "a1", "task": "t"} and v["urgent"]  # toucher la notification ouvre la tâche
     assert pod["title"] == "🟢 Pod « drones » connecté"
     assert done["body"].startswith("2 fichiers · +5 −1\nFait — ok") and "💡 Lancer les tests · Publier · Trois" in done["body"]
     assert [a["title"] for a in done["actions"]] == ["▶ Lancer les tests", "▶ Publier"] and done["data"]["task"] == "t1"
@@ -425,7 +427,7 @@ def test_appairage_ordinateur_par_cle(relay):
         assert page.input_value("#pairCode") == code  # affichée en majuscules
         page.screenshot(path=SHOTS / "10-cle-appairage.png")
         page.press("#pairCode", "Enter")
-        page.wait_for_selector("text=Ordinateur connecté ✓")
+        page.wait_for_selector("text=Ordinateur connecté")
         assert page.is_hidden("#pairForm")
         page.click("#authBtn")  # Créer ma passkey
         page.wait_for_selector("#auth.hidden", state="attached")
@@ -505,7 +507,7 @@ def test_vibe_coding_ui(relay):
         assert vs.locator("a", has_text="Ouvrir VSCode").get_attribute("href") == "https://user-x-cockpit-vibe.example/"
         assert "mot-de-passe-vscode" not in page.content()
         vs.locator("[data-copy-pw]").click()
-        page.wait_for_selector("[data-copy-pw] >> text=✓ Copié")
+        page.wait_for_selector("[data-copy-pw] >> text=Copié")
         assert page.evaluate("navigator.clipboard.readText()") == "mot-de-passe-vscode"
         # Barres du tableau de bord dimensionnées malgré la CSP (pas de style en ligne)
         page.wait_for_selector(".podcard >> text=Vibe")
@@ -520,7 +522,7 @@ def test_vibe_coding_ui(relay):
 
         # Modèle qui écrit : sur la carte (avec les sous-agents) et dans le tableau de bord
         assert page.locator(f"#t-{r} .pill.model").inner_text() == "◆ Opus 5.5 auto + Haiku 5.5"
-        assert "choisi automatiquement (◆ Approfondi) : écriture de code" in page.get_attribute(f"#t-{r} .pill.model", "title")
+        assert "choisi automatiquement (Approfondi) : écriture de code" in page.get_attribute(f"#t-{r} .pill.model", "title")
         assert "Opus 5.5" in page.locator(".live", has_text="Refais le menu").inner_text()
         names = page.evaluate("""['claude-opus-5-5', 'claude-sonnet-4-5-20250929', 'claude-3-5-sonnet-20241022', 'claude-haiku-4-5', 'claude-fable-5-1', 'gpt']
           .map(modelName)""")
@@ -539,7 +541,7 @@ def test_vibe_coding_ui(relay):
         page.wait_for_selector("#imgDlg[open] #imgFull")
         assert page.evaluate("document.querySelector('#imgFull').naturalWidth") > 0
         page.click("#imgDlg [data-close]")
-        assert "Tests ❌ en échec" in card.locator("details.tests summary").inner_text()
+        assert "Tests en échec" in card.locator("details.tests summary").inner_text()
         assert "CI en échec" in card.locator(".ci").inner_text()
         card.locator("details.file").click()
         card.locator(".diffpre span[data-ln='11']").click()  # « +    titre = 'Mon app' »
@@ -563,10 +565,10 @@ def test_vibe_coding_ui(relay):
         # Modèle choisi pour une nouvelle conversation, commandes rapides
         page.click("#newConv")
         page.select_option("#modelSel", "rapide")
-        page.click(".chip.qc >> text=🧪 Tests")
+        page.click(".chip.qc >> text=Tests")
         assert page.input_value("#input").startswith("Lance les tests")
         page.click("#send")
-        page.wait_for_selector("section .pill >> text=⚡ Rapide")
+        page.wait_for_selector("section .pill >> text=Rapide")
         page.click("#editQuick")
         page.click("#addCmd")
         page.locator("#cmdRows .cmdrow").last.locator(".ct").fill("📦 Dépendances")
@@ -654,7 +656,7 @@ def test_questions_de_claude(relay):
         browser = pw.chromium.launch()
         page, errors = browser_page(p, browser, relay, **pw.devices["iPhone 13"])
         page.wait_for_selector(f"#t-{q['id']} form.question >> text=Quel format pour les cartes ?")
-        assert "❓" in page.inner_text("#pendingBtn") and "3" in page.inner_text("#pendingBtn")
+        assert "?" in page.inner_text("#pendingBtn") and "3" in page.inner_text("#pendingBtn")
         page.locator(f"#t-{q['id']} form.question").scroll_into_view_if_needed()
         page.screenshot(path=SHOTS / "16-question.png")
         # Mini-fenêtre toujours visible : ce qui attend une réponse d'abord (contenu calculé par pipHtml)
@@ -695,7 +697,7 @@ def test_questions_de_claude(relay):
         page.wait_for_selector(".follow.ask >> text=Quel format pour les cartes ?")
         page.click(".follow.ask [data-answer] >> text=Anki .apkg")
         page.wait_for_selector("section.suite .user >> text=Anki .apkg")
-        assert page.locator("#feed form.question").count() == 0 and "❓" not in page.inner_text("#pendingBtn")
+        assert page.locator("#feed form.question").count() == 0 and "?" not in page.inner_text("#pendingBtn")
         suites = {e["task"]["instruction"]: e["task"]["reply_to"] for e in call(p, "etat").json()["events"] if e["kind"] == "task"}
         assert suites["Anki .apkg"] == q["id"] and suites["CSV avec point-virgule"] == q2["id"]
         assert not errors, errors
@@ -766,7 +768,7 @@ def test_toujours_autoriser(relay):
         browser = pw.chromium.launch()
         page, errors = browser_page(p, browser, relay, viewport={"width": 1280, "height": 900})
         page.on("dialog", lambda d: d.accept())
-        btn = page.locator("[data-always='ap-ta']")
+        btn = page.locator("#feed [data-always='ap-ta']")
         btn.wait_for()
         assert btn.inner_text() == "Toujours autoriser « docker build … »"
         btn.click()
@@ -818,7 +820,7 @@ def test_pull_requests(relay):
         worker_call(relay, "w_evenements", {"worker_id": "pod-pr", "events": [
             {"kind": "message", "task_id": act[0]["id"], "type": "pr_merged", "url": url, "ts": time.time()},
             {"kind": "task", "task_id": act[0]["id"], "task": {"status": "done", "result": "✅ Pull request fusionnée"}}]})
-        page.wait_for_selector(f"#t-{t['id']} .prbox.merged >> text=✅ fusionnée")
+        page.wait_for_selector(f"#t-{t['id']} .prbox.merged >> text=fusionnée")
         assert page.locator(".sect >> text=Pull requests à valider").count() == 0
         assert not errors, errors
         browser.close()
@@ -834,10 +836,10 @@ def test_theme_et_repartition(relay):
         page, errors = browser_page(p, browser, relay, viewport={"width": 1440, "height": 900}, color_scheme="light")
         page.wait_for_selector("#splitter")
         bg = lambda: page.evaluate("getComputedStyle(document.body).backgroundColor")  # noqa: E731
-        assert bg() == "rgb(246, 247, 249)"  # auto : suit le système (clair)
+        assert bg() == "rgb(244, 245, 248)"  # auto : suit le système (clair)
         page.click("#menuBtn")
         page.click("[data-theme-set='dark']")
-        assert bg() == "rgb(11, 12, 16)" and page.get_attribute("html", "data-theme") == "dark"
+        assert bg() == "rgb(14, 17, 23)" and page.get_attribute("html", "data-theme") == "dark"
         assert page.get_attribute("[data-theme-set='dark']", "aria-pressed") == "true"
         page.click("#menuDlg [data-close]")
         # Largeur du fil : glisser la séparation
@@ -850,7 +852,7 @@ def test_theme_et_repartition(relay):
         page.screenshot(path=SHOTS / "21-sombre-large.png")
         page.reload()
         page.wait_for_selector("#splitter")
-        assert bg() == "rgb(11, 12, 16)"  # thème mémorisé, appliqué avant l'affichage
+        assert bg() == "rgb(14, 17, 23)"  # thème mémorisé, appliqué avant l'affichage
         assert abs(page.locator("#chat").bounding_box()["width"] - 900) < 12  # largeur mémorisée
         page.dblclick("#splitter")
         assert page.locator("#chat").bounding_box()["width"] < 700  # largeur par défaut
@@ -861,6 +863,170 @@ def test_theme_et_repartition(relay):
         assert page.is_visible("#dash")
         page.click("#menuBtn")
         page.click("[data-theme-set='light']")
-        assert bg() == "rgb(246, 247, 249)"
+        assert bg() == "rgb(244, 245, 248)"
         assert not errors, errors
         browser.close()
+
+
+def test_idees_et_fin_de_semaine(relay):
+    """Une idée s'ajoute en une fois (sans titre obligatoire) ; le dialogue du mode hard la montre dans son plan, avec ses options."""
+    from test_relay import CLE_API, call, paired_phone, worker_call, wpoll
+
+    p = paired_phone(relay)
+    wpoll(relay, "orch-idees", True, [{"id": "idees-orch", "name": "Orchestrateur", "description": "On y crée un NOUVEAU projet."}], hello=True)
+    worker_call(relay, "proposition_api", {"instruction": "Un tableau de bord des vols de drones en temps réel", "source": "telegram"}, key=CLE_API)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        page, errors = browser_page(p, browser, relay, viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True)
+        page.click("#tabDash")
+        page.wait_for_selector("#dash .follow >> text=Un tableau de bord des vols")
+        assert "nouveau projet" in page.inner_text("#dash .follow:has-text('Un tableau de bord des vols')")
+        # Idée ajoutée depuis le téléphone : un seul champ, projet au choix (nouveau projet par défaut sur Auto)
+        page.click("[data-prop='ajouter']")
+        page.fill("#ideaText", "Une appli de quiz Anki pour le métro")
+        page.screenshot(path=SHOTS / "22-idee.png")
+        page.click("#ideaForm button[type=submit]")
+        page.wait_for_selector("#dash .follow >> text=Une appli de quiz Anki")
+        # Mode hard : les idées entrent dans le plan (et dans l'estimation en tokens), options visibles et décochables
+        page.evaluate("openHardDialog('hard')")
+        page.wait_for_selector("#hardPreview li >> text=Une appli de quiz Anki")
+        assert page.is_visible("#hardIdeasRow") and page.is_visible("#hardExternalRow")
+        assert "Nouveau projet" in page.inner_text("#hardPreview")
+        page.screenshot(path=SHOTS / "23-mode-hard-idees.png")
+        page.uncheck("#hardExternal")
+        wait_js(page, "!document.querySelector('#hardPreview').textContent.includes('vols de drones')")
+        assert "quiz Anki" in page.inner_text("#hardPreview")
+        assert not errors, errors
+        browser.close()
+    call(p, "mode_hard", {"enabled": False})
+
+
+def test_une_seule_carte_autonomie(relay):
+    """Full auto et mode hard : une seule carte, un seul dialogue ; « sans validations » est une option du même dialogue."""
+    from test_relay import call, paired_phone, wpoll
+
+    p = paired_phone(relay)
+    wpoll(relay, "orch-auto1", True, [{"id": "auto1", "name": "Auto un"}], hello=True)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        page, errors = browser_page(p, browser, relay, viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True)
+        page.click("#tabDash")
+        page.wait_for_selector("[data-autonomy='on']")
+        assert page.locator(".autocard .arow").count() == 1
+        page.click("[data-autonomy='on']")
+        assert page.is_hidden("#hardAutoRow") and page.input_value("#hardPerDay") == "12"
+        page.check("#hardMode")  # option sans validations : réglages du mode hard, case « enchaîner » visible
+        assert page.is_visible("#hardAutoRow") and page.input_value("#hardPerDay") == "40"
+        assert "sans validations" in page.inner_text("#hardGo")
+        page.uncheck("#hardMode")
+        page.click("#hardGo")
+        page.wait_for_selector(".autocard .arow.on >> text=Full auto")
+        page.wait_for_selector("[data-hard='on'] >> text=Passer sans validations")
+        page.screenshot(path=SHOTS / "24-autonomie.png")
+        page.click("[data-autonomy='off']")
+        page.wait_for_selector("[data-autonomy='on']")
+        assert not errors, errors
+        browser.close()
+    assert call(p, "etat").json()["autopilot"]["enabled"] is False
+
+
+def test_pod_qui_demarre_et_memoire(relay):
+    """Un pod lancé apparaît tout de suite (carte « démarrage » et son étape) ; un projet sans mémoire le dit, avec « Créer »."""
+    from test_relay import call, paired_phone, worker_call, wpoll
+
+    p = paired_phone(relay)
+    wpoll(relay, "orch-dem", True, [{"id": "dem-orch", "name": "Orchestrateur dem"}], hello=True)
+    worker_call(relay, "w_memoire", {"project": "dem-proj", "content": "", "hash": "vide", "worker_id": "pod-dem"})
+    wpoll(relay, "pod-dem", False, [{"id": "dem-proj", "name": "Projet sans mémoire"}], hello=True)
+    t = call(p, "lancer_pod", {"nom": "dem-nouveau", "depot_git": "https://github.com/a/b"}).json()
+    worker_call(relay, "w_evenements", {"worker_id": "orch-dem", "events": [
+        {"kind": "task", "task_id": t["id"], "task": {"status": "running"}},
+        {"kind": "message", "task_id": t["id"], "type": "tool_use", "tool": "Bash", "text": "{}", "label": "📦 Téléchargement de l'image"}]})
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        page, errors = browser_page(p, browser, relay, viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True)
+        page.click("#tabDash")
+        start = page.locator(".podcard.starting", has_text="dem-nouveau")
+        start.wait_for()
+        assert "Téléchargement de l'image" in start.inner_text()
+        badge = page.locator(".podcard .proj", has_text="Projet sans mémoire").locator("[data-memo-init='dem-proj']")
+        assert "Sans mémoire" in badge.inner_text()
+        badge.scroll_into_view_if_needed()
+        page.screenshot(path=SHOTS / "25-pods-demarrage-memoire.png")
+        badge.click()
+        page.locator(".podcard .proj", has_text="Projet sans mémoire").locator("text=mémoire en cours d'écriture").wait_for()
+        assert not errors, errors
+        browser.close()
+
+
+def test_reponse_de_l_espace_donnees(relay):
+    """Carte d'une question à l'espace Données : réponse, graphique, tableau avec cases masquées, requête, bouton rapport."""
+    from test_relay import call, paired_phone, worker_call, wpoll
+
+    p = paired_phone(relay)
+    wpoll(relay, "pod-data", False, [{"id": "donnees", "name": "📊 Données"}], hello=True)
+    t = call(p, "tache", {"instruction": "Évolution du salaire des gendarmes ?", "project": "donnees"}).json()
+    wpoll(relay, "pod-data", False)
+    from cockpit.donnees import graphique_svg
+    lignes = [[a, c, 20, 30000 + (a - 2015) * (500 if c == "gendarme" else 300)] for a in range(2015, 2024) for c in ("gendarme", "policier")]
+    svg = graphique_svg(["annee", "corps", "effectif", "salaire_moyen"], lignes, {"type": "ligne", "x": "annee", "y": "salaire_moyen", "serie": "corps"})
+    worker_call(relay, "w_evenements", {"worker_id": "pod-data", "events": [
+        {"kind": "message", "task_id": t["id"], "type": "donnees", "titre": "Salaire moyen des gendarmes", "colonnes": ["annee", "effectif", "salaire_moyen"],
+         "lignes": [[2015, 120, 30010.5], [2016, 4, "s"]], "masquees": 1, "seuil": 11, "sql": "SELECT …", "svg": svg},
+        {"kind": "task", "task_id": t["id"], "task": {"status": "done", "project": "donnees", "result": "Hausse de **5 %** en un an."}}]})
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        page, errors = browser_page(p, browser, relay, viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True)
+        box = page.locator(f"#t-{t['id']} .databox")
+        box.wait_for()
+        assert "Salaire moyen des gendarmes" in box.inner_text() and box.locator("svg polyline").count() == 2  # une courbe par corps
+        assert box.locator("td.secret").inner_text() == "s" and "1 case(s) masquée(s)" in box.inner_text()
+        assert box.locator("td.num").first.inner_text() == "2015"  # une année n'est pas un nombre à séparer
+        box.scroll_into_view_if_needed()
+        page.screenshot(path=SHOTS / "26-donnees.png")
+        box.locator("[data-rapport]").click()
+        page.wait_for_selector("section.suite .user >> text=Fais-en un rapport Quarto")
+        assert not errors, errors
+        browser.close()
+
+
+def test_objectif_et_relecture(relay):
+    """Objectif : atelier, plan à valider sur la carte, avancement ; travail relu par un second agent."""
+    from test_relay import call, paired_phone, worker_call, wpoll
+
+    p = paired_phone(relay)
+    wpoll(relay, "pod-ob", False, [{"id": "ob-proj", "name": "Projet démo"}], hello=True)
+    r = call(p, "objectif_creer", {"texte": "Préparer la démonstration au ministère", "project": "ob-proj", "horizon": "vendredi"}).json()
+    wpoll(relay, "pod-ob", False)
+    etapes = [{"titre": "Nettoyer l'interface", "instruction": "Simplifie l'accueil.", "projet": "ob-proj"},
+              {"titre": "Scénario de démo", "instruction": "Écris le scénario.", "projet": "ob-proj"}]
+    worker_call(relay, "w_evenements", {"worker_id": "pod-ob", "events": [
+        {"kind": "message", "task_id": r["task_id"], "type": "plan", "resume": "Option B : sobre et rapide.", "etapes": etapes},
+        {"kind": "task", "task_id": r["task_id"], "task": {"status": "done", "project": "ob-proj", "result": "Je recommande l'option B."}}]})
+    worker_call(relay, "w_plan", {"objectif": r["id"], "task_id": r["task_id"], "resume": "Option B : sobre et rapide.", "etapes": etapes})
+    # Une tâche relue par un second agent
+    t = call(p, "tache", {"instruction": "Refactorise le module", "project": "ob-proj"}).json()
+    wpoll(relay, "pod-ob", False)
+    worker_call(relay, "w_evenements", {"worker_id": "pod-ob", "events": [
+        {"kind": "message", "task_id": t["id"], "type": "relecture", "avis": "Bon à garder.",
+         "remarques": [{"gravite": "important", "fichier": "a.py", "texte": "cas vide non géré", "corrigee": True},
+                       {"gravite": "mineur", "fichier": "b.py", "texte": "nom peu clair", "corrigee": False}]},
+        {"kind": "task", "task_id": t["id"], "task": {"status": "done", "project": "ob-proj", "result": "Fait."}}]})
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        page, errors = browser_page(p, browser, relay, viewport={"width": 1440, "height": 900})
+        card = page.locator(".objcard", has_text="Préparer la démonstration")
+        card.wait_for()
+        assert "Plan à valider" in card.inner_text() and "échéance : vendredi" in card.inner_text()
+        rv = page.locator(f"#t-{t['id']} .reviewbox")
+        assert "2 remarque(s), 1 corrigée(s)" in rv.inner_text() and "cas vide non géré" in rv.inner_text()
+        plan = page.locator(f"#t-{r['task_id']} .planbox")
+        assert "Scénario de démo" in plan.inner_text()
+        page.screenshot(path=SHOTS / "27-objectif-plan.png")
+        plan.locator("[data-obj='valider'][data-lancer]").click()
+        card.locator(".objstate.en_cours").wait_for()
+        assert "0/2" in card.inner_text()
+        card.screenshot(path=SHOTS / "28-objectif-en-cours.png")
+        assert not errors, errors
+        browser.close()
+    assert call(p, "etat").json()["objectives"][0]["etapes"][0]["tache"]

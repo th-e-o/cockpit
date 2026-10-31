@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import secrets
 from pathlib import Path
 
@@ -12,6 +13,28 @@ import httpx
 from .store import Store
 
 log = logging.getLogger("cockpit.relay")
+
+
+class RelayError(RuntimeError):
+    def __init__(self, route: str, status: int, text: str):
+        super().__init__(f"relais {route} : HTTP {status} {text[:200]}")
+        self.status = status
+
+
+def propre(v):
+    """Valeur envoyable en JSON : surrogates isolés (emoji coupé en deux) remplacés, NaN et infinis -> None.
+
+    Sans cela, un seul événement invalide bloquerait pour toujours la file d'envoi, validations comprises.
+    """
+    if isinstance(v, str):
+        return v.encode("utf-8", "replace").decode("utf-8")
+    if isinstance(v, float):
+        return v if math.isfinite(v) else None
+    if isinstance(v, dict):
+        return {propre(k): propre(x) for k, x in v.items()}
+    if isinstance(v, (list, tuple)):
+        return [propre(x) for x in v]
+    return v
 
 
 class Relay:
@@ -26,20 +49,22 @@ class Relay:
         self.name = name or worker_id
         self.orchestrator = orchestrator
         self.instance = secrets.token_hex(8)  # identifie ce processus auprès du relais
+        self.ack: str | None = None  # dernier lot de travail reçu du relais (accusé de réception, voir w_poll)
         self.events: list[dict] = []
         self.audit: list[dict] = []
         self._wake = asyncio.Event()
+        self._flushing = asyncio.Lock()  # un seul envoi à la fois (flush_forever et un flush explicite se partagent la file)
 
     async def call(self, route: str, body: dict) -> dict:
         r = await self.http.post("/api.php", params={"r": route}, json=body)
         if r.status_code >= 400:
-            raise RuntimeError(f"relais {route} : HTTP {r.status_code} {r.text[:200]}")
+            raise RelayError(route, r.status_code, r.text)
         return r.json()
 
     async def poll(self, projects: list[dict], hello: bool = False, wait: float | None = None,
                    state: dict | None = None) -> dict:
         body: dict = {"projects": projects, "hello": hello, "instance": self.instance, "worker_id": self.worker_id,
-                      "name": self.name, "orchestrateur": self.orchestrator}
+                      "name": self.name, "orchestrateur": self.orchestrator, "ack": self.ack}
         if state is not None:
             body["state"] = state
         if wait is not None:
@@ -63,6 +88,12 @@ class Relay:
         """Envoie une capture d'écran rattachée à une tâche ; renvoie son identifiant."""
         return (await self.call("w_image", {"task_id": task_id, "data": jpeg_b64, "caption": caption,
                                              "worker_id": self.worker_id}))["id"]
+
+    async def fichier(self, task_id: str, nom: str, contenu: bytes, type_mime: str) -> str:
+        """Fichier produit pour une tâche (rapport HTML…), téléchargeable depuis le téléphone ; renvoie son identifiant."""
+        import base64
+        return (await self.call("w_fichier", {"task_id": task_id, "nom": nom, "type": type_mime, "worker_id": self.worker_id,
+                                               "data": base64.b64encode(contenu).decode()}))["id"]
 
     async def memoire(self, project: str, content: str, digest: str) -> None:
         """Publie la mémoire du projet (CLAUDE.md) pour l'afficher et la modifier depuis le téléphone."""
@@ -109,12 +140,36 @@ class Relay:
         self._wake.set()
 
     async def flush(self) -> None:
-        if not (self.events or self.audit):
-            return
-        events, audit = self.events[:200], self.audit[:200]
-        await self.call("w_evenements", {"events": events, "audit": audit, "worker_id": self.worker_id})
-        del self.events[: len(events)]
-        del self.audit[: len(audit)]
+        async with self._flushing:
+            if not (self.events or self.audit):
+                return
+            events, audit = self.events[:200], self.audit[:200]
+            await self._send(propre(events), propre(audit))
+            del self.events[: len(events)]
+            del self.audit[: len(audit)]
+
+    async def _send(self, events: list, audit: list) -> None:
+        """Envoie un lot ; un lot refusé par le relais (4xx : trop gros, invalide) est coupé en deux jusqu'à isoler
+        l'élément fautif, qui est abandonné (journalisé) au lieu de bloquer tous les suivants."""
+        try:
+            await self.call("w_evenements", {"events": events, "audit": audit, "worker_id": self.worker_id})
+        except RelayError as e:
+            if not (400 <= e.status < 500) or e.status in (401, 408, 429):
+                raise
+            if len(events) + len(audit) <= 1:
+                log.error("événement refusé par le relais, abandonné : %s — %.300s", e, events or audit)
+                return
+            if len(events) > 1:
+                h = len(events) // 2
+                await self._send(events[:h], audit)
+                await self._send(events[h:], [])
+            elif len(audit) > 1:
+                h = len(audit) // 2
+                await self._send(events, audit[:h])
+                await self._send([], audit[h:])
+            else:
+                await self._send(events, [])
+                await self._send([], audit)
 
     async def flush_forever(self) -> None:
         """Envoie les événements par lots ; en cas d'échec, les garde et réessaie."""

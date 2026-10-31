@@ -15,7 +15,8 @@ avec une forte autonomie et une validation humaine pour les opérations sensible
 - **Le pod Onyxia n'est jamais exposé** : le worker ouvre une connexion sortante vers le relais.
   L'adresse du téléphone ne change pas quand tu relances ton service Onyxia.
 - **Connexion sans mot de passe** : un QR code (téléphone) ou une clé d'appairage à saisir (ordinateur) une seule
-  fois, puis Face ID / empreinte / Windows Hello (passkey). Session de 180 jours.
+  fois, puis Face ID / empreinte / Windows Hello (passkey). Session de 180 jours. Téléphone perdu : ☰ → *Passkeys et
+  appareils* → *Déconnecter les autres appareils* (supprimer une passkey le fait aussi).
 - **Validation** : carte avec la commande exacte, notification même écran verrouillé, refus après 15 min sans réponse.
 
 ## Mise en place (une seule fois)
@@ -27,9 +28,16 @@ worker n'est connue du relais que par son empreinte, versionnée dans `config/wo
 
 Chaque `git push` sur `main` qui touche `web/` redéploie le relais (*Actions → Déploiement OVH*).
 
-**Clés d'API (facultatif)** : un outil externe (ex. un bot Telegram) peut ajouter des propositions avec
-`POST api.php?r=proposition_api` (en-tête `Authorization: Bearer <clé>`, corps JSON `{titre, instruction, project?, source?}`).
-Il ne peut rien faire d'autre : la proposition attend dans la file comme une proposition ajoutée à la main.
+**Clés d'API (facultatif)** : un outil externe (ex. un bot Telegram) peut ajouter des idées avec
+`POST api.php?r=proposition_api` (en-tête `Authorization: Bearer <clé>`, corps JSON `{instruction, titre?, project?, source?}`).
+- `instruction` (ou `description`) : ce que Claude doit faire, 10 000 caractères au plus ; `titre` : facultatif, tiré des
+  premiers mots sinon ; `project` : identifiant **ou nom** d'un projet (casse indifférente) ; absent : **idée de nouveau projet**
+  (l'orchestrateur créera un dépôt privé et un pod, puis lui confiera l'idée).
+- Réponse : `{ok, id, titre, project, kind}` (`kind` : `projet` ou `nouveau_projet`) ; 400 si l'idée est vide, déjà présente ou
+  le projet inconnu (le message liste les projets).
+- L'idée attend dans *Propositions* (marquée 🔌). Elle entre dans le plan du **full auto et du mode hard** (donc dans les tokens
+  de fin de semaine) tant que l'option « 🔌 Inclure les idées envoyées par tes outils » reste cochée en les armant. La clé ne
+  permet rien d'autre.
 `./run.sh cle-api` crée une clé et ajoute son empreinte à `config/api_keys.sha256` (une par ligne) ; pour révoquer, retirer la ligne.
 
 ### 2. OVH : rien à faire
@@ -67,6 +75,15 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
 - **iPhone** : Partager → *Sur l'écran d'accueil*.
 
 ## Au quotidien
+
+- **Ce qui t'attend d'abord** : les validations en attente sont en tête du tableau de bord, avec leurs boutons (plus besoin de
+  chercher la carte dans le fil). Toucher une notification de validation ouvre la tâche concernée ; le badge jaune ⚠ de
+  l'en-tête déplie le projet et descend jusqu'à la validation ou la question.
+- **Fiabilité** : une instruction n'est jamais envoyée deux fois (Entrée répétée, dictée) et le brouillon de la saisie est
+  gardé sur l'appareil. Relais injoignable : bandeau « Relais injoignable » et nouvel essai automatique. Une réponse perdue
+  entre le relais et le worker (coupure réseau) est renvoyée jusqu'à son accusé de réception : une tâche part toujours, une
+  validation approuvée n'expire plus en refus. Une nouvelle version déployée recharge l'app installée dès que tu n'écris pas.
+  Le worker lancé par `./run.sh` est relancé automatiquement s'il plante (délai croissant, `./run.sh stop` pour l'arrêter).
 
 - Puce **Auto** : le routeur choisit le projet. Sous 70 % de confiance, il te demande lequel.
   Une puce projet envoie directement ; **●** signale une conversation reprise, et **nouv.** repart de zéro.
@@ -124,6 +141,9 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
   - *Mini-fenêtre toujours visible* (🪟 ou Alt+P, Chrome et Edge sur ordinateur) : par-dessus les autres fenêtres,
     validations à approuver, questions de Claude, tâches en cours et terminées ; elle clignote quand quelque chose
     t'attend.
+  - *Commande vocale* (🎤 à côté de la saisie, ou Alt+M) : tu parles, l'instruction s'écrit dans la saisie ; termine
+    par « envoie » pour l'envoyer sans toucher l'écran, « annule » pour effacer la dictée. Reconnaissance vocale du
+    navigateur (Chrome, Edge, Safari) ; le bouton n'apparaît pas si le navigateur ne la propose pas.
   - *Commandes rapides* (puces au-dessus de la saisie, ✎ pour les modifier, communes ou par projet) et *mémoire du
     projet* (🧠 : le `CLAUDE.md`, lu par Claude au début de chaque tâche, modifiable depuis le téléphone).
 - **Pods de projet** : leur agent transmet à l'orchestrateur ce qui sort de son projet (nouveau projet, nouveau
@@ -133,6 +153,13 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
   automatique depuis `main` (git pull puis redémarrage du worker, toutes les 10 min, entre deux tâches).
 - **Nouveau projet** (dans une *Nouvelle conversation*, sur *Auto*) : l'orchestrateur crée le dépôt GitHub, lance
   le pod dessus et lui confie la demande.
+- **Du lancement au projet prêt** (*＋ Nouveau pod*, section *Projets et pods*) : une carte « démarrage » apparaît aussitôt et
+  suit le pod étape par étape (ressources du cluster, image, installation, connexion du worker) ; elle se termine quand le projet
+  est prêt, ou dit **pourquoi** il ne démarre pas (image introuvable, conteneur qui plante, avec la fin de son journal ; rien
+  après 15 min). Sur un dépôt existant sans `CLAUDE.md`, Claude écrit aussitôt la **mémoire du projet** ; sur un dépôt neuf, la
+  première instruction commence par là. Chaque projet de la carte du pod montre l'état de sa mémoire : *🧠 Mémoire* (voir,
+  modifier), *⚠ Sans mémoire · Créer*, ou « en cours d'écriture ». Ressources du pod (CPU, mémoire, disque, GPU) repliées dans
+  le formulaire, 2 CPU · 8 Go · 10 Go par défaut.
 - **Ouvrir un pod** : bouton *🖥 Ouvrir VSCode* sur la carte du pod (adresse trouvée par son worker dans l'ingress
   Onyxia) et *🔑 Mot de passe*, qui le copie sans l'afficher. Le mot de passe transite par le relais avec l'état du
   pod (`COCKPIT_VSCODE_PASSWORD=0` pour ne pas le publier). Les pods lancés par le cockpit ont désormais un
@@ -159,10 +186,14 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
   l'interface d'usage du compte : le worker lit donc toutes les 10 min les en-têtes d'usage de l'API
   (`anthropic-ratelimit-unified-5h/7d-*`), par un comptage de tokens gratuit ou, à défaut, une mini-requête Haiku
   d'un token (`COCKPIT_USAGE_SONDE=0` pour la couper). Diagnostic : `./run.sh usage`.
-- **Mémoire, propositions et full auto** (tableau de bord, sections *Mémoire* et *Propositions*) : le relais garde
+- **Mémoire, propositions et full auto** (tableau de bord, section *Propositions*) : le relais garde
   l'état de chaque projet suivi (dernier résultat, activité, tâches en cours, « en pause » après 14 jours) et une liste
   de propositions de ce qui peut être fait : prochaines étapes des tâches terminées, idées générées par Claude quand la
-  file est vide (toutes les 3 h au plus), ou ajoutées à la main ; ▶ Lancer ou Ignorer. *Armer le full auto* (1 à 14 jours,
+  file est vide (toutes les 3 h au plus), ou ajoutées à la main (*＋ Idée* : un seul champ, pour un projet ou pour un
+  **nouveau projet**) ou par un outil (clé d'API) ; ▶ Lancer ou Ignorer. Une prochaine étape lancée reprend **sa
+  conversation** (même session Claude) ; quand une conversation avance, ses anciennes étapes sont retirées (la tâche
+  suivante propose les siennes) : rien n'est fait deux fois. Les idées de nouveaux projets partent chez l'orchestrateur,
+  une à la fois et 2 par jour au plus en automatique (chacune crée un pod). *Armer le full auto* (1 à 14 jours,
   tâches par jour) fait enchaîner ces propositions à l'orchestrateur, une tâche à la fois, tant que la session reste sous
   le seuil d'usage (85 %) ; il reprend après chaque réinitialisation et se désarme après 3 erreurs de suite. Même
   politique que le reste : une validation sans réponse est refusée au bout de 15 min, jamais approuvée d'office.
@@ -172,8 +203,8 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
   que Cockpit sache par où repartir), puis traiter la demande ; le full auto et le mode hard lancent en priorité absolue une tâche
   « Mémoire du projet » (une tentative par jour et par projet), avant les reprises et les propositions, et l'aperçu la montre en tête
   du plan. Quand la mémoire existe, l'agent la tient à jour si son travail change l'objectif, les commandes ou l'état d'avancement.
-  Dans le tableau de bord, la section *Mémoire* liste tous les projets avec l'état de leur mémoire (🧠 lignes, ⚠ absente avec le
-  bouton *Créer maintenant*, ou « pas encore lue » si le pod est hors ligne).
+  Dans le tableau de bord, l'état de la mémoire figure sur chaque projet de la carte de son pod ; *Plus de détails → Projets
+  suivis* reprend le dernier résultat de chaque projet (et la mémoire de ceux dont le pod n'est plus affiché).
 - **Gérer les projets** (☰ → *🗂 Gérer les projets*) : *Supprimer* retire un projet du cockpit : liste, état de mémoire, propositions,
   mémoire (CLAUDE.md publié) et commandes rapides ; un périmètre du full auto ou du mode hard réduit à ce seul projet est désarmé.
   Le pod, le dépôt git et le service Onyxia **ne sont pas touchés** (le pod continue d'annoncer le projet, qui reste masqué).
@@ -197,10 +228,13 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
   nombre de tâches moyennes équivalent). Quand il reste au moins 20 % à 48 h de la réinitialisation (puis 10 % à 12 h), une
   notification « ☠ Il reste N % de la semaine » propose le mode hard, avec le bouton *Utiliser le reste* qui préremplit la
   durée jusqu'à la réinitialisation. L'aperçu du dialogue chiffre aussi les tokens du plan affiché.
-- **Full auto : même dialogue que le mode hard** (🤖 *Armer le full auto*) : projets au choix (● pod en ligne / ○ hors ligne),
-  durée en heures, projets de front, tâches par jour, seuil de session, et le même **aperçu** de ce qu'il compte faire (travail
-  resté en plan d'abord, puis propositions). Il garde les rares validations restantes (refusées au bout de 15 min sans réponse).
-- **Mode hard** (☠, tableau de bord) : pleine autonomie, pour une durée choisie (1 h à 14 jours) :
+- **Une seule carte *Autonomie*** (tableau de bord) et un seul dialogue (⚡ *Armer l'autonomie…*) : projets au choix (● pod en
+  ligne / ○ hors ligne), durée, projets de front, idées à inclure, réglages avancés (tâches par jour, seuil de session) repliés,
+  et l'**aperçu** de ce que Claude compte faire (travail resté en plan d'abord, puis propositions et idées) chiffré en tokens.
+  Sans autre option, c'est le **full auto** : il garde les rares validations restantes (refusées au bout de 15 min sans
+  réponse). Cocher **☠ Sans validations** en fait le **mode hard** (réglages par défaut plus rapides). Armée, la carte montre ce
+  qui tourne, *Arrêter* (tout) et, en full auto, *☠ Passer sans validations…*.
+- **Mode hard** (option *Sans validations*) : pleine autonomie, pour une durée choisie (1 h à 14 jours) :
   - plus aucune validation (écriture hors du projet, push sur main, cluster, `sudo`…), chaque action reste journalisée
     (`policy: hard`) ; les validations en attente sont approuvées à l'activation ;
   - plus aucune question : Claude tranche seul (l'outil `poser_question` lui dit de décider), et s'il en a posé une quand même,
@@ -211,7 +245,7 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
     à un pod en ligne sans jamais avancer : elles sont reprises dans leur conversation, les bloquées sont annulées puis
     relancées), puis les propositions de l'état de mémoire. Les projets dont le pod est hors ligne restent à l'arrêt (le
     cockpit ne sait pas relancer un pod) : l'aperçu les signale avec leurs tâches en attente ;
-  - le full auto est armé par défaut (case à décocher dans le dialogue), pour la même durée et sur les mêmes projets : il mène
+  - les propositions sont enchaînées par défaut (case « Enchaîner aussi… » à décocher), pour la même durée et sur les mêmes projets : il mène
     **plusieurs projets de front** (jusqu'à 6, un projet à la fois, un pod par projet), en enchaînant le travail resté en plan
     puis les propositions de l'état de mémoire ;
   - **compte rendu** (tableau de bord, *📋 Compte rendu*) : par projet, ce qui a été fait (résultat, fichiers, commits, branche,
@@ -245,6 +279,62 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
   (jusqu'à 5 sous-tâches, soumis à validation). Au plus `COCKPIT_MAX_AGENTS` agents simultanés par pod (3 par défaut).
 - ☰ : journal d'audit, notifications, passkeys (ajout/suppression), déconnexion.
 - `./run.sh logs | stop | fg` côté Onyxia.
+
+## Objectifs : décider avec Claude, puis le laisser enchaîner
+
+*Tableau de bord → Objectifs → ＋ Objectif* : « Rendre le projet drones présentable vendredi ». Plutôt qu'une tâche, un but.
+
+1. **Atelier de décision** (une conversation, en **lecture seule** : rien n'est modifié tant que le plan n'est pas validé).
+   Claude lit la mémoire, l'état et le code, reformule l'objectif et son critère de réussite, propose **2 ou 3 options
+   contrastées** (avantages, inconvénients, risques, effort), recommande, puis pose les questions qui tranchent. Vous
+   répondez, il affine, challenge, propose des variantes : la boucle dure autant d'échanges que nécessaire.
+2. **Plan** : quand la direction est claire, Claude propose 3 à 10 étapes ordonnées (outil `definir_plan`). Sur la carte :
+   *Valider et lancer l'étape 1*, *Valider sans lancer* ou *Demander des ajustements* (un message dans l'atelier, qui révise).
+3. **Exécution** : chaque étape est une tâche qui rappelle l'objectif et le plan ; la suivante attend que la précédente soit
+   faite (*Lancer l'étape suivante*, ou automatiquement : le full auto et le mode hard font passer les étapes d'objectifs
+   avant les propositions). Une étape en erreur se relance d'un geste. Avancement (k/n), notification « Objectif atteint ».
+
+## Relecture par un second agent
+
+Après chaque travail qui modifie au moins 15 lignes (`COCKPIT_RELECTURE_LIGNES`), un second agent Claude, sans l'historique du
+premier, relit les modifications : bugs, cas limites, régressions, sécurité, tests manquants. Il corrige ce qui est sûr et local
+(même politique et mêmes validations), sans changer l'approche ni rien pousser ; modifications et tests sont alors recalculés.
+Sur la carte : « Relu par un second agent : N remarque(s), K corrigée(s) », avec la gravité de chacune et son avis. Ses tokens
+s'ajoutent à ceux de la tâche. `COCKPIT_RELECTURE=0` la désactive.
+
+## Espace « 📊 Données » : interroger S3 en français
+
+Une puce **📊 Données** à côté des projets : « Évolution du salaire moyen des gendarmes depuis 2015 ? », puis « et pour
+les policiers ? ». Réponse rédigée, graphique, tableau et requête SQL sur la carte ; *📄 Rapport Quarto* rassemble les
+résultats de la conversation dans un document HTML à télécharger. Pas de pod à ouvrir par question.
+
+- **Où ça tourne** : dans un pod Onyxia qui a `config/donnees.yaml` (modèle : `config/donnees.example.yaml`). Les identifiants
+  S3 y sont injectés par Onyxia ; le relais, lui, n'atteint pas S3. Un pod dédié est préférable (lecture seule, sans helm ni
+  kubectl) ; l'orchestrateur peut aussi l'héberger.
+- **Pas d'agent** : une chaîne courte, contrôlée par le code (`cockpit/donnees.py`) : question → requête SQL écrite par le LLM →
+  **DuckDB** l'exécute sur les fichiers S3 (Parquet, CSV, partitions) → réponse rédigée à partir du résultat. SQL suffit pour
+  ces questions (agrégations par année, corps, sexe…) ; aucun Python à écrire.
+- **Lecture seule par construction** : une seule requête `SELECT`, sur les tables déclarées seulement (ni fichier, ni URL, ni
+  `COPY`, `ATTACH`, `INSTALL`…), agrégée, limitée en lignes et en durée ; une requête refusée est renvoyée au LLM pour correction.
+- **Secret statistique appliqué par le code**, pas par une consigne : chaque résultat a une colonne `effectif` ; toute case de
+  moins de `seuil` individus (11 par défaut) est masquée (« s ») **avant** de repartir vers le LLM ou le téléphone. Une requête
+  qui listerait des individus est donc entièrement masquée. Le LLM ne voit que le schéma, les modalités des variables
+  catégorielles et des agrégats masqués, jamais une ligne. Le secret secondaire (déduction par différence) n'est pas traité.
+- **LLM privé** : section `llm` de `config/donnees.yaml` (API compatible OpenAI : `url`, `modele`, clé dans la variable
+  `cle_env`), par exemple sur le cloud du ministère. Sans elle, c'est Claude tel que configuré pour le cockpit.
+- **Rapport Quarto** : le `.qmd` ne contient aucun code exécutable (tableaux et graphiques déjà calculés, requêtes en annexe) ;
+  il suffit du binaire `quarto` dans le pod. Le HTML est déposé sur le relais (30 jours) et téléchargé en pièce jointe ;
+  la source `.qmd` reste dans le pod (`data/donnees/`).
+
+### Hébergement interne (relais et LLM)
+
+- **Relais** : `web/` est une application PHP + SQLite sans dépendance ; elle se déploie sur n'importe quel hébergement interne
+  en HTTPS (variables GitHub `COCKPIT_HOTE`, `COCKPIT_BASE`, `FTP_*`, voir plus haut) ; côté pods, `COCKPIT_RELAY_URL`. Les
+  passkeys sont liées au domaine : à recréer après le changement.
+- **Claude via une passerelle interne** : le cockpit utilise Claude Code ; il suit `ANTHROPIC_BASE_URL` (et la clé de la
+  passerelle dans `ANTHROPIC_API_KEY`), ou les modes Bedrock / Vertex de Claude Code, à définir dans les secrets Onyxia des pods.
+- **Modèles ouverts seulement** (API compatible OpenAI) : l'espace Données fonctionne avec eux (section `llm`) ; les agents de
+  code, eux, ont besoin de Claude.
 
 ## Configuration
 

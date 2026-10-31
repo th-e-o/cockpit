@@ -40,6 +40,7 @@ async def git(cwd: str | Path, *args: str, env: dict | None = None, timeout: flo
         out, _ = await asyncio.wait_for(proc.communicate(stdin), timeout)
     except asyncio.TimeoutError:
         proc.kill()
+        await proc.wait()  # pas de zombie
         return 124, "délai dépassé"
     return proc.returncode or 0, out.decode(errors="replace").strip()
 
