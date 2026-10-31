@@ -47,6 +47,8 @@ SUPERSEDED_WINDOW = 300  # deux « remplacé » en moins de 5 min : un vrai doub
 PR_TASKS_SEEN = 40  # dernières tâches de chaque projet examinées (le tableau de bord en affiche jusqu'à 30)
 PR_URL = re.compile(r"https://github\.com/[\w.-]+/[\w.-]+/pull/\d+")
 ACTIVE = {"pending", "routing", "queued", "running", "waiting_approval"}
+STARTUP_TIMEOUT = 15 * 60  # secondes : au-delà, un pod lancé dont le worker ne s'est pas connecté est signalé en erreur
+STARTUP_POLL = 10
 KEY_HASH_FILE = CONFIG / "worker_key.sha256"  # versionné : seule l'empreinte est publique
 
 log = logging.getLogger("cockpit.worker")
@@ -115,6 +117,7 @@ class Worker:
         self.store = RelayStore(DATA, relay)
         self.runner = Runner(self.store, Policy.load(CONFIG / "policy.yaml"), services=ORCHESTRATOR)
         self.all_projects: dict[str, Project] = {}  # projets de tous les workers (orchestrateur)
+        self._online: dict[str, bool] = {}  # projet -> son pod est en ligne (orchestrateur, d'après le relais)
         self._background: set[asyncio.Task] = set()
         self.runner.spawn_tasks = self.spawn_children
         self.pod = PodState()
@@ -460,11 +463,45 @@ class Worker:
                 p.depot_git, p.branche = repo["url"], ""
                 prefix = f"Dépôt {'privé ' if repo['private'] else ''}{repo['name']} créé : {repo['url']}\n"
                 self._repos_dirty = True
-            text, status = prefix + await svc.lancer_nouveau(p), "done"
+            text = prefix + await svc.lancer_nouveau(p)
+            self.store.audit("service_launch", task=task.id, action=action, result=text)
+            # La carte de lancement suit le pod jusqu'à ce que son projet soit prêt dans le cockpit (ou échoue)
+            text, status = await self.follow_startup(task, p.nom, text)
         except Exception as e:
             text, status = f"Lancement impossible : {e}", "error"
-        self.store.audit("service_launch", task=task.id, action=action, result=text)
+            self.store.audit("service_launch", task=task.id, action=action, result=text)
         self.store.task_update(task, status=status, result=text)
+
+    async def follow_startup(self, task: Task, nom: str, launched: str) -> tuple[str, str]:
+        """Suit le démarrage d'un pod lancé depuis le cockpit : étapes publiées sur sa carte, fin quand son worker est connecté.
+
+        Un pod qui plante, dont l'image est introuvable ou qui ne se connecte pas dans STARTUP_TIMEOUT est signalé en erreur,
+        avec la raison : sans cela, un lancement raté restait « terminé » et le projet n'apparaissait jamais, sans explication."""
+        labels = {"attente": "⏳ Création du pod", "planification": "⏳ En attente de ressources dans le cluster",
+                  "image": "📦 Téléchargement de l'image", "demarrage": "🔧 Installation (dépôt, outils, worker)",
+                  "pret": "🔌 Conteneur prêt : connexion du worker au cockpit"}
+        deadline, shown = time.monotonic() + STARTUP_TIMEOUT, None
+        while time.monotonic() < deadline:
+            if (pr := self.all_projects.get(nom)) and nom not in self.projects and self.project_online(nom):
+                return (f"{launched}\n\n🟢 Projet « {pr.name} » prêt : envoie-lui une instruction. Claude commence par écrire la mémoire "
+                        f"du projet (CLAUDE.md) s'il n'en a pas, pour savoir par où partir.", "done")
+            try:
+                e = await svc.etat_demarrage(nom)
+            except Exception as err:  # kubectl indisponible un instant : on réessaie
+                e = {"etape": shown or "attente", "echec": False, "detail": str(err)[:200]}
+            if e["echec"]:
+                return (f"{launched}\n\n❌ Le pod ne démarre pas — {e['detail']}\nCorrige la cause (ressources, dépôt, image) puis relance, "
+                        f"ou arrête le service depuis l'orchestrateur.", "error")
+            step = labels.get(e["etape"], e["etape"]) + (f" — {e['detail']}" if e.get("detail") else "")
+            if step != shown:
+                shown = step
+                self.store.publish("message", {"task_id": task.id, "type": "tool_use", "tool": "Bash", "text": "{}", "label": step})
+            await asyncio.sleep(STARTUP_POLL)
+        return (f"{launched}\n\n⚠ Toujours pas connecté au bout de {STARTUP_TIMEOUT // 60} min ({shown or 'état inconnu'}). "
+                f"Ouvre VSCode du pod et regarde ~/work/cockpit/data/worker.log, ou relance ./run.sh dans un terminal.", "error")
+
+    def project_online(self, project_id: str) -> bool:
+        return self._online.get(project_id, False)
 
     async def publish_repos(self) -> None:
         """Orchestrateur : liste des dépôts GitHub envoyée au relais au démarrage, puis toutes les 10 minutes."""
@@ -528,6 +565,8 @@ class Worker:
                     id=p["id"], name=p.get("name", p["id"]), cwd="", description=p.get("description", ""))
                 for p in msg.get("all_projects", [])
             } | self.projects
+            if "all_projects" in msg:
+                self._online = {p["id"]: bool(p.get("online")) for p in msg["all_projects"]}
         for t in msg.get("tasks", []):
             if (known := self.store.tasks.get(t["id"])) and known.status in ACTIVE:
                 continue  # déjà reçue et en cours : jamais deux agents pour la même tâche

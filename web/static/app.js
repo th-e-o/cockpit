@@ -1058,6 +1058,31 @@ function liveCard(e) {
     <div class="lstep">${t.status === 'running' ? '<span class="spin"></span>' : ''}<span>${esc(currentStep(e))}</span></div>${plan}</button>`;
 }
 
+/** Mémoire d'un projet (CLAUDE.md, lue par Claude au début de chaque tâche) : la voir, ou la créer si elle manque. */
+function memoryBadge(pid) {
+  const mm = state.memory?.projects.find((x) => x.id === pid)?.memory;
+  const creating = [...state.tasks.values()].some((e) => e.task.project === pid && e.task.memory_init && ACTIVE.has(e.task.status));
+  if (creating) return '<span class="membadge">🧠 mémoire en cours d\'écriture…</span>';
+  if (mm?.state === 'absente' && mm.size) {  // une mémoire trop courte (moins de 150 caractères) reste lisible et modifiable
+    return `<button class="btn mem warn" data-memory="${esc(pid)}" title="mémoire trop courte pour guider Claude : complète-la, ou laisse Claude la réécrire au prochain travail">⚠ Mémoire trop courte</button>`;
+  }
+  if (mm?.state === 'absente') {
+    return `<button class="btn mem warn" data-memo-init="${esc(pid)}" title="Claude lit le dépôt et écrit CLAUDE.md : objectif, commandes, conventions, état, prochaines étapes">⚠ Sans mémoire · Créer</button>`;
+  }
+  return `<button class="btn ghost mem" data-memory="${esc(pid)}" title="mémoire du projet (CLAUDE.md), lue par Claude au début de chaque tâche">🧠 Mémoire${mm?.lines ? ` · ${mm.lines} l.` : ''}</button>`;
+}
+
+/** Pod lancé depuis le cockpit qui démarre : carte provisoire avec l'étape en cours, jusqu'à la connexion de son worker. */
+function startingPodCard(e) {
+  const t = e.task;
+  const nom = (t.instruction.match(/Nouveau pod « ([^»]+) »/) || [])[1] || '';
+  return `<article class="podcard starting"><div class="podhead"><span class="dot"></span><b>${esc(nom)}</b>
+      <span class="tag">démarrage</span><span class="muted podseen" data-ago="${Number(t.created)}"></span></div>
+    <div class="hint">${esc(currentStep(e) || '⏳ Création du pod')}</div>
+    <div class="hint">Le projet apparaît ici dès que son worker est connecté (1 à 3 min). Claude écrit ensuite sa mémoire (CLAUDE.md) s'il n'en a pas.</div>
+    <div><button class="btn ghost" data-jump="${esc(t.id)}">Suivre le démarrage</button></div></article>`;
+}
+
 function podCard(w) {
   const st = w.state || {};
   const r = st.resources || {};
@@ -1078,8 +1103,7 @@ function podCard(w) {
       g.ahead ? `↑${g.ahead} à pousser` : '', g.behind ? `↓${g.behind} en retard` : '',
     ].filter(Boolean).join(' · ');
     const last = g?.last_commit ? `<div class="lastc" title="${esc(g.last_commit.sha)}">${esc(g.last_commit.subject)} · <span data-ago="${g.last_commit.ts}"></span></div>` : '';
-    return `<div class="proj"><div class="pname">${esc(p?.name || pid)}
-        <button class="btn ghost mem" data-memory="${esc(pid)}" title="mémoire du projet (CLAUDE.md)">🧠 Mémoire</button></div>
+    return `<div class="proj"><div class="pname">${esc(p?.name || pid)}${memoryBadge(pid)}</div>
       <div class="pgit">${git}</div>${last}</div>`;
   }).join('');
   const wts = (st.worktrees || []).map((wt) => {
@@ -1255,7 +1279,8 @@ async function openPodDialog() {
   delete $('#newRepoName').dataset.touched;
   delete $('#podName').dataset.touched;
   setPodMode('existing');
-  $('#podHint').textContent = '';
+  $('#podHint').textContent = 'Le pod démarre (1 à 3 min) et clone le dépôt ; tu suis chaque étape sur sa carte. Une fois connecté, '
+    + 'Claude écrit la mémoire du projet (CLAUDE.md : objectif, commandes, état) avant tout, pour savoir par où partir.';
   $('#podSubmit').disabled = false;
   $('#podDlg').showModal();
   renderRepos();
@@ -1373,6 +1398,8 @@ function renderDash() {
   const duJour = tasks.filter((e) => e.task.created >= debutJour && e.task.tokens?.total);
   const tokensJour = duJour.reduce((n, e) => n + e.task.tokens.total, 0);
   const gourmandes = duJour.sort((a, b) => b.task.tokens.total - a.task.tokens.total).slice(0, 3);
+  // Pods lancés depuis le cockpit qui démarrent encore (la tâche de lancement suit le pod jusqu'à la connexion de son worker)
+  const starting = tasks.filter((e) => e.task.kind === 'service' && ACTIVE.has(e.task.status) && /Nouveau pod/.test(e.task.instruction || ''));
   const recent = tasks.filter((e) => !ACTIVE.has(e.task.status) && e.task.instruction)
     .sort((a, b) => (b.task.updated || b.task.created) - (a.task.updated || a.task.created)).slice(0, 8);
 
@@ -1392,9 +1419,9 @@ function renderDash() {
       ? `<div class="lives">${active.map(liveCard).join('')}</div>`
       : '<div class="emptyd">Aucun Claude ne travaille. Écris une instruction, ou arme l\'autonomie.</div>'}</section>
     ${proposalsHtml()}
-    <section class="sect"><div class="secthead"><h3>Pods · ${online.length} en ligne</h3><button type="button" class="btn ghost" id="newPod">＋ Nouveau pod</button></div>${state.workers.length
-      ? `<div class="pods">${state.workers.map(podCard).join('')}</div>`
-      : '<div class="emptyd">Aucun pod connecté. Lance « ./run.sh » dans un service VSCode Onyxia.</div>'}</section>
+    <section class="sect"><div class="secthead"><h3>Projets et pods · ${online.length} en ligne</h3><button type="button" class="btn ghost" id="newPod">＋ Nouveau pod</button></div>${state.workers.length || starting.length
+      ? `<div class="pods">${starting.map(startingPodCard).join('')}${state.workers.map(podCard).join('')}</div>`
+      : '<div class="emptyd">Aucun pod connecté. Lance « ./run.sh » dans le service VSCode Onyxia qui servira d\'orchestrateur, puis « ＋ Nouveau pod » pour chaque projet.</div>'}</section>
     ${recent.length ? `<section class="sect"><h3>Terminées récemment</h3><div class="recents">${recent.slice(0, 5).map(recentRow).join('')}</div></section>` : ''}
     <details class="more" data-more ${state.dashMore ? 'open' : ''}><summary>Plus de détails</summary><div class="dashwrap">
     <div class="kpis">
@@ -1507,7 +1534,8 @@ function proposalsHtml() {
     <div class="follows">${proposals}</div></section>`;
 }
 
-/** Mémoire de chaque projet (CLAUDE.md) et son état. */
+/** Projets suivis : dernier résultat et activité ; la mémoire (CLAUDE.md) n'y figure que pour les projets absents des cartes de pod. */
+const shownInPods = (pid) => state.workers.some((w) => (w.projects || []).includes(pid));
 function projectsHtml() {
   const m = state.memory;
   if (!m) return '';
@@ -1526,8 +1554,8 @@ function projectsHtml() {
   };
   const projects = m.projects.map((p) => `<article class="follow ${p.memory?.state === 'absente' ? 'ask' : p.active ? '' : 'ask'}"><div class="fhead"><b>${esc(p.name || p.id)}</b>
       <span class="muted">${p.updated ? `<span data-ago="${Number(p.updated)}"></span>` : ''}</span><span>${p.active ? `⚙ ${p.active} en cours` : p.status === 'en_pause' ? '⏸ en pause' : p.status === 'nouveau' ? '✨ nouveau' : ''}</span></div>
-      ${memoryLine(p)}${p.summary ? `<div class="hint">${esc(p.summary)}</div>` : ''}</article>`).join('');
-  return `<section class="sect"><div class="secthead"><h3>Mémoire · ${m.projects.length} projet(s)</h3></div>
+      ${shownInPods(p.id) ? '' : memoryLine(p)}${p.summary ? `<div class="hint">${esc(p.summary)}</div>` : ''}</article>`).join('');
+  return `<section class="sect"><div class="secthead"><h3>Projets suivis · ${m.projects.length}</h3></div>
     <div class="follows">${projects || '<div class="emptyd">Aucun projet connu.</div>'}</div></section>`;
 }
 

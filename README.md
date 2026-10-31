@@ -153,6 +153,13 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
   automatique depuis `main` (git pull puis redémarrage du worker, toutes les 10 min, entre deux tâches).
 - **Nouveau projet** (dans une *Nouvelle conversation*, sur *Auto*) : l'orchestrateur crée le dépôt GitHub, lance
   le pod dessus et lui confie la demande.
+- **Du lancement au projet prêt** (*＋ Nouveau pod*, section *Projets et pods*) : une carte « démarrage » apparaît aussitôt et
+  suit le pod étape par étape (ressources du cluster, image, installation, connexion du worker) ; elle se termine quand le projet
+  est prêt, ou dit **pourquoi** il ne démarre pas (image introuvable, conteneur qui plante, avec la fin de son journal ; rien
+  après 15 min). Sur un dépôt existant sans `CLAUDE.md`, Claude écrit aussitôt la **mémoire du projet** ; sur un dépôt neuf, la
+  première instruction commence par là. Chaque projet de la carte du pod montre l'état de sa mémoire : *🧠 Mémoire* (voir,
+  modifier), *⚠ Sans mémoire · Créer*, ou « en cours d'écriture ». Ressources du pod (CPU, mémoire, disque, GPU) repliées dans
+  le formulaire, 2 CPU · 8 Go · 10 Go par défaut.
 - **Ouvrir un pod** : bouton *🖥 Ouvrir VSCode* sur la carte du pod (adresse trouvée par son worker dans l'ingress
   Onyxia) et *🔑 Mot de passe*, qui le copie sans l'afficher. Le mot de passe transite par le relais avec l'état du
   pod (`COCKPIT_VSCODE_PASSWORD=0` pour ne pas le publier). Les pods lancés par le cockpit ont désormais un
@@ -179,7 +186,7 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
   l'interface d'usage du compte : le worker lit donc toutes les 10 min les en-têtes d'usage de l'API
   (`anthropic-ratelimit-unified-5h/7d-*`), par un comptage de tokens gratuit ou, à défaut, une mini-requête Haiku
   d'un token (`COCKPIT_USAGE_SONDE=0` pour la couper). Diagnostic : `./run.sh usage`.
-- **Mémoire, propositions et full auto** (tableau de bord, sections *Mémoire* et *Propositions*) : le relais garde
+- **Mémoire, propositions et full auto** (tableau de bord, section *Propositions*) : le relais garde
   l'état de chaque projet suivi (dernier résultat, activité, tâches en cours, « en pause » après 14 jours) et une liste
   de propositions de ce qui peut être fait : prochaines étapes des tâches terminées, idées générées par Claude quand la
   file est vide (toutes les 3 h au plus), ou ajoutées à la main (*＋ Idée* : un seul champ, pour un projet ou pour un
@@ -196,8 +203,8 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
   que Cockpit sache par où repartir), puis traiter la demande ; le full auto et le mode hard lancent en priorité absolue une tâche
   « Mémoire du projet » (une tentative par jour et par projet), avant les reprises et les propositions, et l'aperçu la montre en tête
   du plan. Quand la mémoire existe, l'agent la tient à jour si son travail change l'objectif, les commandes ou l'état d'avancement.
-  Dans le tableau de bord, la section *Mémoire* liste tous les projets avec l'état de leur mémoire (🧠 lignes, ⚠ absente avec le
-  bouton *Créer maintenant*, ou « pas encore lue » si le pod est hors ligne).
+  Dans le tableau de bord, l'état de la mémoire figure sur chaque projet de la carte de son pod ; *Plus de détails → Projets
+  suivis* reprend le dernier résultat de chaque projet (et la mémoire de ceux dont le pod n'est plus affiché).
 - **Gérer les projets** (☰ → *🗂 Gérer les projets*) : *Supprimer* retire un projet du cockpit : liste, état de mémoire, propositions,
   mémoire (CLAUDE.md publié) et commandes rapides ; un périmètre du full auto ou du mode hard réduit à ce seul projet est désarmé.
   Le pod, le dépôt git et le service Onyxia **ne sont pas touchés** (le pod continue d'annoncer le projet, qui reste masqué).

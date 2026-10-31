@@ -296,6 +296,7 @@ def test_tableau_de_bord(relay):
         assert page.locator(".repo").count() == 1
         page.click(".repo")
         assert page.input_value("#podName") == "drones-vols" and "main" in page.get_attribute("#podBranch", "placeholder")
+        page.click("#podDlg details.adv > summary")  # ressources repliées par défaut
         page.select_option("#podMem", "16Gi")
         page.screenshot(path=SHOTS / "7c-nouveau-pod.png")
         page.click("#podSubmit")
@@ -927,3 +928,32 @@ def test_une_seule_carte_autonomie(relay):
         assert not errors, errors
         browser.close()
     assert call(p, "etat").json()["autopilot"]["enabled"] is False
+
+
+def test_pod_qui_demarre_et_memoire(relay):
+    """Un pod lancé apparaît tout de suite (carte « démarrage » et son étape) ; un projet sans mémoire le dit, avec « Créer »."""
+    from test_relay import call, paired_phone, worker_call, wpoll
+
+    p = paired_phone(relay)
+    wpoll(relay, "orch-dem", True, [{"id": "dem-orch", "name": "Orchestrateur dem"}], hello=True)
+    worker_call(relay, "w_memoire", {"project": "dem-proj", "content": "", "hash": "vide", "worker_id": "pod-dem"})
+    wpoll(relay, "pod-dem", False, [{"id": "dem-proj", "name": "Projet sans mémoire"}], hello=True)
+    t = call(p, "lancer_pod", {"nom": "dem-nouveau", "depot_git": "https://github.com/a/b"}).json()
+    worker_call(relay, "w_evenements", {"worker_id": "orch-dem", "events": [
+        {"kind": "task", "task_id": t["id"], "task": {"status": "running"}},
+        {"kind": "message", "task_id": t["id"], "type": "tool_use", "tool": "Bash", "text": "{}", "label": "📦 Téléchargement de l'image"}]})
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        page, errors = browser_page(p, browser, relay, viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True)
+        page.click("#tabDash")
+        start = page.locator(".podcard.starting", has_text="dem-nouveau")
+        start.wait_for()
+        assert "Téléchargement de l'image" in start.inner_text()
+        badge = page.locator(".podcard .proj", has_text="Projet sans mémoire").locator("[data-memo-init='dem-proj']")
+        assert "Sans mémoire" in badge.inner_text()
+        badge.scroll_into_view_if_needed()
+        page.screenshot(path=SHOTS / "25-pods-demarrage-memoire.png")
+        badge.click()
+        page.locator(".podcard .proj", has_text="Projet sans mémoire").locator("text=mémoire en cours d'écriture").wait_for()
+        assert not errors, errors
+        browser.close()

@@ -132,8 +132,17 @@ def test_nouveau_pod_avec_nouveau_depot(tmp_path, monkeypatch):
     monkeypatch.setattr(svc, "lister", lister)
     monkeypatch.setattr(svc, "lancer", lancer)
 
+    monkeypatch.setattr(worker_mod, "STARTUP_POLL", 0)
+
     async def scenario():
         w = worker_mod.Worker(Relay("http://relais.invalid", "k"))
+
+        async def etat(nom):  # le pod démarre et son worker se connecte
+            w.all_projects[nom] = worker_mod.Project(id=nom, name=nom, cwd="")
+            w._online[nom] = True
+            return {"etape": "pret", "echec": False, "detail": ""}
+
+        monkeypatch.setattr(svc, "etat_demarrage", etat)
         ok, dup = Task(id="a", instruction="pod"), Task(id="b", instruction="pod")
         await w.run_action(ok, {"type": "lancer_service", "nom": "drones", "creer_depot": {"nom": "drones", "prive": True}})
         await w.run_action(dup, {"type": "lancer_service", "nom": "existant", "creer_depot": {"nom": "existant"}})

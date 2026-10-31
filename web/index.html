@@ -143,12 +143,14 @@
         <label>Nom du pod<input id="podName" required maxlength="30" autocomplete="off"></label>
         <label>Branche<input id="podBranch" placeholder="par défaut" autocomplete="off"></label>
       </div>
+      <details class="adv"><summary>Ressources : 2 CPU · 8 Go · disque 10 Go (modifier)</summary>
       <div class="row3">
         <label>CPU<select id="podCpu"><option>1</option><option selected>2</option><option>4</option><option>8</option></select></label>
         <label>Mémoire<select id="podMem"><option>4Gi</option><option selected>8Gi</option><option>16Gi</option><option>32Gi</option></select></label>
         <label>Disque<select id="podDisk"><option selected>10Gi</option><option>20Gi</option><option>50Gi</option><option>100Gi</option></select></label>
       </div>
       <label class="check"><input type="checkbox" id="podGpu"> 1 GPU</label>
+      </details>
       <label class="check"><input type="checkbox" id="podPreview"> 👁 Aperçu web public (port 5000, URL accessible sans connexion)</label>
       <p class="hint" id="podHint"></p>
       <button type="submit" id="podSubmit">🚀 Lancer le pod</button>

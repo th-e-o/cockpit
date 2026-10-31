@@ -602,3 +602,9 @@ details.adv[open] > summary { margin-bottom: 8px; }
 /* Option « sans validations » du dialogue d'autonomie : bien visible, et en alerte quand elle est cochée */
 .check.hardmode { padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--panel2); }
 #hardDlg.hardon .check.hardmode { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 8%, var(--panel)); }
+/* Pod qui démarre (carte provisoire jusqu'à la connexion de son worker) et état de la mémoire de chaque projet */
+.podcard.starting { border-style: dashed; }
+.podcard.starting .tag { color: var(--accent); }
+.btn.mem.warn { color: var(--warn); border-color: color-mix(in srgb, var(--warn) 50%, var(--line)); background: color-mix(in srgb, var(--warn) 10%, transparent); }
+.membadge { font-size: 12px; color: var(--muted); margin-left: 6px; }
+.podcard.starting .dot { background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 22%, transparent); animation: listen 1.4s ease-in-out infinite; }

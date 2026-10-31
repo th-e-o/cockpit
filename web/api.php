@@ -520,7 +520,7 @@ function tache_publique(array $t): array {
         'model_used' => $extra['model_used'] ?? null, 'models' => $extra['models'] ?? [], 'model_auto' => $extra['model_auto'] ?? null,
         'question' => $extra['question'] ?? null,
         'tokens' => $extra['tokens'] ?? null, 'session_delta' => $extra['session_delta'] ?? null, 'resume_at' => $extra['resume_at'] ?? null,
-        'auto' => !empty($extra['auto']),
+        'auto' => !empty($extra['auto']), 'memory_init' => !empty($extra['memoire_init']),
     ];
 }
 
@@ -781,6 +781,18 @@ function memoire_projet_etat(string $id): array {
 }
 
 /** Projets (de la liste donnée, ou tous) dont la mémoire est absente et que la création automatique n'a pas déjà tentée aujourd'hui. */
+/** Nouveau pod lancé depuis le cockpit sur un dépôt existant : création de la mémoire du projet si elle manque. */
+function memoire_au_demarrage(string $id): void {
+    if ($id === '' || memoire_projet_etat($id)['state'] !== 'absente') return;
+    $lancement = q("SELECT action FROM taches WHERE action LIKE '%\"lancer_service\"%' AND action LIKE ? ORDER BY cree_le DESC LIMIT 1",
+                   ['%"nom":"' . $id . '"%'])->fetchColumn();
+    $a = $lancement ? json_decode($lancement, true) : null;
+    if (!$a || ($a['depot_git'] ?? '') === '' || !empty($a['creer_depot'])) return;
+    if (q("SELECT 1 FROM taches WHERE projet = ? AND statut IN ('pending','routing','queued','running','waiting_approval')", [$id])->fetchColumn()) return;
+    reglage('memoire_init:' . $id, (string)time());
+    creer_tache_racine(MEMOIRE_INSTRUCTION, $id, ['memoire_init' => true]);
+}
+
 function projets_sans_memoire(array $portee = []): array {
     $out = [];
     foreach (projets() as $p) {
@@ -1593,6 +1605,12 @@ switch ($route) {
                     evenement_tache($tid);
                 }
             }
+        }
+        // Pod tout juste lancé depuis le téléphone sur un dépôt existant, sans mémoire : Claude l'écrit tout de suite (le projet
+        // est « compris » avant la première instruction). Pas pour un dépôt vide (rien à lire : la première demande s'en charge),
+        // ni si une tâche est déjà en route pour ce projet (elle écrira la mémoire en premier, sans double travail).
+        if ($nouveauPod && !$orchestrateur) {
+            foreach ((array)($in['projects'] ?? []) as $pr) memoire_au_demarrage((string)($pr['id'] ?? ''));
         }
         // Fusions de PR restées en attente d'un pod hors ligne : l'orchestrateur les prend (même token GitHub sur tous les pods)
         if ($orchestrateur) {

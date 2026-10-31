@@ -1258,3 +1258,23 @@ def test_prochaines_etapes_suivent_la_conversation(relay_neuf):
     assert len(call(p, "etat").json()["memory"]["proposals"]) == 1
     call(p, "ignorer_suite", {"task_id": t3["id"]})
     assert call(p, "etat").json()["memory"]["proposals"] == []
+
+
+def test_memoire_ecrite_des_le_demarrage_d_un_pod(relay_neuf):
+    """Pod lancé depuis le téléphone sur un dépôt existant, sans CLAUDE.md : Claude écrit la mémoire dès la connexion du pod.
+    Pas pour un nouveau dépôt (vide), ni si une tâche attend déjà le projet (elle commencera par la mémoire)."""
+    p = paired_phone(relay_neuf)
+    wpoll(relay_neuf, "orch-mem", True, [{"id": "orchmem", "name": "Orch"}], hello=True)
+    for nom, extra in (("depot-existant", {"depot_git": "https://github.com/a/existant"}),
+                       ("depot-neuf", {"creer_depot": {"nom": "depot-neuf"}})):
+        assert call(p, "lancer_pod", {"nom": nom, **extra}).status_code == 200
+    taches = {}
+    for nom in ("depot-existant", "depot-neuf"):
+        # Comme le vrai worker : la mémoire (vide) est publiée avant la première annonce au relais
+        worker_call(relay_neuf, "w_memoire", {"project": nom, "content": "", "hash": "vide", "worker_id": f"pod-{nom}"})
+        taches[nom] = wpoll(relay_neuf, f"pod-{nom}", False, [{"id": nom, "name": nom}], hello=True)["tasks"]
+    assert len(taches["depot-existant"]) == 1 and "CLAUDE.md" in taches["depot-existant"][0]["instruction"]
+    assert taches["depot-neuf"] == []
+    # La carte du tableau de bord sait que la mémoire est en cours d'écriture
+    t = next(e["task"] for e in call(p, "etat").json()["events"] if e["kind"] == "task" and e["task_id"] == taches["depot-existant"][0]["id"])
+    assert t["memory_init"] is True
