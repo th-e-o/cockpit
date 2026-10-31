@@ -52,6 +52,7 @@ const DEFIS_MAX = 50;                   // challenges WebAuthn en attente, au pl
 const ABONNEMENTS_MAX = 10;             // abonnements push gardés (les plus récents)
 const PUSH_ECHECS_MAX = 5;              // abonnement push supprimé après autant d'échecs de suite
 const PROPOSITIONS_OUVERTES_MAX = 50;   // propositions en attente par projet
+const IDEES_PAR_JOUR = 2;               // idées de nouveaux projets lancées automatiquement par jour (chacune crée un dépôt et un pod)
 // Routes en lecture seule, seules acceptées en GET : toutes les autres exigent un POST JSON (anti-CSRF, y compris
 // depuis une autre page du même domaine, qui pourrait sinon déclencher une action par un simple <img src>).
 const ROUTES_GET = ['moi', 'etat', 'diff', 'bilan', 'depots', 'regles', 'image', 'memoire', 'commandes', 'resume', 'audit',
@@ -638,6 +639,79 @@ function proposition_id(?string $projet, string $titre): string {
     return substr(sha1(($projet ?? '') . '|' . mb_strtolower(trim($titre))), 0, 10);
 }
 
+/** Titre court tiré d'une instruction (premiers mots), quand l'outil ou l'utilisateur n'en donne pas. */
+function titre_depuis(string $instruction): string {
+    $mots = preg_split('/\s+/u', trim(preg_replace('/[#*_`>]+/u', ' ', $instruction)), 9, PREG_SPLIT_NO_EMPTY);
+    $titre = implode(' ', array_slice($mots, 0, 8));
+    return mb_substr($titre, 0, 80) . (count($mots) > 8 ? '…' : '');
+}
+
+/** Projet de l'orchestrateur qui crée les nouveaux projets (dépôt, pod) : celui dont la description en parle, sinon le premier. */
+function projet_orchestrateur(): ?string {
+    $orch = q('SELECT id FROM workers WHERE orchestrateur = 1 AND vu_le > ? ORDER BY vu_le DESC', [time() - WORKER_EN_LIGNE])->fetchAll(PDO::FETCH_COLUMN);
+    $candidats = array_values(array_filter(projets(), fn($p) => in_array($p['worker'], $orch, true)));
+    foreach ($candidats as $p) if (preg_match('/nouveau\s+projet/iu', (string)($p['description'] ?? ''))) return $p['id'];
+    return $candidats[0]['id'] ?? null;
+}
+
+/** Instruction d'une idée de nouveau projet, confiée à l'orchestrateur. */
+function instruction_idee(array $p): string {
+    return "Nouveau projet à réaliser (idée « {$p['titre']} ») : crée un dépôt GitHub privé dédié, lance un pod dessus et confie-lui "
+        . "la demande ci-dessous avec confier_au_projet. Ne travaille pas dans un projet existant.\n\n" . $p['instruction'];
+}
+
+/** La proposition entre-t-elle dans ce que le full auto (ou le mode hard) lance ? Réglages $a : ideas (idées de nouveaux
+ * projets, sans projet), external (idées envoyées par un outil avec la clé d'API) ; $portee : projets choisis (vide : tous). */
+function proposition_eligible(array $p, array $a, array $portee): bool {
+    if ($p['etat'] !== 'ouverte' || (!empty($p['externe']) && empty($a['external']))) return false;
+    if ($p['project'] === null) return !empty($a['ideas']);
+    return !$portee || in_array($p['project'], $portee, true);
+}
+
+/** Lance une proposition : une idée de nouveau projet part chez l'orchestrateur ; une prochaine étape continue la conversation
+ * d'où elle vient (même session Claude, même contexte) ; le reste démarre une conversation. Renvoie l'id de la tâche, ou null. */
+function lancer_proposition(array $p, array $extra = []): ?string {
+    if ($p['project'] === null) {
+        $orch = projet_orchestrateur();
+        return $orch ? creer_tache_racine(instruction_idee($p), $orch, $extra + ['idee' => true]) : null;
+    }
+    if (($p['source'] ?? '') === 'suite' && !empty($p['tache'])) {
+        $parent = q('SELECT * FROM taches WHERE id = ?', [$p['tache']])->fetch();
+        if ($parent && $parent['projet'] === $p['project']) {
+            // Dernière tâche de la conversation : la suite reprend là où elle en est (session et contexte)
+            $dernier = q('SELECT * FROM taches WHERE conversation = ? ORDER BY cree_le DESC, rowid DESC LIMIT 1',
+                         [$parent['conversation'] ?? $parent['id']])->fetch() ?: $parent;
+            return creer_tache_suite($dernier, $p['instruction'], $extra);
+        }
+    }
+    return creer_tache_racine($p['instruction'], $p['project'], $extra);
+}
+
+function conversation_de(string $tache): string {
+    return (string)(q('SELECT COALESCE(conversation, id) FROM taches WHERE id = ?', [$tache])->fetchColumn() ?: $tache);
+}
+
+/** Une conversation avance (nouveau message, nouvelles étapes) : ses prochaines étapes encore ouvertes sont dépassées.
+ * Celle qui vient d'être lancée telle quelle est marquée lancée ; les autres sont closes (la nouvelle tâche proposera les siennes).
+ * Sans cela, le full auto relançait plus tard une étape déjà faite, hors de sa conversation. */
+function fermer_suites(array &$m, string $conversation, ?string $nouvelle = null, string $instruction = '', ?string $sauf = null): void {
+    $taches = array_values(array_unique(array_filter(array_map(fn($p) => $p['etat'] === 'ouverte' && ($p['source'] ?? '') === 'suite'
+        && $p['tache'] && $p['tache'] !== $sauf ? $p['tache'] : null, $m['proposals']))));
+    if (!$taches) return;
+    $conv = [];
+    foreach (q('SELECT id, COALESCE(conversation, id) c FROM taches WHERE id IN (' . implode(',', array_fill(0, count($taches), '?')) . ')', $taches)->fetchAll() as $r) {
+        $conv[$r['id']] = $r['c'];
+    }
+    foreach ($m['proposals'] as &$p) {
+        if ($p['etat'] !== 'ouverte' || ($p['source'] ?? '') !== 'suite' || ($conv[$p['tache']] ?? null) !== $conversation) continue;
+        $lancee = $nouvelle && trim($p['instruction']) === trim($instruction);
+        $p['etat'] = $lancee ? 'lancee' : 'ignoree';
+        if ($lancee) $p['lancee_par'] = $nouvelle;
+        $p['maj'] = time();
+    }
+    unset($p);
+}
+
 /** Ajoute des propositions [{titre, instruction}] pour un projet ; celles déjà connues (même titre) sont ignorées. */
 function memoire_proposer(array &$m, ?string $projet, array $items, string $source, ?string $tache = null, bool $externe = false): int {
     $connues = array_column($m['proposals'], 'id');
@@ -645,15 +719,20 @@ function memoire_proposer(array &$m, ?string $projet, array $items, string $sour
     $n = 0;
     foreach ($items as $it) {
         if ($ouvertes + $n >= PROPOSITIONS_OUVERTES_MAX) break;  // la file d'un projet reste lisible (et la mémoire légère)
-        $titre = trim((string)($it['titre'] ?? $it['title'] ?? ''));
-        $instruction = trim((string)($it['instruction'] ?? ''));
+        $instruction = trim((string)($it['instruction'] ?? $it['description'] ?? ''));
+        $titre = trim((string)($it['titre'] ?? $it['title'] ?? '')) ?: titre_depuis($instruction);
         if ($titre === '' || $instruction === '' || mb_strlen($instruction) > 10000) continue;
-        $id = proposition_id($projet, $titre);
-        if (in_array($id, $connues, true)) continue;
+        // Une prochaine étape peut revenir dans une tâche suivante (même titre) : elle est propre à sa tâche, et seul un doublon
+        // encore ouvert l'écarte. Les autres sources gardent leur identité : une idée ignorée ne revient pas.
+        $id = proposition_id($projet, $source === 'suite' && $tache ? "$titre|$tache" : $titre);
+        $dejaOuverte = (bool)array_filter($m['proposals'], fn($p) => $p['etat'] === 'ouverte' && $p['project'] === $projet
+            && mb_strtolower($p['titre']) === mb_strtolower(mb_substr($titre, 0, 120)));
+        if (in_array($id, $connues, true) || $dejaOuverte) continue;
         $connues[] = $id;
         $m['proposals'][] = ['id' => $id, 'project' => $projet, 'titre' => mb_substr($titre, 0, 120), 'instruction' => $instruction,
                              'etat' => 'ouverte', 'source' => $source, 'tache' => $tache, 'cree' => time(), 'maj' => time()]
-                             // Proposition d'un outil externe (clé d'API) : jamais lancée par le full auto ni le mode hard, seulement à la main
+                             // Proposition d'un outil externe (clé d'API) : lancée par le full auto ou le mode hard seulement si
+                             // l'utilisateur l'a accepté en les armant (option « idées de tes outils »)
                              + ($externe ? ['externe' => true] : []);
         $n++;
     }
@@ -677,7 +756,10 @@ function memoire_tache_terminee(string $id): void {
     }
     unset($p);
     if (!$trouve) $m['projects'][] = $entree;
-    if ($t['statut'] === 'done' && empty($x['next_steps_dismissed'])) memoire_proposer($m, $t['projet'], $x['next_steps'] ?? [], 'suite', $id);
+    if ($t['statut'] === 'done' && empty($x['next_steps_dismissed'])) {
+        fermer_suites($m, $t['conversation'] ?? $t['id'], sauf: $id);  // les étapes d'avant sont remplacées par celles-ci
+        memoire_proposer($m, $t['projet'], $x['next_steps'] ?? [], 'suite', $id);
+    }
     memoire_ecrire($m);
 }
 
@@ -736,7 +818,8 @@ function memoire_publique(): array {
 function autopilote_lire(): array {
     $a = json_decode(reglage('autopilote') ?? '', true) ?: [];
     $a += ['enabled' => false, 'until' => 0, 'threshold' => AUTO_SEUIL, 'max_per_day' => AUTO_PAR_JOUR, 'max_parallel' => 1, 'projects' => [], 'day' => '', 'launched_today' => 0,
-           'failures' => 0, 'stopped' => '', 'since' => 0, 'last' => 0, 'total' => 0];
+           'failures' => 0, 'stopped' => '', 'since' => 0, 'last' => 0, 'total' => 0,
+           'ideas' => true, 'external' => true];  // idées de nouveaux projets et idées de tes outils : comprises par défaut
     if ($a['enabled'] && time() >= (int)$a['until']) { $a['enabled'] = false; $a['stopped'] = 'durée écoulée'; }
     if ($a['day'] !== date('Y-m-d')) { $a['day'] = date('Y-m-d'); $a['launched_today'] = 0; }
     return $a;
@@ -805,8 +888,10 @@ function incitation_hard(): void {
         $reste = round($e['remaining'] * 100);
         $quand = $e['hours_left'] >= 24 ? round($e['hours_left'] / 24, 1) . ' j' : round($e['hours_left']) . ' h';
         $tokens = $e['remaining_tokens'] !== null ? ' (≈ ' . tokens_lisibles($e['remaining_tokens']) . ' de tokens' . ($e['tasks_estimate'] ? ', ≈ ' . $e['tasks_estimate'] . ' tâches' : '') . ')' : '';
+        $file = hard_apercu([])['total'];
+        $attente = $file ? " $file tâche(s) et idée(s) attendent déjà." : ' Claude proposera des tâches à partir de l\'historique de tes projets.';
         alerte_ajouter('incitation-hard', "☠ Il reste $reste % de la semaine",
-            "Ta limite hebdomadaire se réinitialise dans $quand : il reste$tokens à dépenser, sinon ils sont perdus. Active le mode hard pour les utiliser.");
+            "Ta limite hebdomadaire se réinitialise dans $quand : il reste$tokens à dépenser, sinon ils sont perdus.$attente Active le mode hard pour les utiliser.");
     }
     reglage('incitation', json_encode($etat));
 }
@@ -944,7 +1029,7 @@ function taches_a_reprendre(array $portee = []): array {
 }
 
 /** Aperçu du mode hard : ce qu'il compte faire, dans l'ordre (reprises d'abord, puis propositions), et ce qui l'en empêche. */
-function hard_apercu(array $portee): array {
+function hard_apercu(array $portee, array $options = ['ideas' => true, 'external' => true]): array {
     $m = memoire_lire();
     $resumes = taches_a_reprendre($portee);
     $plan = [];
@@ -955,9 +1040,16 @@ function hard_apercu(array $portee): array {
     $projets = [];
     $enLigne = [];
     foreach (projets() as $p) $enLigne[$p['id']] = $p['online'];
+    $orch = projet_orchestrateur();
+    $compte = ['ideas' => 0, 'external' => 0];  // de quoi afficher les options seulement quand elles servent
     foreach ($m['proposals'] as $x) {
-        if ($x['etat'] !== 'ouverte' || !empty($x['externe']) || ($x['project'] !== null && $portee && !in_array($x['project'], $portee, true))) continue;
-        $plan[] = ['kind' => 'proposition', 'project' => $x['project'], 'titre' => $x['titre'], 'since' => (int)$x['cree'], 'online' => $enLigne[$x['project']] ?? false, 'detail' => $x['source']];
+        if ($x['etat'] !== 'ouverte') continue;
+        if ($x['project'] === null) $compte['ideas']++;
+        if (!empty($x['externe'])) $compte['external']++;
+        if (!proposition_eligible($x, $options, $portee)) continue;
+        $idee = $x['project'] === null;
+        $plan[] = ['kind' => $idee ? 'idee' : 'proposition', 'project' => $x['project'], 'titre' => $x['titre'], 'since' => (int)$x['cree'],
+                   'online' => $idee ? $orch !== null : ($enLigne[$x['project']] ?? false), 'detail' => $x['source'], 'external' => !empty($x['externe'])];
     }
     $memoire = array_column($m['projects'], null, 'id');
     foreach (projets() as $p) {
@@ -968,7 +1060,7 @@ function hard_apercu(array $portee): array {
     }
     $sem = estimation_semaine();
     $moy = $sem['avg_task_tokens'] ?? null;
-    return ['plan' => array_slice($plan, 0, 14), 'total' => count($plan), 'projects' => $projets,
+    return ['plan' => array_slice($plan, 0, 14), 'total' => count($plan), 'projects' => $projets, 'counts' => $compte, 'ideas_per_day' => IDEES_PAR_JOUR,
             'tokens' => ['avg_task' => $moy, 'plan' => $moy ? $moy * count($plan) : null, 'remaining' => $sem['remaining_tokens'] ?? null,
                          'remaining_ratio' => $sem['remaining'] ?? null, 'hours_left' => $sem['hours_left'] ?? null]];
 }
@@ -1317,8 +1409,16 @@ switch ($route) {
         $t = q('SELECT * FROM taches WHERE id = ?', [(string)($in['task_id'] ?? '')])->fetch() ?: erreur('tâche introuvable', 404);
         $extra = json_decode($t['extra'] ?? '', true) ?: [];
         $extra['next_steps_dismissed'] = true;
+        debut();
         q('UPDATE taches SET extra = ? WHERE id = ?', [json_encode($extra, JSON_UNESCAPED_UNICODE), $t['id']]);
+        $m = memoire_lire();
+        foreach ($m['proposals'] as &$p) {  // les mêmes étapes, dans les propositions, sont ignorées aussi
+            if ($p['etat'] === 'ouverte' && ($p['tache'] ?? null) === $t['id']) { $p['etat'] = 'ignoree'; $p['maj'] = time(); }
+        }
+        unset($p);
+        memoire_ecrire($m);
         evenement_tache($t['id']);
+        valider();
         repondre(['ok' => true]);
 
     case 'worktree': // fusionner ou jeter la branche d'une tâche lancée en parallèle
@@ -1397,6 +1497,12 @@ switch ($route) {
               [$tid, $texte, $projet, empty($in['new_session']) ? 0 : 1, time(), time(), worker_du_projet($projet),
                $k ? $tid : $conversation, $k ? null : $suite, $modele, $variantes > 1 ? 1 : null, $variantes > 1 ? $id : null]);
             evenement_tache($tid);
+        }
+        if ($suite) {  // la conversation avance : ses prochaines étapes encore proposées sont lancées ou dépassées
+            $m = memoire_lire();
+            $avant = json_encode($m['proposals']);
+            fermer_suites($m, $conversation, $id, $instruction);
+            if (json_encode($m['proposals']) !== $avant) memoire_ecrire($m);
         }
         valider();
         repondre(tache_publique(q('SELECT * FROM taches WHERE id = ?', [$id])->fetch()) + ['variants' => $ids]);
@@ -1778,7 +1884,7 @@ switch ($route) {
             debut();
             $m = memoire_lire();
             $n = memoire_proposer($m, $projet, [['titre' => $in['titre'] ?? '', 'instruction' => $in['instruction'] ?? '']], 'manuelle');
-            if (!$n) { annuler(); erreur('proposition vide, trop longue ou déjà présente'); }
+            if (!$n) { annuler(); erreur('idée vide, trop longue ou déjà présente'); }
             memoire_ecrire($m);
             valider();
             repondre(['ok' => true]);
@@ -1792,8 +1898,10 @@ switch ($route) {
         if (!$cible) { annuler(); erreur('proposition introuvable ou déjà traitée', 404); }
         if ($action === 'lancer') {
             if ($cible['project'] !== null && !in_array($cible['project'], array_column(projets(), 'id'), true)) { annuler(); erreur('projet inconnu'); }
-            $tache = creer_tache_racine($cible['instruction'], $cible['project']);
-            $cible['tache'] = $tache;
+            $tache = lancer_proposition($cible);
+            if (!$tache) { annuler(); erreur('orchestrateur hors ligne : impossible de créer le projet pour l\'instant', 409); }
+            $cible['lancee_par'] = $tache;
+            fermer_suites($m, conversation_de($tache), $tache, $cible['instruction']);
         }
         $cible['etat'] = $action === 'lancer' ? 'lancee' : 'ignoree';
         $cible['maj'] = time();
@@ -1804,16 +1912,26 @@ switch ($route) {
 
     case 'proposition_api': // ajout d'une proposition par un outil externe (clé d'API) : rien n'est lancé, elle attend dans la file
         exiger_cle_api();
-        $projet = $in['project'] ?? null;
-        if ($projet !== null && !in_array($projet, array_column(projets(), 'id'), true)) erreur('projet inconnu');
+        // Projet : identifiant ou nom (insensible à la casse) ; absent ou vide : idée de nouveau projet
+        $projet = trim((string)($in['project'] ?? '')) ?: null;
+        if ($projet !== null) {
+            $trouve = null;
+            foreach (projets() as $p) {
+                if ($p['id'] === $projet || mb_strtolower($p['name'] ?? '') === mb_strtolower($projet) || mb_strtolower($p['id']) === mb_strtolower($projet)) $trouve = $p['id'];
+            }
+            $projet = $trouve ?? erreur('projet inconnu : ' . implode(', ', array_column(projets(), 'id')) . ' (ou rien pour une idée de nouveau projet)');
+        }
         $source = preg_replace('/[^\w-]/u', '', (string)($in['source'] ?? '')) ?: 'api';
         debut();
         $m = memoire_lire();
-        $n = memoire_proposer($m, $projet, [['titre' => $in['titre'] ?? '', 'instruction' => $in['instruction'] ?? '']], mb_substr($source, 0, 30), null, true);
-        if (!$n) { annuler(); erreur('proposition vide, trop longue ou déjà présente'); }
+        $item = ['titre' => $in['titre'] ?? '', 'instruction' => $in['instruction'] ?? $in['description'] ?? ''];
+        $n = memoire_proposer($m, $projet, [$item], mb_substr($source, 0, 30), null, true);
+        if (!$n) { annuler(); erreur('idée vide, trop longue (10 000 caractères au plus) ou déjà présente'); }
         memoire_ecrire($m);
         valider();
-        repondre(['ok' => true, 'id' => proposition_id($projet, (string)$in['titre'])]);
+        $ajoutee = end($m['proposals']);
+        repondre(['ok' => true, 'id' => $ajoutee['id'], 'titre' => $ajoutee['titre'], 'project' => $projet,
+                  'kind' => $projet === null ? 'nouveau_projet' : 'projet']);
 
     case 'autopilote': // arme ou désarme le mode full auto
         exiger_session();
@@ -1831,6 +1949,8 @@ switch ($route) {
             $a['threshold'] = max(0.3, min(0.95, (float)($in['threshold'] ?? AUTO_SEUIL)));
             $a['max_per_day'] = max(1, min(50, (int)($in['max_per_day'] ?? AUTO_PAR_JOUR)));
             $a['max_parallel'] = max(1, min(AUTO_PARALLELE_MAX, (int)($in['max_parallel'] ?? 1)));
+            $a['ideas'] = !isset($in['ideas']) || !empty($in['ideas']);
+            $a['external'] = !isset($in['external']) || !empty($in['external']);
             $demandes = array_map('strval', (array)($in['projects'] ?? []));
             $a['projects'] = array_values(array_intersect(array_column(projets(), 'id'), $demandes));
             if ($demandes && !$a['projects']) erreur('aucun des projets choisis n\'existe encore');
@@ -1865,7 +1985,8 @@ switch ($route) {
                 $a = ['enabled' => true, 'until' => $h['until'], 'since' => time(), 'failures' => 0, 'stopped' => '',
                       'threshold' => max(0.3, min(0.95, (float)($in['threshold'] ?? 0.95))), 'projects' => $h['projects'],
                       'max_per_day' => max(1, min(50, (int)($in['max_per_day'] ?? 40))),
-                      'max_parallel' => max(1, min(AUTO_PARALLELE_MAX, (int)($in['max_parallel'] ?? 3)))] + autopilote_lire();
+                      'max_parallel' => max(1, min(AUTO_PARALLELE_MAX, (int)($in['max_parallel'] ?? 3))),
+                      'ideas' => !isset($in['ideas']) || !empty($in['ideas']), 'external' => !isset($in['external']) || !empty($in['external'])] + autopilote_lire();
                 autopilote_ecrire($a);
             }
         }
@@ -1935,19 +2056,25 @@ switch ($route) {
             valider();
             repondre(['task_id' => $id, 'titre' => 'Reprise : ' . mb_substr(preg_replace('/\s+/', ' ', $orig['instruction']), 0, 60)]);
         }
-        // 2. Puis les propositions, dans l'ordre où elles sont arrivées
+        // 2. Puis les propositions et les idées de nouveaux projets, dans l'ordre où elles sont arrivées
         $m = memoire_lire();
+        $orch = projet_orchestrateur();
+        $ideesDuJour = (int)q("SELECT COUNT(*) FROM taches WHERE cree_le >= ? AND extra LIKE '%\"idee\":true%'", [strtotime('today')])->fetchColumn();
         $choix = null;
         foreach ($m['proposals'] as &$p) {
+            if (!proposition_eligible($p, $a, $portee)) continue;
+            // Une idée de nouveau projet : chez l'orchestrateur, une à la fois et quelques-unes par jour (chacune crée un pod)
+            $cibleProjet = $p['project'] ?? $orch;
+            if ($p['project'] === null && (!$orch || $ideesDuJour >= IDEES_PAR_JOUR)) continue;
             // Un projet à la fois : sa tâche automatique en cours doit être terminée avant d'en lancer une autre dessus
-            if ($p['etat'] === 'ouverte' && empty($p['externe']) && $p['project'] !== null && in_array($p['project'], $enLigne, true) && !in_array($p['project'], $occupes, true)
-                && (!$portee || in_array($p['project'], $portee, true))) { $choix = &$p; break; }
+            if (in_array($cibleProjet, $enLigne, true) && !in_array($cibleProjet, $occupes, true)) { $choix = &$p; break; }
         }
         if (!$choix) { unset($p); $refus('aucune proposition'); }
-        $id = creer_tache_racine($choix['instruction'], $choix['project'], ['auto' => true, 'proposal' => $choix['id']]);
+        $id = lancer_proposition($choix, ['auto' => true, 'proposal' => $choix['id']]);
         $choix['etat'] = 'lancee';
-        $choix['tache'] = $id;
+        $choix['lancee_par'] = $id;
         $choix['maj'] = time();
+        fermer_suites($m, conversation_de($id), $id, $choix['instruction']);
         $titre = $choix['titre'];
         unset($choix, $p);
         memoire_ecrire($m);
@@ -2020,7 +2147,7 @@ switch ($route) {
     case 'hard_apercu': // aperçu : ce que le mode hard compte faire sur les projets choisis (?projects=a,b ; vide : tous)
         exiger_session();
         $portee = array_values(array_filter(array_map('trim', explode(',', (string)($_GET['projects'] ?? '')))));
-        repondre(hard_apercu($portee));
+        repondre(hard_apercu($portee, ['ideas' => ($_GET['ideas'] ?? '1') !== '0', 'external' => ($_GET['external'] ?? '1') !== '0']));
 
     case 'memoire_init': // lance la création de la mémoire d'un projet (CLAUDE.md)
         exiger_session();

@@ -102,7 +102,6 @@
     <div class="dlghead"><h2>Menu</h2><button class="icon" data-close aria-label="fermer">✕</button></div>
     <div class="menu">
       <button class="btn hidden" id="mInstall">📲 Installer l'application</button>
-      <button class="btn hidden" id="mPip">🪟 Mini-fenêtre toujours visible (Alt+P)</button>
       <button class="btn" id="mPod">🚀 Nouveau pod sur un dépôt git</button>
       <div class="themesel" role="group" aria-label="thème">
         <button type="button" class="btn" data-theme-set="auto">🌓 Auto</button>
@@ -169,13 +168,32 @@
         <label>Durée (heures)<input id="hardHours" type="number" min="1" max="336" value="8"></label>
         <label>Projets de front<input id="hardParallel" type="number" min="1" max="6" value="3"></label>
       </div>
-      <div class="row2">
-        <label>Tâches par jour au plus<input id="hardPerDay" type="number" min="1" max="50" value="12"></label>
-        <label>Seuil de session (%)<input id="hardThreshold" type="number" min="30" max="95" value="85"></label>
-      </div>
       <label class="check" id="hardAutoRow"><input type="checkbox" id="hardAuto" checked> 🤖 Armer aussi le full auto (enchaîne les propositions)</label>
+      <!-- Options affichées seulement quand de telles idées attendent -->
+      <label class="check hidden" id="hardIdeasRow"><input type="checkbox" id="hardIdeas" checked> <span id="hardIdeasText"></span></label>
+      <label class="check hidden" id="hardExternalRow"><input type="checkbox" id="hardExternal" checked> <span id="hardExternalText"></span></label>
+      <details class="adv"><summary>Réglages avancés</summary>
+        <div class="row2">
+          <label>Tâches par jour au plus<input id="hardPerDay" type="number" min="1" max="50" value="12"></label>
+          <label>Seuil de session (%)<input id="hardThreshold" type="number" min="30" max="95" value="85"></label>
+        </div>
+      </details>
       <div class="hardpreview" id="hardPreview"></div>
       <button type="submit" id="hardGo">☠ Activer le mode hard</button>
+    </form>
+  </dialog>
+
+  <!-- Nouvelle idée : pour un projet existant, ou idée de nouveau projet (l'orchestrateur créera le dépôt et le pod) -->
+  <dialog id="ideaDlg">
+    <div class="dlghead"><h2>💡 Nouvelle idée</h2><button class="icon" data-close aria-label="fermer">✕</button></div>
+    <form id="ideaForm" class="podform">
+      <label>Pour<select id="ideaProject"></select></label>
+      <label>Ce que Claude doit faire<textarea id="ideaText" rows="5" required maxlength="10000"
+        placeholder="Ex. : un bot Telegram qui me pose chaque matin 10 cartes Anki"></textarea></label>
+      <label>Titre (facultatif)<input id="ideaTitle" maxlength="120" autocomplete="off" placeholder="tiré des premiers mots sinon"></label>
+      <p class="hint" id="ideaHint">Elle attend dans les propositions : ▶ Lancer quand tu veux, ou le full auto / mode hard s’en charge. Nouveau projet : le dépôt et le pod sont créés au lancement
+        (utile pour dépenser les tokens qui restent en fin de semaine).</p>
+      <button type="submit">Ajouter l'idée</button>
     </form>
   </dialog>
 

@@ -994,18 +994,6 @@ function nextStepsHtml(e) {
     <div class="hint">Toucher une étape la prépare dans la saisie ; ▶ la lance tout de suite.</div></div>`;
 }
 
-function followHtml(items) {
-  if (!items.length) return '';
-  return `<section class="sect"><h3>Prochaines étapes · ${items.length}</h3><div class="follows">${items.map((e) => {
-    const proj = state.projects.find((p) => p.id === e.task.project);
-    return `<article class="follow"><div class="fhead"><b>${esc(proj?.name || e.task.project || '')}</b>
-        <span class="muted" data-ago="${Number(e.task.updated || e.task.created)}"></span>
-        <button class="btn ghost" data-dismiss="${esc(e.task.id)}">Ignorer</button></div>
-      <button class="forigin" data-jump="${esc(e.task.id)}">↳ ${esc(e.task.instruction || '')}</button>
-      ${stepsList(e.task, pendingSteps(e))}</article>`;
-  }).join('')}</div></section>`;
-}
-
 async function runNextStep(id, i, now) {
   const t = state.tasks.get(id)?.task;
   const step = t?.next_steps?.[i];
@@ -1411,7 +1399,6 @@ function renderDash() {
     <details class="more" data-more ${state.dashMore ? 'open' : ''}><summary>Plus de détails</summary><div class="dashwrap">
     <div class="kpis">
       ${kpi(`${working}<small>/${capacity || '—'}</small>`, 'Claude au travail', '', 'agents actifs / capacité des pods en ligne')}
-      ${kpi(pending ? `⚠ ${pending}` : '0', 'Validation(s) en attente', pending ? 'warn' : '')}
       ${kpi(today, 'Tâches aujourd\'hui')}
       ${kpi(fmtTokens(tokensJour), 'Tokens aujourd\'hui', '', 'tokens consommés par les tâches du jour (cache compris)')}
     </div>
@@ -1421,9 +1408,8 @@ function renderDash() {
       <p class="hint">Pour économiser : une conversation par sujet, la puce du projet plutôt qu'Auto, le tableau de bord pour l'avancement, « Modèle auto ».</p></section>` : ''}
     ${weekIncite ? '' : weekHtml()}
     ${state.hard?.enabled ? '' : reportHtml()}
-    ${followHtml(tasks.filter(pendingSteps).sort((a, b) => (b.task.updated || b.task.created) - (a.task.updated || a.task.created)).slice(0, 6))}
-    ${state.memory && !state.memory.proposals.length ? `<section class="sect"><div class="secthead"><h3>Propositions</h3><button type="button" class="btn ghost" data-prop="ajouter">＋ Ajouter</button></div>
-      <div class="emptyd">Rien en attente : les prochaines étapes des tâches terminées arrivent ici, et le full auto en génère quand la file est vide.</div></section>` : ''}
+    ${state.memory && !state.memory.proposals.length ? `<section class="sect"><div class="secthead"><h3>Propositions</h3><button type="button" class="btn ghost" data-prop="ajouter">＋ Idée</button></div>
+      <div class="emptyd">Rien en attente : les prochaines étapes des tâches terminées arrivent ici, tes idées aussi, et le full auto en génère quand la file est vide.</div></section>` : ''}
     ${projectsHtml()}
     ${bilanHtml()}
     </div></details>
@@ -1445,6 +1431,7 @@ function weekHtml() {
   const w = state.week;
   if (!w) return '';
   const incite = w.hours_left <= 48 && w.remaining >= 0.2 && !state.hard?.enabled;
+  const queued = state.memory?.proposals?.length || 0;
   const est = w.remaining_tokens != null
     ? `≈ <b>${fmtTokens(w.remaining_tokens)}</b> de tokens à dépenser${w.tasks_estimate ? ` · ≈ ${w.tasks_estimate} tâche(s) de taille moyenne` : ''}`
     : 'Estimation en tokens disponible après quelques tâches.';
@@ -1453,6 +1440,8 @@ function weekHtml() {
       ${meter('Semaine', w.utilization, `${Math.round(w.utilization * 100)} %`, `Limite hebdomadaire : ${Math.round(w.utilization * 100)} % utilisée`)}
       <div class="wkline"><span>Réinitialisation dans <b>${fmtLeft(w.hours_left)}</b></span><span>${est}</span></div>
       ${incite ? `<div class="wkincite">Il reste ${Math.round(w.remaining * 100)} % de ta semaine : sans activité, ces tokens seront perdus.</div>` : ''}
+      <div class="wkline"><span>${queued ? `${queued} idée(s) et proposition(s) en file pour les dépenser` : 'Aucune idée en file : Claude en proposera à partir de tes projets.'}</span>
+        <button type="button" class="btn ghost" data-prop="ajouter">＋ Idée</button></div>
       ${state.hard?.enabled ? '' : `<button class="btn ${incite ? '' : 'ghost'}" data-hard="on" data-hours="${Math.max(1, Math.min(336, Math.ceil(w.hours_left)))}">☠ Utiliser le reste avec le mode hard</button>`}
       <div class="hint">Estimation prudente : le budget est déduit des tokens consommés par les tâches du cockpit cette semaine.</div>
     </div></section>`;
@@ -1509,11 +1498,13 @@ const projectName = (id) => state.projects.find((p) => p.id === id)?.name || sta
 function proposalsHtml() {
   const m = state.memory;
   if (!m?.proposals.length) return '';
-  const proposals = m.proposals.map((x) => `<article class="follow"><div class="fhead"><b>${esc(x.titre)}</b><span class="muted">${x.externe ? `🔌 ${esc(x.source || 'externe')} · à lancer toi-même · ` : ''}${esc(projectName(x.project))}</span></div>
+  const origin = (x) => (x.source === 'suite' && state.tasks.get(x.tache)
+    ? `<button class="forigin" data-jump="${esc(x.tache)}">↳ suite de « ${esc(shownInstruction(state.tasks.get(x.tache).task.instruction).slice(0, 70))} »</button>` : '');
+  const proposals = m.proposals.map((x) => `<article class="follow"><div class="fhead"><b>${esc(x.titre)}</b><span class="muted">${x.externe ? `🔌 ${esc(x.source || 'externe')} · ` : ''}${x.project ? esc(projectName(x.project)) : '💡 nouveau projet'}</span></div>${origin(x)}
       <div class="hint">${esc(x.instruction.replace(/\n\n\(Tâche lancée par le mode full auto[^)]*\)/, '').slice(0, 220))}</div>
       <div class="fhead"><button class="btn" data-prop="lancer" data-id="${esc(x.id)}">▶ Lancer</button>
         <button class="btn ghost" data-prop="ignorer" data-id="${esc(x.id)}">Ignorer</button></div></article>`).join('');
-  return `<section class="sect"><div class="secthead"><h3>Propositions · ${m.proposals.length}</h3><button type="button" class="btn ghost" data-prop="ajouter">＋ Ajouter</button></div>
+  return `<section class="sect"><div class="secthead"><h3>Propositions · ${m.proposals.length}</h3><button type="button" class="btn ghost" data-prop="ajouter">＋ Idée</button></div>
     <div class="follows">${proposals}</div></section>`;
 }
 
@@ -1559,7 +1550,7 @@ const hardChosen = () => [...document.querySelectorAll('#hardProjects input:chec
 /** Dialogue commun au full auto et au mode hard : projets concernés, durée, parallélisme, plafonds, et aperçu de ce que Claude compte faire. */
 const DIALOG_MODES = {
   hard: { title: '☠ Mode hard', go: '☠ Activer le mode hard', hours: 8, perDay: 40, threshold: 95,
-    intro: 'Pleine autonomie : plus aucune validation, questions tranchées par Claude, compte rendu à la fin. Choisis les projets concernés ; les autres ne sont pas touchés.' },
+    intro: 'Pleine autonomie : Claude ne te demande plus rien (écrire partout dans le pod, pousser sur main, cluster, sudo), tranche ses questions seul et dresse un compte rendu. Seuls les refus (deny) restent bloqués. Les projets non cochés ne sont pas touchés.' },
   auto: { title: '🤖 Full auto', go: '🤖 Armer le full auto', hours: 24, perDay: 12, threshold: 85,
     intro: 'Claude enchaîne seul les propositions et reprend le travail resté en plan, tant que l\'usage de la session reste sous le seuil, et repart après chaque réinitialisation. Seules les opérations destructrices restent demandées (refusées au bout de 15 min sans réponse). Choisis les projets concernés.' },
 };
@@ -1576,6 +1567,9 @@ function openHardDialog(mode = 'hard', hours = 0) {
   $('#hardThreshold').value = m.threshold;
   $('#hardAutoRow').classList.toggle('hidden', mode !== 'hard');
   $('#hardAuto').checked = true;  // le mode hard arme le full auto par défaut
+  $('#hardIdeas').checked = $('#hardExternal').checked = true;
+  $('#hardIdeasRow').classList.add('hidden');
+  $('#hardExternalRow').classList.add('hidden');
   const list = state.projects;
   $('#hardProjects').innerHTML = list.length ? list.map((p) => `<label class="check"><input type="checkbox" value="${esc(p.id)}" ${p.online ? 'checked' : ''}>
       <span>${esc(p.name || p.id)}</span><span class="off">${p.online ? '● pod en ligne' : '○ pod hors ligne'}</span></label>`).join('')
@@ -1602,11 +1596,17 @@ function refreshHardPreview() {
     if (!ids.length) { $('#hardPreview').textContent = 'Choisis au moins un projet.'; $('#hardGo').disabled = true; return; }
     $('#hardGo').disabled = false;
     try {
-      const r = await api('hard_apercu', undefined, `&projects=${encodeURIComponent(ids.join(','))}`);
+      const r = await api('hard_apercu', undefined, `&projects=${encodeURIComponent(ids.join(','))}`
+        + `&ideas=${$('#hardIdeas').checked ? 1 : 0}&external=${$('#hardExternal').checked ? 1 : 0}`);
+      const c = r.counts || {};
+      $('#hardIdeasRow').classList.toggle('hidden', !c.ideas);
+      $('#hardIdeasText').textContent = `💡 Réaliser aussi les idées de nouveaux projets (${c.ideas}) : dépôt et pod créés, ${r.ideas_per_day} par jour au plus`;
+      $('#hardExternalRow').classList.toggle('hidden', !c.external);
+      $('#hardExternalText').textContent = `🔌 Inclure les idées envoyées par tes outils (${c.external}), par exemple ton bot`;
       const name = (id) => r.projects.find((p) => p.id === id)?.name || id || 'Auto';
-      const kind = { memoire: '🧠 mémoire', reprise: '↻ reprise', proposition: '💡' };
+      const kind = { memoire: '🧠 mémoire', reprise: '↻ reprise', proposition: '💡', idee: '🆕 nouveau projet :' };
       const offline = r.projects.filter((p) => !p.online);
-      const lines = r.plan.map((x) => `<li>${kind[x.kind] || ''} <b>${esc(name(x.project))}</b> — ${esc(x.titre)}${x.online ? '' : ' <span class="muted">(pod hors ligne : en attente)</span>'}
+      const lines = r.plan.map((x) => `<li>${kind[x.kind] || ''} ${x.kind === 'idee' ? '' : `<b>${esc(name(x.project))}</b> — `}${esc(x.titre)}${x.external ? ' 🔌' : ''}${x.online ? '' : ` <span class="muted">(${x.kind === 'idee' ? 'orchestrateur' : 'pod'} hors ligne : en attente)</span>`}
         <span class="muted">· ${ago(x.since)}</span></li>`).join('');
       $('#hardPreview').innerHTML = `<b>Ce que le mode hard compte faire</b>
         ${r.plan.length ? `<ol>${lines}</ol>${r.total > r.plan.length ? `<div class="muted">… et ${r.total - r.plan.length} de plus</div>` : ''}
@@ -1619,6 +1619,8 @@ function refreshHardPreview() {
 }
 
 $('#hardProjects').addEventListener('change', refreshHardPreview);
+$('#hardIdeas').addEventListener('change', refreshHardPreview);
+$('#hardExternal').addEventListener('change', refreshHardPreview);
 const hardSelect = (pick) => {
   document.querySelectorAll('#hardProjects input').forEach((i) => { i.checked = pick(state.projects.find((p) => p.id === i.value)); });
   refreshHardPreview();
@@ -1631,13 +1633,10 @@ $('#hardForm').addEventListener('submit', async (ev) => {
   const projects = hardChosen();
   const hours = Number($('#hardHours').value), parallel = Number($('#hardParallel').value);
   const body = { enabled: true, hours, max_parallel: parallel, projects, max_per_day: Number($('#hardPerDay').value) || undefined,
-    threshold: (Number($('#hardThreshold').value) || 85) / 100 };
+    threshold: (Number($('#hardThreshold').value) || 85) / 100, ideas: $('#hardIdeas').checked, external: $('#hardExternal').checked };
   if (!projects.length || !hours || !parallel) return;
   const hard = dialogMode === 'hard';
-  const sure = hard
-    ? `Activer le mode hard pendant ${hours} h sur ${projects.length} projet(s), ${parallel} de front${$('#hardAuto').checked ? ', full auto armé' : ', sans full auto'} ?\nClaude ne te demandera plus rien : validations approuvées (écrire n'importe où dans le pod, pousser sur main, cluster, sudo), questions tranchées par lui. Un compte rendu sera dressé. Seuls les outils interdits (deny) restent bloqués.`
-    : `Armer le full auto pendant ${hours} h sur ${projects.length} projet(s), ${parallel} de front, ${body.max_per_day || 12} tâche(s) par jour au plus ?`;
-  if (!confirm(sure)) return;
+  // Le dialogue montre déjà le plan et ses risques : pas de seconde confirmation
   $('#hardGo').disabled = true;
   try {
     await api(hard ? 'mode_hard' : 'autopilote', hard ? { ...body, auto: $('#hardAuto').checked } : body);
@@ -1675,15 +1674,33 @@ function reportHtml() {
 
 async function propositionAction(b) {
   if (b.dataset.prop === 'ajouter') {
-    const titre = prompt('Titre de la proposition'); if (!titre) return;
-    const instruction = prompt('Instruction complète pour Claude'); if (!instruction) return;
-    await api('proposition', { action: 'ajouter', titre, instruction, project: state.selected || null });
+    openIdea();
+    return;
   } else {
     b.disabled = true;
     await api('proposition', { action: b.dataset.prop, id: b.dataset.id });
   }
   poll();
 }
+
+function openIdea() {
+  const opts = state.projects.filter((p) => p.id).map((p) => `<option value="${esc(p.id)}">${esc(p.name || p.id)}</option>`).join('');
+  $('#ideaProject').innerHTML = `<option value="">💡 Nouveau projet</option>${opts}`;
+  $('#ideaProject').value = state.selected || '';
+  $('#ideaText').value = '';
+  $('#ideaTitle').value = '';
+  $('#ideaDlg').showModal();
+  $('#ideaText').focus();
+}
+$('#ideaForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  try {
+    await api('proposition', { action: 'ajouter', instruction: $('#ideaText').value.trim(), titre: $('#ideaTitle').value.trim(),
+      project: $('#ideaProject').value || null });
+    $('#ideaDlg').close();
+    poll();
+  } catch (e) { $('#ideaHint').textContent = e.message; }
+});
 
 function setView(v) {
   state.view = v;
@@ -2081,7 +2098,7 @@ async function onClick(ev) {
       setTheme(b.dataset.themeSet);
     } else if (b.id === 'dashToggle') {
       setDashHidden(!document.body.classList.contains('dash-hidden'));
-    } else if (b.id === 'mPip' || b.id === 'pipBtn') {
+    } else if (b.id === 'pipBtn') {
       $('#menuDlg').close();
       await openPip();
     } else if ('pipFocus' in b.dataset) {
@@ -2416,7 +2433,7 @@ async function start() {
   }
 }
 
-if (pipSupported() && !matchMedia('(pointer: coarse)').matches) { $('#mPip').classList.remove('hidden'); $('#pipBtn').classList.remove('hidden'); }
+if (pipSupported() && !matchMedia('(pointer: coarse)').matches) $('#pipBtn').classList.remove('hidden');
 try {
   setTheme(localStorage.getItem('cockpit_theme') || 'auto');
   if (localStorage.getItem('cockpit_dash_hidden')) setDashHidden(true);

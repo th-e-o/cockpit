@@ -591,4 +591,11 @@ body.pip.flash { animation: pipflash 1.6s ease-out 2; }
 /* iOS zoome sur tout champ de moins de 16 px : 16 px partout sur écran tactile */
 @media (pointer: coarse) {
   .qrow textarea, select.mini, .memtext, .rvform textarea, .cmdrow textarea, input, select, textarea { font-size: 16px; }
+  select.mini { max-width: 200px; }  /* « 🤖 Modèle auto » entier à 16 px (ne pas confondre avec la puce de projet « Auto ») */
 }
+/* Réglages rarement modifiés, repliés dans les dialogues */
+details.adv > summary { cursor: pointer; color: var(--muted); font-size: 13px; padding: 4px 0; }
+details.adv[open] > summary { margin-bottom: 8px; }
+#ideaText { font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel2); color: var(--text); resize: vertical; }
+/* Très petit écran (iPhone SE 1re génération, 320 px) : le titre laisse la place aux boutons de l'en-tête */
+@media (max-width: 359px) { header h1 { display: none; } }

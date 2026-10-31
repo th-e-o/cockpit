@@ -28,10 +28,16 @@ worker n'est connue du relais que par son empreinte, versionnée dans `config/wo
 
 Chaque `git push` sur `main` qui touche `web/` redéploie le relais (*Actions → Déploiement OVH*).
 
-**Clés d'API (facultatif)** : un outil externe (ex. un bot Telegram) peut ajouter des propositions avec
-`POST api.php?r=proposition_api` (en-tête `Authorization: Bearer <clé>`, corps JSON `{titre, instruction, project?, source?}`).
-Il ne peut rien faire d'autre : la proposition attend dans la file (marquée 🔌) et **n'est jamais lancée par le full auto ni
-le mode hard** ; seul un ▶ Lancer depuis le téléphone la démarre.
+**Clés d'API (facultatif)** : un outil externe (ex. un bot Telegram) peut ajouter des idées avec
+`POST api.php?r=proposition_api` (en-tête `Authorization: Bearer <clé>`, corps JSON `{instruction, titre?, project?, source?}`).
+- `instruction` (ou `description`) : ce que Claude doit faire, 10 000 caractères au plus ; `titre` : facultatif, tiré des
+  premiers mots sinon ; `project` : identifiant **ou nom** d'un projet (casse indifférente) ; absent : **idée de nouveau projet**
+  (l'orchestrateur créera un dépôt privé et un pod, puis lui confiera l'idée).
+- Réponse : `{ok, id, titre, project, kind}` (`kind` : `projet` ou `nouveau_projet`) ; 400 si l'idée est vide, déjà présente ou
+  le projet inconnu (le message liste les projets).
+- L'idée attend dans *Propositions* (marquée 🔌). Elle entre dans le plan du **full auto et du mode hard** (donc dans les tokens
+  de fin de semaine) tant que l'option « 🔌 Inclure les idées envoyées par tes outils » reste cochée en les armant. La clé ne
+  permet rien d'autre.
 `./run.sh cle-api` crée une clé et ajoute son empreinte à `config/api_keys.sha256` (une par ligne) ; pour révoquer, retirer la ligne.
 
 ### 2. OVH : rien à faire
@@ -176,7 +182,11 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
 - **Mémoire, propositions et full auto** (tableau de bord, sections *Mémoire* et *Propositions*) : le relais garde
   l'état de chaque projet suivi (dernier résultat, activité, tâches en cours, « en pause » après 14 jours) et une liste
   de propositions de ce qui peut être fait : prochaines étapes des tâches terminées, idées générées par Claude quand la
-  file est vide (toutes les 3 h au plus), ou ajoutées à la main ; ▶ Lancer ou Ignorer. *Armer le full auto* (1 à 14 jours,
+  file est vide (toutes les 3 h au plus), ou ajoutées à la main (*＋ Idée* : un seul champ, pour un projet ou pour un
+  **nouveau projet**) ou par un outil (clé d'API) ; ▶ Lancer ou Ignorer. Une prochaine étape lancée reprend **sa
+  conversation** (même session Claude) ; quand une conversation avance, ses anciennes étapes sont retirées (la tâche
+  suivante propose les siennes) : rien n'est fait deux fois. Les idées de nouveaux projets partent chez l'orchestrateur,
+  une à la fois et 2 par jour au plus en automatique (chacune crée un pod). *Armer le full auto* (1 à 14 jours,
   tâches par jour) fait enchaîner ces propositions à l'orchestrateur, une tâche à la fois, tant que la session reste sous
   le seuil d'usage (85 %) ; il reprend après chaque réinitialisation et se désarme après 3 erreurs de suite. Même
   politique que le reste : une validation sans réponse est refusée au bout de 15 min, jamais approuvée d'office.

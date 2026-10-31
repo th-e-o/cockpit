@@ -267,7 +267,8 @@ def test_tableau_de_bord(relay):
         # L'essentiel d'abord ; chiffres du jour, bilan et mémoire sont repliés sous « Plus de détails »
         assert page.is_hidden(".kpis")
         page.click("details[data-more] > summary")
-        assert "⚠ 1" in page.inner_text(".kpis")
+        assert "Tâches aujourd'hui" in page.inner_text(".kpis")
+        assert "À valider · 1" in page.inner_text("#dash .sect.attn")  # en tête, avec ses boutons (plus en chiffre caché)
         assert page.locator(".live", has_text="Refactorise le routeur").count() == 1 and page.locator(".live.alert", has_text="mlflow").count() == 1
         assert "Plan 2/4" in page.inner_text(".lives") and "Lance les tests du routeur" in page.inner_text(".lives")
         assert "⚠ 8,9 Go / 9,8 Go" in page.inner_text(".podcard")  # disque presque plein : alerte avec icône
@@ -301,16 +302,16 @@ def test_tableau_de_bord(relay):
         page.wait_for_selector("#podDlg", state="hidden")
         page.wait_for_selector(".live >> text=Nouveau pod « drones-vols »")
         # Retour au fil depuis une tâche du tableau de bord : résumé des modifications, diff à la demande
-        # Prochaines étapes : suivi dans le tableau de bord
-        follow = page.locator(".follow", has_text="Corrige le calcul des altitudes")
-        assert follow.locator(".nmain").count() == 2
+        # Prochaines étapes : dans les propositions du tableau de bord (une seule liste), rattachées à leur conversation
+        follow = page.locator("#dash .follow", has_text="Ajouter un test de l'altitude")
+        assert "suite de « Corrige le calcul des altitudes" in follow.locator(".forigin").inner_text()
         follow.screenshot(path=SHOTS / "7d-suivi.png")
-        follow.locator(".nmain", has_text="Ajouter un test").click()  # préparée dans la saisie, modifiable
-        page.wait_for_selector("#feed", state="visible")
+        page.click("#tabChat")
+        card4 = page.locator("section", has=page.locator(".user", has_text="Corrige le calcul des altitudes")).first
+        card4.locator(".nmain", has_text="Ajouter un test").click()  # préparée dans la saisie, modifiable
         assert page.input_value("#input").startswith("Ajoute un test unitaire")
         assert "Corrige le calcul des altitudes" in page.inner_text("#threadText")
         page.fill("#input", "")
-        card4 = page.locator("section", has=page.locator(".user", has_text="Corrige le calcul des altitudes")).first
         card4.locator(".nexts").scroll_into_view_if_needed()
         page.screenshot(path=SHOTS / "8b-prochaines-etapes.png")
         card4.locator(".nrun").nth(1).click()  # ▶ : lancée tout de suite, dans la conversation
@@ -864,3 +865,36 @@ def test_theme_et_repartition(relay):
         assert bg() == "rgb(246, 247, 249)"
         assert not errors, errors
         browser.close()
+
+
+def test_idees_et_fin_de_semaine(relay):
+    """Une idée s'ajoute en une fois (sans titre obligatoire) ; le dialogue du mode hard la montre dans son plan, avec ses options."""
+    from test_relay import CLE_API, call, paired_phone, worker_call, wpoll
+
+    p = paired_phone(relay)
+    wpoll(relay, "orch-idees", True, [{"id": "idees-orch", "name": "Orchestrateur", "description": "On y crée un NOUVEAU projet."}], hello=True)
+    worker_call(relay, "proposition_api", {"instruction": "Un tableau de bord des vols de drones en temps réel", "source": "telegram"}, key=CLE_API)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        page, errors = browser_page(p, browser, relay, viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True)
+        page.click("#tabDash")
+        page.wait_for_selector("#dash .follow >> text=Un tableau de bord des vols")
+        assert "💡 nouveau projet" in page.inner_text("#dash .follow:has-text('Un tableau de bord des vols')")
+        # Idée ajoutée depuis le téléphone : un seul champ, projet au choix (nouveau projet par défaut sur Auto)
+        page.click("[data-prop='ajouter']")
+        page.fill("#ideaText", "Une appli de quiz Anki pour le métro")
+        page.screenshot(path=SHOTS / "22-idee.png")
+        page.click("#ideaForm button[type=submit]")
+        page.wait_for_selector("#dash .follow >> text=Une appli de quiz Anki")
+        # Mode hard : les idées entrent dans le plan (et dans l'estimation en tokens), options visibles et décochables
+        page.evaluate("openHardDialog('hard')")
+        page.wait_for_selector("#hardPreview li >> text=Une appli de quiz Anki")
+        assert page.is_visible("#hardIdeasRow") and page.is_visible("#hardExternalRow")
+        assert "nouveau projet" in page.inner_text("#hardPreview")
+        page.screenshot(path=SHOTS / "23-mode-hard-idees.png")
+        page.uncheck("#hardExternal")
+        wait_js(page, "!document.querySelector('#hardPreview').textContent.includes('vols de drones')")
+        assert "quiz Anki" in page.inner_text("#hardPreview")
+        assert not errors, errors
+        browser.close()
+    call(p, "mode_hard", {"enabled": False})
