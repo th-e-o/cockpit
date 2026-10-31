@@ -29,6 +29,7 @@
     <button id="menuBtn" class="icon" aria-label="menu">☰</button>
   </header>
 
+  <div id="offlineBar" class="offline hidden" role="status">Relais injoignable : nouvel essai automatique…</div>
   <!-- Usage du forfait Claude (session de 5 h) : toucher pour le détail dans le tableau de bord -->
   <button type="button" id="usageBar" class="usagebar hidden" data-view="dash" aria-label="usage de Claude"><i></i><span></span></button>
   <div id="layout">
@@ -38,7 +39,7 @@
     <button type="button" class="btn ghost" id="foldAll">Tout replier</button>
     <button type="button" class="btn ghost" id="unfoldAll">Tout déplier</button>
   </div>
-  <main id="feed" aria-live="polite">
+  <main id="feed">
     <div class="empty">Envoie une instruction. Le cockpit choisit le projet si tu restes sur <b>Auto</b>.
       Les messages suivants continuent la conversation ; « Nouvelle conversation » lance un autre Claude en parallèle.</div>
   </main>
@@ -62,7 +63,7 @@
       <div id="quick" class="chips quick" aria-label="commandes rapides"></div>
     </div>
     <form id="composer">
-      <textarea id="input" rows="1" placeholder="Ton instruction…" title="Ctrl+K ou / pour écrire depuis n'importe où" enterkeyhint="send"></textarea>
+      <textarea id="input" rows="1" placeholder="Ton instruction…" title="Ctrl+K ou / pour écrire depuis n'importe où" enterkeyhint="enter"></textarea>
       <button type="button" id="mic" class="hidden" aria-label="dicter" aria-pressed="false"
               title="Commande vocale (Alt+M) : parle, le texte s'écrit ; finis par « envoie » pour envoyer directement">🎤</button>
       <button type="submit" id="send" aria-label="envoyer">➤</button>
@@ -98,7 +99,7 @@
   </section>
 
   <dialog id="menuDlg">
-    <div class="dlghead"><h2>Menu</h2><button class="icon" data-close>✕</button></div>
+    <div class="dlghead"><h2>Menu</h2><button class="icon" data-close aria-label="fermer">✕</button></div>
     <div class="menu">
       <button class="btn hidden" id="mInstall">📲 Installer l'application</button>
       <button class="btn hidden" id="mPip">🪟 Mini-fenêtre toujours visible (Alt+P)</button>
@@ -120,7 +121,7 @@
 
   <!-- Nouveau pod Onyxia : clone d'un dépôt git, lancé par l'orchestrateur -->
   <dialog id="podDlg">
-    <div class="dlghead"><h2>Nouveau pod</h2><button class="icon" data-close>✕</button></div>
+    <div class="dlghead"><h2>Nouveau pod</h2><button class="icon" data-close aria-label="fermer">✕</button></div>
     <form id="podForm" class="podform">
       <div class="seg podmode" role="group" aria-label="source du projet">
         <button type="button" data-pod-mode="existing" aria-pressed="true">Dépôt existant</button>
@@ -156,7 +157,7 @@
   </dialog>
 
   <dialog id="hardDlg">
-    <div class="dlghead"><h2 id="hardTitle">☠ Mode hard</h2><button class="icon" data-close>✕</button></div>
+    <div class="dlghead"><h2 id="hardTitle">☠ Mode hard</h2><button class="icon" data-close aria-label="fermer">✕</button></div>
     <form id="hardForm" class="podform">
       <p class="hint" id="hardIntro"></p>
       <div class="hardsel"><span class="muted">Projets :</span>
@@ -179,7 +180,7 @@
   </dialog>
 
   <dialog id="cmdDlg">
-    <div class="dlghead"><h2>Commandes rapides</h2><button class="icon" data-close>✕</button></div>
+    <div class="dlghead"><h2>Commandes rapides</h2><button class="icon" data-close aria-label="fermer">✕</button></div>
     <form id="cmdForm" class="podform">
       <label>Pour<select id="cmdScope"></select></label>
       <div id="cmdRows" class="cmdrows"></div>
@@ -190,7 +191,7 @@
   </dialog>
 
   <dialog id="memDlg">
-    <div class="dlghead"><h2 id="memTitle">Mémoire</h2><button class="icon" data-close>✕</button></div>
+    <div class="dlghead"><h2 id="memTitle">Mémoire</h2><button class="icon" data-close aria-label="fermer">✕</button></div>
     <form id="memForm" class="podform">
       <p class="hint">Fichier CLAUDE.md du projet : Claude le lit au début de chaque tâche (conventions, commandes, choix).</p>
       <textarea id="memText" class="memtext" rows="16" spellcheck="false"></textarea>
@@ -200,13 +201,13 @@
   </dialog>
 
   <dialog id="imgDlg" class="imgdlg">
-    <div class="dlghead"><h2>Capture</h2><button class="icon" data-close>✕</button></div>
+    <div class="dlghead"><h2>Capture</h2><button class="icon" data-close aria-label="fermer">✕</button></div>
     <img id="imgFull" alt="">
     <p class="hint" id="imgCaption"></p>
   </dialog>
 
   <dialog id="listDlg">
-    <div class="dlghead"><h2 id="listTitle"></h2><button class="icon" data-close>✕</button></div>
+    <div class="dlghead"><h2 id="listTitle"></h2><button class="icon" data-close aria-label="fermer">✕</button></div>
     <div id="listBody"></div>
   </dialog>
 

@@ -395,7 +395,7 @@ def test_notifications_du_service_worker(relay):
     assert ask["title"] == "❓ Claude attend ta réponse" and ask["body"] == "Quel format ?" and ask["urgent"]
     assert [a["action"] for a in ask["actions"]] == ["answer-0", "answer-1"] and ask["data"]["options"] == ["Anki", "CSV"]
     assert v["body"] == "opération sensible : rm\nrm -rf build" and [a["action"] for a in v["actions"]] == ["approve", "deny"]
-    assert v["data"] == {"approval": "a1"} and v["urgent"]
+    assert v["data"] == {"approval": "a1", "task": "t"} and v["urgent"]  # toucher la notification ouvre la tâche
     assert pod["title"] == "🟢 Pod « drones » connecté"
     assert done["body"].startswith("2 fichiers · +5 −1\nFait — ok") and "💡 Lancer les tests · Publier · Trois" in done["body"]
     assert [a["title"] for a in done["actions"]] == ["▶ Lancer les tests", "▶ Publier"] and done["data"]["task"] == "t1"
@@ -766,7 +766,7 @@ def test_toujours_autoriser(relay):
         browser = pw.chromium.launch()
         page, errors = browser_page(p, browser, relay, viewport={"width": 1280, "height": 900})
         page.on("dialog", lambda d: d.accept())
-        btn = page.locator("[data-always='ap-ta']")
+        btn = page.locator("#feed [data-always='ap-ta']")
         btn.wait_for()
         assert btn.inner_text() == "Toujours autoriser « docker build … »"
         btn.click()

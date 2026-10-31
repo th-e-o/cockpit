@@ -58,11 +58,14 @@ function md(src) {
 
 class AuthError extends Error {}
 
-async function api(route, body, params = '') {
-  const res = await fetch(`api.php?r=${route}${params}`, body === undefined ? { credentials: 'same-origin' } : {
-    method: 'POST', credentials: 'same-origin',
+/** Appel au relais. timeout (ms) : une requête qui ne répond jamais (réseau qui change, app suspendue par iOS) est abandonnée. */
+async function api(route, body, params = '', timeout = 30000) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), timeout);
+  const res = await fetch(`api.php?r=${route}${params}`, body === undefined ? { credentials: 'same-origin', signal: ctrl.signal } : {
+    method: 'POST', credentials: 'same-origin', signal: ctrl.signal,
     headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
-  });
+  }).finally(() => clearTimeout(timer));
   const data = await res.json().catch(() => ({}));
   if (res.status === 401 && !route.startsWith('passkey') && route !== 'appairer') throw new AuthError(data.detail);
   if (!res.ok) throw new Error(data.detail || res.statusText);
@@ -109,6 +112,7 @@ async function createPasskey() {
   if (!r.getPublicKey) throw new Error('Navigateur trop ancien pour les passkeys.');
   await api('passkey_creer', {
     id: cred.id, clientDataJSON: b64u.enc(r.clientDataJSON), publicKey: b64u.enc(r.getPublicKey()),
+    attestationObject: b64u.enc(r.attestationObject),
     alg: r.getPublicKeyAlgorithm(), name: deviceName(),
   });
 }
@@ -1135,6 +1139,15 @@ function variantsHtml(tasks) {
   }).join('')}</section>`;
 }
 
+/** Validations en attente, en tête du tableau de bord et avec leurs boutons : on approuve sans chercher la carte dans le fil. */
+function approvalsSection(tasks) {
+  const items = [];
+  for (const e of tasks) for (const a of e.approvals.values()) if (!a.decision) items.push([e, a]);
+  if (!items.length) return '';
+  return `<section class="sect attn"><h3>⚠ À valider · ${items.length}</h3>${items.map(([e, a]) =>
+    `<div class="dapproval" data-task="${esc(e.task.id)}"><button type="button" class="linkish" data-jump="${esc(e.task.id)}">${esc(projectName(e.task.project) || '')} · ${esc(shownInstruction(e.task.instruction).slice(0, 80))}</button>${approvalHtml(a)}</div>`).join('')}</section>`;
+}
+
 function questionsSection(tasks) {
   const open = tasks.filter(openQuestion);
   if (!open.length) return '';
@@ -1379,6 +1392,7 @@ function renderDash() {
   // L'essentiel d'abord (ce qui attend une action, l'autonomie, le travail en cours, les pods) ; le détail est replié.
   const weekIncite = state.week && state.week.hours_left <= 48 && state.week.remaining >= 0.2 && !state.hard?.enabled;
   const html = `<div class="dashwrap">
+    ${approvalsSection(tasks)}
     ${questionsSection(tasks)}
     ${prsSection(tasks)}
     ${variantsHtml(tasks)}
@@ -1415,7 +1429,9 @@ function renderDash() {
     </div></details>
   </div>`;
   // Reconstruit seulement si le contenu change (survol, focus et clics préservés) ; les durées vivent dans tick().
-  if (html !== state.dashHtml) { $('#dash').innerHTML = html; state.dashHtml = html; restoreQuestions($('#dash')); sizes($('#dash')); tick(); }
+  // Pas de reconstruction pendant une saisie dans le tableau de bord (le clavier du téléphone se fermerait) : elle attend le blur.
+  const typing = $('#dash').contains(document.activeElement) && /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+  if (html !== state.dashHtml && !typing) { $('#dash').innerHTML = html; state.dashHtml = html; restoreQuestions($('#dash')); sizes($('#dash')); tick(); }
   loadBilan();
   loadReport();
 }
@@ -1493,7 +1509,7 @@ const projectName = (id) => state.projects.find((p) => p.id === id)?.name || sta
 function proposalsHtml() {
   const m = state.memory;
   if (!m?.proposals.length) return '';
-  const proposals = m.proposals.map((x) => `<article class="follow"><div class="fhead"><b>${esc(x.titre)}</b><span class="muted">${esc(projectName(x.project))}</span></div>
+  const proposals = m.proposals.map((x) => `<article class="follow"><div class="fhead"><b>${esc(x.titre)}</b><span class="muted">${x.externe ? `🔌 ${esc(x.source || 'externe')} · à lancer toi-même · ` : ''}${esc(projectName(x.project))}</span></div>
       <div class="hint">${esc(x.instruction.replace(/\n\n\(Tâche lancée par le mode full auto[^)]*\)/, '').slice(0, 220))}</div>
       <div class="fhead"><button class="btn" data-prop="lancer" data-id="${esc(x.id)}">▶ Lancer</button>
         <button class="btn ghost" data-prop="ignorer" data-id="${esc(x.id)}">Ignorer</button></div></article>`).join('');
@@ -1717,6 +1733,7 @@ function updatePending() {
   const b = $('#pendingBtn');
   b.textContent = n && q ? `${n} · ❓${q}` : n ? `${n}` : `❓ ${q}`;
   b.title = [n ? `${n} validation(s) en attente` : '', q ? `${q} question(s) de Claude en attente de ta réponse` : ''].filter(Boolean).join(' · ');
+  b.setAttribute('aria-label', b.title || 'rien en attente');
   b.classList.toggle('hidden', n + q === 0);
   b.classList.toggle('ask', !n && q > 0);
   document.title = n + q ? `(${n + q}) Cockpit` : 'Cockpit';
@@ -1834,13 +1851,17 @@ async function openPip() {
 }
 let polling = false;
 
+let pollFailures = 0;
 async function poll() {
-  if (polling) return;
-  polling = true;
+  // Une requête bloquée plus de 20 s n'empêche plus les suivantes (sinon le cockpit reste figé sans le dire).
+  if (polling && Date.now() - polling < 20000) return;
+  polling = Date.now();
   clearTimeout(pollTimer);
   try {
     // h : empreintes des blocs déjà reçus ; le relais n'envoie que ceux qui ont changé (les autres sont absents de s)
-    const s = await api('etat', undefined, `&since=${state.lastId}&h=${encodeURIComponent(state.etatH || '')}`);
+    const s = await api('etat', undefined, `&since=${state.lastId}&h=${encodeURIComponent(state.etatH || '')}`, 15000);
+    pollFailures = 0;
+    $('#offlineBar').classList.add('hidden');
     state.etatH = s.h || '';
     state.replay = state.lastId === 0;
     const touched = new Set();
@@ -1881,10 +1902,16 @@ async function poll() {
   } catch (e) {
     $('#conn').classList.remove('on');
     if (e instanceof AuthError) { polling = false; return start(); }
+    pollFailures++;
+    if (pollFailures >= 2) $('#offlineBar').classList.remove('hidden');  // un échec isolé ne mérite pas d'alerte
+    $('#conn').title = 'relais injoignable : nouvel essai automatique';
   }
   polling = false;
-  if (!document.hidden || pip) pollTimer = setTimeout(poll, 2000);  // la mini-fenêtre reste à jour
+  // Hors ligne : nouvel essai de plus en plus espacé (au plus 30 s) ; la mini-fenêtre reste à jour
+  const wait = pollFailures ? Math.min(30000, 2000 * 2 ** Math.min(pollFailures, 4)) : 2000;
+  if (!document.hidden || pip) pollTimer = setTimeout(poll, wait);
 }
+addEventListener('online', () => { pollFailures = 0; poll(); });
 
 document.addEventListener('visibilitychange', () => { if (!document.hidden) poll(); });
 
@@ -1924,6 +1951,7 @@ async function onClick(ev) {
       await api('reprendre', { task_id: b.dataset.resume });
       poll();
     } else if (b.dataset.cancel) {
+      if (!confirm('Arrêter ce Claude ? Le travail en cours est interrompu.')) return;
       await api('annuler', { task_id: b.dataset.cancel });
       poll();
     } else if (b.dataset.quick) {
@@ -2083,13 +2111,18 @@ async function onClick(ev) {
       poll();
     } else if ('project' in b.dataset) {
       state.selected = b.dataset.project || null;
+      // Une puce d'un autre projet quitte la conversation suivie : le message ne doit pas recadrer le Claude d'un autre projet.
+      const cur = state.replyTo && state.tasks.get(state.replyTo)?.task;
+      if (cur && state.selected && cur.project && cur.project !== state.selected) setReplyTo(null);
       renderProjects();
     } else if ('close' in b.dataset) {
       b.closest('dialog').close();
     } else if (b.id === 'pendingBtn') {
       if (state.view === 'dash' && !matchMedia('(min-width: 1100px)').matches) setView('chat');
-      (document.querySelector('#feed .approval:not(.resolved)') || document.querySelector('#feed form.question'))
-        ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      const target = document.querySelector('#feed .approval:not(.resolved)') || document.querySelector('#feed form.question');
+      const sec = target?.closest('section[data-task]');
+      if (sec) openGroupOf(sec.dataset.task);  // le menu du projet peut être replié
+      target?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     } else if (b.dataset.pick !== undefined) {
       // Un choix par question : le choix touché remplace le précédent (et se retire s'il est touché à nouveau)
       const on = b.getAttribute('aria-pressed') !== 'true';
@@ -2114,7 +2147,14 @@ async function onClick(ev) {
     } else if (b.id === 'mDevices') {
       await openDevices();
     } else if (b.dataset.delDevice) {
-      if (confirm('Supprimer cette passkey ?')) { await api('appareil_supprimer', { id: b.dataset.delDevice }); await openDevices(); }
+      if (confirm('Supprimer cette passkey ? Les autres appareils connectés seront aussi déconnectés (celui-ci reste connecté).')) {
+        await api('appareil_supprimer', { id: b.dataset.delDevice }); await openDevices();
+      }
+    } else if (b.id === 'closeSessions') {
+      if (confirm('Déconnecter tous les autres appareils ? Ils devront se reconnecter avec leur passkey.')) {
+        const r = await api('sessions_fermer', {});
+        alert(`${r.closed} session(s) fermée(s).`);
+      }
     } else if (b.id === 'addPasskey') {
       await createPasskey();
       await openDevices();
@@ -2150,7 +2190,8 @@ async function openDevices() {
   const fmt = (ts) => (ts ? new Date(ts * 1000).toLocaleDateString('fr-FR') : 'jamais');
   showList('Passkeys', list.map((d) => `<div class="dev"><div>${esc(d.nom)}<small>créée le ${fmt(d.cree_le)} · utilisée ${fmt(d.utilisee_le)}</small></div>
     <button class="btn ghost" data-del-device="${esc(d.id)}">Supprimer</button></div>`).join('')
-    + '<div class="actions"><button class="btn ok" id="addPasskey">+ Ajouter une passkey sur cet appareil</button></div>'
+    + '<div class="actions"><button class="btn ok" id="addPasskey">+ Ajouter une passkey sur cet appareil</button>'
+    + '<button class="btn bad" id="closeSessions">Déconnecter les autres appareils</button></div>'
     + '<p class="hint">Les passkeys iCloud / Google se synchronisent entre tes appareils. Pour un appareil d\'un autre écosystème : « ./run.sh pair ».</p>');
 }
 
@@ -2161,10 +2202,17 @@ input.addEventListener('keydown', (e) => {
   if (e.key === 'Enter' && !e.shiftKey && !matchMedia('(pointer: coarse)').matches) { e.preventDefault(); $('#composer').requestSubmit(); }
 });
 
+// Brouillon gardé sur l'appareil : une PWA rechargée en arrière-plan (iOS) ne perd pas une instruction à moitié écrite.
+const DRAFT_KEY = 'cockpit_draft';
+input.addEventListener('input', () => { try { localStorage.setItem(DRAFT_KEY, input.value); } catch { /* sans importance */ } });
+try { const d = localStorage.getItem(DRAFT_KEY); if (d && !input.value) { input.value = d; input.style.height = `${input.scrollHeight}px`; } } catch { /* sans importance */ }
+
+let sending = false;
 $('#composer').addEventListener('submit', async (ev) => {
   ev.preventDefault();
   const instruction = input.value.trim();
-  if (!instruction) return;
+  if (!instruction || sending) return;  // Entrée deux fois ou dictée : un seul envoi
+  sending = true;
   $('#send').disabled = true;
   try {
     let cur = state.replyTo && state.tasks.get(state.replyTo)?.task;
@@ -2187,12 +2235,14 @@ $('#composer').addEventListener('submit', async (ev) => {
       onEvent({ kind: 'task', task_id: t.id, task: t });
       setReplyTo(t.id);
     }
-    input.value = '';
-    input.style.height = 'auto';
+    // Ce qui a été tapé pendant l'envoi est gardé
+    if (input.value.trim() === instruction) { input.value = ''; input.style.height = 'auto'; }
+    try { localStorage.setItem(DRAFT_KEY, input.value); } catch { /* sans importance */ }
     await poll();
   } catch (e) {
     if (e instanceof AuthError) start(); else alert(e.message);
   }
+  sending = false;
   $('#send').disabled = false;
 });
 
@@ -2384,6 +2434,21 @@ if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('sw.js').catch(console.error);
   // Notification touchée alors que le cockpit est ouvert : aller à la tâche concernée.
   navigator.serviceWorker.addEventListener('message', (e) => { if (e.data?.jump) { state.pendingJump = e.data.jump; poll(); } });
+  // Nouvelle version déployée : l'app installée, ouverte pendant des jours, se recharge d'elle-même, quand on n'écrit pas
+  // (le brouillon de la saisie est gardé). Sans cela elle resterait sur l'ancienne interface.
+  const hadController = !!navigator.serviceWorker.controller;
+  let updateReady = false;
+  const reloadIfIdle = () => {
+    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName) || document.querySelector('dialog[open]');
+    if (updateReady && !typing) location.reload();
+  };
+  navigator.serviceWorker.addEventListener('controllerchange', () => { if (hadController) { updateReady = true; reloadIfIdle(); } });
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) return;
+    navigator.serviceWorker.getRegistration().then((r) => r?.update()).catch(() => {});
+    reloadIfIdle();
+  });
+  document.addEventListener('focusout', () => setTimeout(reloadIfIdle, 500));
 }
 // Lien d'appairage ouvert alors que le cockpit est déjà affiché : seul le #hash change.
 window.addEventListener('hashchange', () => { if (location.hash.includes('pair=')) start(); });

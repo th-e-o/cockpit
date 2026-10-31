@@ -15,7 +15,8 @@ avec une forte autonomie et une validation humaine pour les opérations sensible
 - **Le pod Onyxia n'est jamais exposé** : le worker ouvre une connexion sortante vers le relais.
   L'adresse du téléphone ne change pas quand tu relances ton service Onyxia.
 - **Connexion sans mot de passe** : un QR code (téléphone) ou une clé d'appairage à saisir (ordinateur) une seule
-  fois, puis Face ID / empreinte / Windows Hello (passkey). Session de 180 jours.
+  fois, puis Face ID / empreinte / Windows Hello (passkey). Session de 180 jours. Téléphone perdu : ☰ → *Passkeys et
+  appareils* → *Déconnecter les autres appareils* (supprimer une passkey le fait aussi).
 - **Validation** : carte avec la commande exacte, notification même écran verrouillé, refus après 15 min sans réponse.
 
 ## Mise en place (une seule fois)
@@ -29,7 +30,8 @@ Chaque `git push` sur `main` qui touche `web/` redéploie le relais (*Actions �
 
 **Clés d'API (facultatif)** : un outil externe (ex. un bot Telegram) peut ajouter des propositions avec
 `POST api.php?r=proposition_api` (en-tête `Authorization: Bearer <clé>`, corps JSON `{titre, instruction, project?, source?}`).
-Il ne peut rien faire d'autre : la proposition attend dans la file comme une proposition ajoutée à la main.
+Il ne peut rien faire d'autre : la proposition attend dans la file (marquée 🔌) et **n'est jamais lancée par le full auto ni
+le mode hard** ; seul un ▶ Lancer depuis le téléphone la démarre.
 `./run.sh cle-api` crée une clé et ajoute son empreinte à `config/api_keys.sha256` (une par ligne) ; pour révoquer, retirer la ligne.
 
 ### 2. OVH : rien à faire
@@ -67,6 +69,15 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
 - **iPhone** : Partager → *Sur l'écran d'accueil*.
 
 ## Au quotidien
+
+- **Ce qui t'attend d'abord** : les validations en attente sont en tête du tableau de bord, avec leurs boutons (plus besoin de
+  chercher la carte dans le fil). Toucher une notification de validation ouvre la tâche concernée ; le badge jaune ⚠ de
+  l'en-tête déplie le projet et descend jusqu'à la validation ou la question.
+- **Fiabilité** : une instruction n'est jamais envoyée deux fois (Entrée répétée, dictée) et le brouillon de la saisie est
+  gardé sur l'appareil. Relais injoignable : bandeau « Relais injoignable » et nouvel essai automatique. Une réponse perdue
+  entre le relais et le worker (coupure réseau) est renvoyée jusqu'à son accusé de réception : une tâche part toujours, une
+  validation approuvée n'expire plus en refus. Une nouvelle version déployée recharge l'app installée dès que tu n'écris pas.
+  Le worker lancé par `./run.sh` est relancé automatiquement s'il plante (délai croissant, `./run.sh stop` pour l'arrêter).
 
 - Puce **Auto** : le routeur choisit le projet. Sous 70 % de confiance, il te demande lequel.
   Une puce projet envoie directement ; **●** signale une conversation reprise, et **nouv.** repart de zéro.

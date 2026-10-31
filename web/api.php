@@ -42,12 +42,20 @@ const POLL_BATTEMENT = 10;              // secondes entre deux mises à jour de 
 const ENTRETIEN_PERIODE = 1800;         // secondes entre deux entretiens de la base (checkpoint, contrôle, sauvegarde)
 const SAUVEGARDES_GARDEES = 3;
 const ETAT_BLOCS = ['projects', 'workers', 'memory', 'autopilot', 'hard', 'week', 'deleted_projects'];
-const SCHEMA_VERSION = 2;               // à incrémenter à chaque changement de schéma dans migrer()
+const SCHEMA_VERSION = 3;               // à incrémenter à chaque changement de schéma dans migrer()
 const INCITATION_VERIF = 600;           // secondes entre deux vérifications du reste de la semaine
 const INCITATION_PALIERS = [[48, 0.20], [12, 0.10]];  // [heures avant la réinitialisation, part restante minimale]
 const AUTO_PARALLELE_MAX = 6;           // full auto : projets menés de front, au plus
 const HARD_REPONSES_MAX = 4;            // mode hard : réponses automatiques aux questions de Claude, par conversation
 const HARD_HEURES_MAX = 336;            // mode hard : durée maximale d'un armement (14 jours)
+const DEFIS_MAX = 50;                   // challenges WebAuthn en attente, au plus (requêtes anonymes)
+const ABONNEMENTS_MAX = 10;             // abonnements push gardés (les plus récents)
+const PUSH_ECHECS_MAX = 5;              // abonnement push supprimé après autant d'échecs de suite
+const PROPOSITIONS_OUVERTES_MAX = 50;   // propositions en attente par projet
+// Routes en lecture seule, seules acceptées en GET : toutes les autres exigent un POST JSON (anti-CSRF, y compris
+// depuis une autre page du même domaine, qui pourrait sinon déclencher une action par un simple <img src>).
+const ROUTES_GET = ['moi', 'etat', 'diff', 'bilan', 'depots', 'regles', 'image', 'memoire', 'commandes', 'resume', 'audit',
+                    'appareils', 'vapid', 'hard_apercu', 'compte_rendu'];
 
 /** Règles « Toujours autoriser » pour les workers : [{tool, pattern}]. */
 function regles(): array {
@@ -59,6 +67,13 @@ $CONFIG = require __DIR__ . '/config.php';
 function repondre($data, int $code = 200): never {
     http_response_code($code);
     echo json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    // Notifications push envoyées après la réponse, hors de toute transaction : un service push lent ne bloque plus
+    // la base (verrou d'écriture) ni le worker.
+    if (!empty($GLOBALS['notifier_apres']) && $code < 400) {
+        $GLOBALS['notifier_apres'] = false;
+        if (function_exists('fastcgi_finish_request')) fastcgi_finish_request();
+        try { envoyer_notifications(); } catch (Throwable $e) { error_log('cockpit: push : ' . $e->getMessage()); }
+    }
     exit;
 }
 
@@ -146,6 +161,19 @@ SQL);
     if (!in_array('etat', $colonnesW, true)) $pdo->exec('ALTER TABLE workers ADD COLUMN etat TEXT');
     if (!in_array('apparu_le', $colonnesW, true)) $pdo->exec('ALTER TABLE workers ADD COLUMN apparu_le INTEGER NOT NULL DEFAULT 0');
     $pdo->exec('DROP TABLE IF EXISTS confiances');  // version 2 : mode confiance retiré
+    // Version 3 : index des requêtes fréquentes (boucle de livraison des workers), compteur de signature des passkeys,
+    // échecs des abonnements push.
+    $pdo->exec('CREATE INDEX IF NOT EXISTS taches_worker ON taches(worker_id, statut);
+                CREATE INDEX IF NOT EXISTS taches_maj ON taches(maj_le);
+                CREATE INDEX IF NOT EXISTS validations_decision ON validations(decision);
+                CREATE INDEX IF NOT EXISTS evenements_ts ON evenements(ts);
+                CREATE INDEX IF NOT EXISTS echecs_ip ON echecs(ip, ts);');
+    if (!in_array('compteur', array_column($pdo->query('PRAGMA table_info(passkeys)')->fetchAll(), 'name'), true)) {
+        $pdo->exec('ALTER TABLE passkeys ADD COLUMN compteur INTEGER NOT NULL DEFAULT 0');
+    }
+    if (!in_array('echecs', array_column($pdo->query('PRAGMA table_info(abonnements_push)')->fetchAll(), 'name'), true)) {
+        $pdo->exec('ALTER TABLE abonnements_push ADD COLUMN echecs INTEGER NOT NULL DEFAULT 0');
+    }
     $pdo->exec('PRAGMA user_version = ' . SCHEMA_VERSION);
     $pdo->exec('COMMIT');
 }
@@ -294,6 +322,8 @@ function exiger_cle_api(): void {
 
 function nouveau_defi(string $type): string {
     q('DELETE FROM defis WHERE expire_le < ?', [time()]);
+    // Requête anonyme : un flot de demandes ne doit pas remplir la base ni monopoliser le verrou d'écriture
+    if ((int)q('SELECT COUNT(*) FROM defis')->fetchColumn() >= DEFIS_MAX) erreur('trop de demandes, réessaie dans quelques minutes', 429);
     $defi = b64url(random_bytes(32));
     q('INSERT INTO defis(defi, type, expire_le) VALUES(?, ?, ?)', [$defi, $type, time() + DEFI_DUREE]);
     return $defi;
@@ -308,6 +338,55 @@ function verifier_client_data(string $clientDataB64, string $type): string {
     $st = q('DELETE FROM defis WHERE defi = ? AND type = ? AND expire_le >= ?', [$cd['challenge'] ?? '', $type, time()]);
     if ($st->rowCount() !== 1) echec('challenge expiré ou inconnu');
     return $brut;
+}
+
+/** Décodeur CBOR minimal (attestationObject, clé COSE) : entiers, chaînes, tableaux, tables, simples. */
+function cbor(string $b, int &$i = 0): mixed {
+    if ($i >= strlen($b)) throw new RuntimeException('CBOR tronqué');
+    $o = ord($b[$i++]);
+    [$type, $info] = [$o >> 5, $o & 0x1f];
+    $n = match (true) {
+        $info < 24 => $info,
+        $info === 24 => ord($b[$i++]),
+        $info === 25 => unpack('n', substr($b, ($i += 2) - 2, 2))[1],
+        $info === 26 => unpack('N', substr($b, ($i += 4) - 4, 4))[1],
+        $info === 27 => unpack('J', substr($b, ($i += 8) - 8, 8))[1],
+        default => throw new RuntimeException('CBOR non pris en charge'),
+    };
+    switch ($type) {
+        case 0: return $n;
+        case 1: return -1 - $n;
+        case 2: case 3: $v = substr($b, $i, $n); $i += $n; return $v;
+        case 4: $v = []; for ($k = 0; $k < $n; $k++) $v[] = cbor($b, $i); return $v;
+        case 5: $v = []; for ($k = 0; $k < $n; $k++) { $cle = cbor($b, $i); $v[$cle] = cbor($b, $i); } return $v;
+        case 7: return match ($info) { 20 => false, 21 => true, default => null };
+    }
+    throw new RuntimeException('CBOR non pris en charge');
+}
+
+/** Contrôle de l'attestation d'une nouvelle passkey : rpId, présence et vérification de l'utilisateur (biométrie),
+ * identifiant et clé publique tels qu'attestés par l'authentificateur (et non tels qu'annoncés par le client). */
+function verifier_attestation(string $attestation, string $id, string $spki): void {
+    try {
+        $att = cbor($attestation);
+        $ad = (string)($att['authData'] ?? '');
+        if (strlen($ad) < 55) throw new RuntimeException('authData trop court');
+        $flags = ord($ad[32]);
+        if (!hash_equals(hash('sha256', hote(), true), substr($ad, 0, 32))) echec('rpId invalide');
+        if (!($flags & 0x01) || !($flags & 0x04)) echec('vérification biométrique requise');
+        if (!($flags & 0x40)) throw new RuntimeException('clé absente de l\'attestation');
+        $long = unpack('n', substr($ad, 53, 2))[1];
+        if (!hash_equals(substr($ad, 55, $long), b64url_dec($id))) echec('identifiant de passkey incohérent');
+        $j = 55 + $long;
+        $cose = cbor($ad, $j);
+        $ec = openssl_pkey_get_details(openssl_pkey_get_public(pem_depuis_spki($spki)))['ec'] ?? [];
+        if (($cose[3] ?? null) !== -7 || ($cose[-1] ?? null) !== 1
+            || str_pad($ec['x'] ?? '', 32, "\0", STR_PAD_LEFT) !== $cose[-2] || str_pad($ec['y'] ?? '', 32, "\0", STR_PAD_LEFT) !== $cose[-3]) {
+            echec('clé publique incohérente avec l\'attestation');
+        }
+    } catch (RuntimeException|TypeError|ValueError $e) {
+        echec('attestation illisible : ' . $e->getMessage());
+    }
 }
 
 function pem_depuis_spki(string $der): string {
@@ -346,10 +425,16 @@ function der_vers_brut(string $der): string {
     return $out;
 }
 
-function notifier(): void {
+/** Demande une notification push : elle part après la réponse (voir repondre), une seule fois par requête. */
+function notifier(): void { $GLOBALS['notifier_apres'] = true; }
+
+/** Push sans contenu vers chaque abonnement, en parallèle, 4 s au plus en tout. */
+function envoyer_notifications(): void {
     $abonnements = q('SELECT endpoint FROM abonnements_push')->fetchAll(PDO::FETCH_COLUMN);
-    if (!$abonnements || !function_exists('curl_init')) return;
+    if (!$abonnements || !function_exists('curl_multi_init')) return;
     [$pem, $pub] = vapid();
+    $multi = curl_multi_init();
+    $poignees = [];
     foreach ($abonnements as $endpoint) {
         $p = parse_url($endpoint);
         $entete = b64url(json_encode(['typ' => 'JWT', 'alg' => 'ES256']));
@@ -358,14 +443,28 @@ function notifier(): void {
         $jwt = "$entete.$charge." . b64url(der_vers_brut($sig));
         $ch = curl_init($endpoint);
         curl_setopt_array($ch, [
-            CURLOPT_POST => true, CURLOPT_POSTFIELDS => '', CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 5,
+            CURLOPT_POST => true, CURLOPT_POSTFIELDS => '', CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 4, CURLOPT_CONNECTTIMEOUT => 3,
             CURLOPT_HTTPHEADER => ['TTL: 3600', 'Urgency: high', 'Content-Length: 0', "Authorization: vapid t=$jwt, k=$pub"],
         ]);
-        curl_exec($ch);
+        curl_multi_add_handle($multi, $ch);
+        $poignees[$endpoint] = $ch;
+    }
+    do {
+        $statut = curl_multi_exec($multi, $actifs);
+        if ($actifs) curl_multi_select($multi, 0.5);
+    } while ($actifs && $statut === CURLM_OK);
+    foreach ($poignees as $endpoint => $ch) {
         $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_multi_remove_handle($multi, $ch);
         curl_close($ch);
         if ($code === 404 || $code === 410) q('DELETE FROM abonnements_push WHERE endpoint = ?', [$endpoint]);
+        elseif ($code >= 200 && $code < 300) q('UPDATE abonnements_push SET echecs = 0 WHERE endpoint = ? AND echecs > 0', [$endpoint]);
+        else {  // injoignable ou en erreur : supprimé après plusieurs échecs de suite (il ne ralentit plus chaque envoi)
+            q('UPDATE abonnements_push SET echecs = echecs + 1 WHERE endpoint = ?', [$endpoint]);
+            q('DELETE FROM abonnements_push WHERE endpoint = ? AND echecs >= ?', [$endpoint, PUSH_ECHECS_MAX]);
+        }
     }
+    curl_multi_close($multi);
 }
 
 // ---------------------------------------------------------------- état
@@ -540,10 +639,12 @@ function proposition_id(?string $projet, string $titre): string {
 }
 
 /** Ajoute des propositions [{titre, instruction}] pour un projet ; celles déjà connues (même titre) sont ignorées. */
-function memoire_proposer(array &$m, ?string $projet, array $items, string $source, ?string $tache = null): int {
+function memoire_proposer(array &$m, ?string $projet, array $items, string $source, ?string $tache = null, bool $externe = false): int {
     $connues = array_column($m['proposals'], 'id');
+    $ouvertes = count(array_filter($m['proposals'], fn($p) => $p['etat'] === 'ouverte' && $p['project'] === $projet));
     $n = 0;
     foreach ($items as $it) {
+        if ($ouvertes + $n >= PROPOSITIONS_OUVERTES_MAX) break;  // la file d'un projet reste lisible (et la mémoire légère)
         $titre = trim((string)($it['titre'] ?? $it['title'] ?? ''));
         $instruction = trim((string)($it['instruction'] ?? ''));
         if ($titre === '' || $instruction === '' || mb_strlen($instruction) > 10000) continue;
@@ -551,7 +652,9 @@ function memoire_proposer(array &$m, ?string $projet, array $items, string $sour
         if (in_array($id, $connues, true)) continue;
         $connues[] = $id;
         $m['proposals'][] = ['id' => $id, 'project' => $projet, 'titre' => mb_substr($titre, 0, 120), 'instruction' => $instruction,
-                             'etat' => 'ouverte', 'source' => $source, 'tache' => $tache, 'cree' => time(), 'maj' => time()];
+                             'etat' => 'ouverte', 'source' => $source, 'tache' => $tache, 'cree' => time(), 'maj' => time()]
+                             // Proposition d'un outil externe (clé d'API) : jamais lancée par le full auto ni le mode hard, seulement à la main
+                             + ($externe ? ['externe' => true] : []);
         $n++;
     }
     return $n;
@@ -710,6 +813,19 @@ function incitation_hard(): void {
 
 /** Y a-t-il quelque chose à livrer à ce worker ? Lecture seule, sans verrou d'écriture : la boucle d'écoute l'appelle deux fois par
  * seconde par pod, et prendre un verrou d'écriture à chaque tour fragilisait SQLite (WAL qui ne se vide plus, corruption). */
+/** Partie de la réponse de w_poll toujours recalculée (réglages, règles, projets), y compris quand un lot est renvoyé. */
+function reponse_poll_commune(bool $orchestrateur): array {
+    $h = hard_lire();
+    return [
+        'autopilot' => autopilote_lire(),
+        'hard' => $h['enabled'],
+        'hard_projects' => $h['projects'],
+        'rules' => regles(),
+        // Liste globale : l'orchestrateur route les tâches sans projet parmi tous les projets.
+        'all_projects' => $orchestrateur ? projets() : [],
+    ];
+}
+
 function travail_pour_worker(string $wid, string $mienne): bool {
     foreach ([["SELECT 1 FROM taches WHERE livree = 0 AND statut = 'pending' AND $mienne LIMIT 1"],
               ['SELECT 1 FROM validations v JOIN taches t ON t.id = v.tache_id WHERE v.decision IS NOT NULL AND v.decision_livree = 0 AND t.worker_id = ? LIMIT 1'],
@@ -731,6 +847,11 @@ function entretien_base(): void {
     if (time() - (int)(reglage('entretien') ?? 0) < ENTRETIEN_PERIODE) return;
     reglage('entretien', (string)time());
     $pdo = db();
+    // Lignes devenues inutiles : sessions expirées, challenges et échecs d'authentification anciens
+    q('DELETE FROM sessions WHERE expire_le < ?', [time()]);
+    q('DELETE FROM defis WHERE expire_le < ?', [time()]);
+    q('DELETE FROM echecs WHERE ts < ?', [time() - LIMITE_ECHECS_IP[1]]);
+    q('DELETE FROM appairages WHERE expire_le < ?', [time()]);
     try { $pdo->query('PRAGMA wal_checkpoint(PASSIVE)')->fetchAll(); } catch (Throwable) {}
     try {
         $controle = $pdo->query('PRAGMA quick_check(1)')->fetchColumn();
@@ -835,7 +956,7 @@ function hard_apercu(array $portee): array {
     $enLigne = [];
     foreach (projets() as $p) $enLigne[$p['id']] = $p['online'];
     foreach ($m['proposals'] as $x) {
-        if ($x['etat'] !== 'ouverte' || ($x['project'] !== null && $portee && !in_array($x['project'], $portee, true))) continue;
+        if ($x['etat'] !== 'ouverte' || !empty($x['externe']) || ($x['project'] !== null && $portee && !in_array($x['project'], $portee, true))) continue;
         $plan[] = ['kind' => 'proposition', 'project' => $x['project'], 'titre' => $x['titre'], 'since' => (int)$x['cree'], 'online' => $enLigne[$x['project']] ?? false, 'detail' => $x['source']];
     }
     $memoire = array_column($m['projects'], null, 'id');
@@ -881,6 +1002,7 @@ function autopilote_tache_terminee(string $statut): void {
 // ---------------------------------------------------------------- routes
 
 $route = $_GET['r'] ?? '';
+if ($_SERVER['REQUEST_METHOD'] !== 'POST' && !in_array($route, ROUTES_GET, true)) erreur('POST attendu', 405);
 $in = corps();
 
 switch ($route) {
@@ -925,8 +1047,11 @@ switch ($route) {
         if (!openssl_pkey_get_public($pem)) erreur('clé publique invalide');
         $id = (string)($in['id'] ?? '');
         if (!preg_match('/^[A-Za-z0-9_-]{16,1024}$/', $id)) erreur('identifiant invalide');
+        verifier_attestation(b64url_dec((string)($in['attestationObject'] ?? '')), $id, b64url_dec((string)($in['publicKey'] ?? '')));
         $nom = mb_substr(trim((string)($in['name'] ?? '')) ?: 'Appareil', 0, 60);
-        q('INSERT OR REPLACE INTO passkeys(id, cle_publique, nom, cree_le) VALUES(?, ?, ?, ?)', [$id, $pem, $nom, time()]);
+        // Jamais de remplacement : une passkey existante ne peut pas être écrasée par une autre clé
+        if (q('SELECT 1 FROM passkeys WHERE id = ?', [$id])->fetchColumn()) erreur('passkey déjà enregistrée', 409);
+        q('INSERT INTO passkeys(id, cle_publique, nom, cree_le) VALUES(?, ?, ?, ?)', [$id, $pem, $nom, time()]);
         repondre(['ok' => true]);
 
     case 'passkey_options_connexion':
@@ -945,7 +1070,10 @@ switch ($route) {
         $ok = openssl_verify($authData . hash('sha256', $clientData, true), b64url_dec((string)($in['signature'] ?? '')),
                              $pk['cle_publique'], OPENSSL_ALGO_SHA256);
         if ($ok !== 1) echec('signature invalide');
-        q('UPDATE passkeys SET utilisee_le = ? WHERE id = ?', [time(), $pk['id']]);
+        // Compteur de signatures : s'il est tenu (non nul), il doit augmenter ; sinon la clé a été clonée
+        $compteur = unpack('N', substr($authData, 33, 4))[1];
+        if (($compteur || $pk['compteur']) && $compteur <= (int)$pk['compteur']) echec('compteur de la passkey incohérent (clé clonée ?)');
+        q('UPDATE passkeys SET utilisee_le = ?, compteur = ? WHERE id = ?', [time(), $compteur, $pk['id']]);
         ouvrir_session();
         repondre(['ok' => true]);
 
@@ -959,9 +1087,17 @@ switch ($route) {
         repondre(q('SELECT id, nom, cree_le, utilisee_le FROM passkeys ORDER BY cree_le')->fetchAll());
 
     case 'appareil_supprimer':
+        // Un appareil perdu : sa passkey ne suffit pas, ses sessions doivent tomber aussi. Elles ne sont pas liées à une
+        // passkey (l'appairage en ouvre une avant) : toutes les autres sessions sont fermées, seule la tienne reste.
         exiger_session();
         q('DELETE FROM passkeys WHERE id = ?', [(string)($in['id'] ?? '')]);
+        q('DELETE FROM sessions WHERE jeton_hash != ?', [h($_COOKIE[SESSION_COOKIE] ?? '')]);
         repondre(['ok' => true]);
+
+    case 'sessions_fermer': // déconnecte tous les autres appareils (cookie volé, téléphone perdu)
+        exiger_session();
+        $n = q('DELETE FROM sessions WHERE jeton_hash != ?', [h($_COOKIE[SESSION_COOKIE] ?? '')])->rowCount();
+        repondre(['ok' => true, 'closed' => $n]);
 
     // ----- notifications
     case 'vapid':
@@ -973,6 +1109,7 @@ switch ($route) {
         $endpoint = (string)($in['endpoint'] ?? '');
         if (!preg_match('#^https://[^\s]+$#', $endpoint)) erreur('abonnement invalide');
         q('INSERT OR IGNORE INTO abonnements_push(endpoint, cree_le) VALUES(?, ?)', [$endpoint, time()]);
+        q('DELETE FROM abonnements_push WHERE endpoint NOT IN (SELECT endpoint FROM abonnements_push ORDER BY cree_le DESC LIMIT ?)', [ABONNEMENTS_MAX]);
         repondre(['ok' => true]);
 
     // ----- téléphone
@@ -1377,6 +1514,19 @@ switch ($route) {
                 inserer_evenement($v['tache_id'], ['kind' => 'approval', 'task_id' => $v['tache_id'], 'approval' => $a]);
             }
         }
+        // Livraison avec accusé de réception (worker qui envoie « ack ») : le dernier lot livré est gardé tant que le worker
+        // n'a pas confirmé l'avoir reçu ; une réponse perdue (coupure réseau, délai dépassé côté worker) est renvoyée telle
+        // quelle au poll suivant, au lieu d'une tâche jamais lancée ou d'une validation approuvée qui expire en refus.
+        $avecAccuse = array_key_exists('ack', $in);
+        if ($avecAccuse) {
+            $lot = json_decode(reglage('lot:' . $wid) ?? '', true);
+            if ($lot && (!empty($in['hello']) || ($in['ack'] ?? null) === $lot['id'])) {
+                // Reçu ; ou nouveau processus, dont les tâches livrées viennent d'être marquées interrompues
+                q('DELETE FROM reglages WHERE cle = ?', ['lot:' . $wid]);
+            } elseif ($lot) {
+                repondre($lot['travail'] + ['lot' => $lot['id']] + reponse_poll_commune((bool)$orchestrateur));
+            }
+        }
         // Tâches à livrer : celles de ce worker, et (orchestrateur) celles sans worker, à router.
         $mienne = $orchestrateur ? '(worker_id = ? OR (worker_id IS NULL AND attente_projet IS NULL))' : 'worker_id = ?';
         $fin = microtime(true) + ($in['wait'] ?? LONG_POLL);
@@ -1425,7 +1575,7 @@ switch ($route) {
             if ($taches || $decisions || $annulations || $choix || $worktrees || $recadrages || $memoires) break;
             usleep(500000);
         } while (microtime(true) < $fin && !connection_aborted());
-        repondre([
+        $travail = [
             'tasks' => array_map(fn($t) => ['id' => $t['id'], 'instruction' => $t['instruction'],
                 'project' => $t['projet'], 'new_session' => (bool)$t['nouvelle_session'],
                 'conversation' => $t['conversation'] ?? $t['id'], 'context' => $t['conversation'] ? contexte($t) : [],
@@ -1434,17 +1584,18 @@ switch ($route) {
                 'model' => $t['modele'] ?? null, 'isolate' => !empty($t['isoler']), 'group' => $t['groupe'] ?? null,
                 'model_hint' => empty($t['modele_auto']) ? null : json_decode($t['modele_auto'], true),
                 'reply_to' => $t['suite_de'] ?? null], $taches),
-            'autopilot' => autopilote_lire(),
-            'hard' => hard_lire()['enabled'],
-            'hard_projects' => hard_lire()['projects'],
-            'steers' => $recadrages, 'memory_edits' => $memoires, 'rules' => regles(),
+            'steers' => $recadrages, 'memory_edits' => $memoires,
             'decisions' => $decisions, 'cancels' => $annulations,
             'choices' => array_map(fn($c) => ['task_id' => $c['id'], 'project' => $c['choix_projet']], $choix),
             'worktree_actions' => array_map(fn($w) => ['task_id' => $w['id'], 'project' => $w['projet'],
                 'conversation' => $w['conversation'] ?? $w['id'], 'action' => $w['action_worktree']], $worktrees),
-            // Liste globale : l'orchestrateur route les tâches sans projet parmi tous les projets.
-            'all_projects' => $orchestrateur ? projets() : [],
-        ]);
+        ];
+        $lotId = null;
+        if ($avecAccuse && ($taches || $decisions || $annulations || $choix || $worktrees || $recadrages || $memoires)) {
+            $lotId = bin2hex(random_bytes(6));
+            reglage('lot:' . $wid, json_encode(['id' => $lotId, 'travail' => $travail], JSON_UNESCAPED_UNICODE));
+        }
+        repondre($travail + ['lot' => $lotId] + reponse_poll_commune((bool)$orchestrateur));
 
     case 'w_affecter': // l'orchestrateur confie une tâche routée au worker qui héberge le projet
         exiger_worker();
@@ -1457,8 +1608,9 @@ switch ($route) {
             ? json_encode(['choice' => $indice['choice'], 'reason' => mb_substr((string)($indice['reason'] ?? ''), 0, 200)], JSON_UNESCAPED_UNICODE)
             : null;
         $st = q("UPDATE taches SET projet = ?, worker_id = ?, livree = 0, statut = 'pending', maj_le = ?, modele_auto = ?
-                 WHERE id = ? AND statut NOT IN ('done','error','cancelled')", [$projet, $cible, time(), $modeleAuto, $id]);
-        if (!$st->rowCount()) erreur('tâche introuvable ou terminée', 404);
+                 WHERE id = ? AND statut NOT IN ('done','error','cancelled') AND annulation = 0", [$projet, $cible, time(), $modeleAuto, $id]);
+        // annulation = 1 : annulée depuis le téléphone pendant le routage, l'orchestrateur ne l'a pas encore appris
+        if (!$st->rowCount()) erreur('tâche introuvable, terminée ou annulée', 404);
         evenement_tache($id);
         repondre(['ok' => true, 'worker' => $cible]);
 
@@ -1657,7 +1809,7 @@ switch ($route) {
         $source = preg_replace('/[^\w-]/u', '', (string)($in['source'] ?? '')) ?: 'api';
         debut();
         $m = memoire_lire();
-        $n = memoire_proposer($m, $projet, [['titre' => $in['titre'] ?? '', 'instruction' => $in['instruction'] ?? '']], mb_substr($source, 0, 30));
+        $n = memoire_proposer($m, $projet, [['titre' => $in['titre'] ?? '', 'instruction' => $in['instruction'] ?? '']], mb_substr($source, 0, 30), null, true);
         if (!$n) { annuler(); erreur('proposition vide, trop longue ou déjà présente'); }
         memoire_ecrire($m);
         valider();
@@ -1679,7 +1831,9 @@ switch ($route) {
             $a['threshold'] = max(0.3, min(0.95, (float)($in['threshold'] ?? AUTO_SEUIL)));
             $a['max_per_day'] = max(1, min(50, (int)($in['max_per_day'] ?? AUTO_PAR_JOUR)));
             $a['max_parallel'] = max(1, min(AUTO_PARALLELE_MAX, (int)($in['max_parallel'] ?? 1)));
-            $a['projects'] = array_values(array_intersect(array_column(projets(), 'id'), array_map('strval', (array)($in['projects'] ?? []))));
+            $demandes = array_map('strval', (array)($in['projects'] ?? []));
+            $a['projects'] = array_values(array_intersect(array_column(projets(), 'id'), $demandes));
+            if ($demandes && !$a['projects']) erreur('aucun des projets choisis n\'existe encore');
         }
         autopilote_ecrire($a);
         repondre(autopilote_lire());
@@ -1691,12 +1845,21 @@ switch ($route) {
             if ($h['enabled']) alerte_ajouter('hard-fin', '📋 Mode hard terminé', 'Le compte rendu de ce qui a été fait est prêt dans le tableau de bord.');
             $h['enabled'] = false;
         } else {
+            $demandes = array_map('strval', (array)($in['projects'] ?? []));
+            $portee = array_values(array_intersect(array_column(projets(), 'id'), $demandes));
+            // Projets choisis tous inconnus (retirés entre-temps) : surtout pas « tous les projets »
+            if ($demandes && !$portee) erreur('aucun des projets choisis n\'existe encore');
             $h['enabled'] = true;
             $h['since'] = time();
-            $h['projects'] = array_values(array_intersect(array_column(projets(), 'id'), array_map('strval', (array)($in['projects'] ?? []))));
+            $h['projects'] = $portee;
             $h['until'] = time() + max(1, min(HARD_HEURES_MAX, (int)($in['hours'] ?? 8))) * 3600;
-            // Les validations déjà en attente sont approuvées : le mode s'applique tout de suite
-            q("UPDATE validations SET decision = 'approve' WHERE decision IS NULL");
+            // Les validations déjà en attente sont approuvées : le mode s'applique tout de suite, dans son périmètre seulement
+            if ($portee) {
+                q("UPDATE validations SET decision = 'approve' WHERE decision IS NULL AND tache_id IN (SELECT id FROM taches WHERE projet IN ("
+                  . implode(',', array_fill(0, count($portee), '?')) . '))', $portee);
+            } else {
+                q("UPDATE validations SET decision = 'approve' WHERE decision IS NULL");
+            }
             // Le full auto est armé par défaut, pour la même durée, sur les mêmes projets (auto = false : validations seules)
             if (!isset($in['auto']) || !empty($in['auto'])) {
                 $a = ['enabled' => true, 'until' => $h['until'], 'since' => time(), 'failures' => 0, 'stopped' => '',
@@ -1777,7 +1940,7 @@ switch ($route) {
         $choix = null;
         foreach ($m['proposals'] as &$p) {
             // Un projet à la fois : sa tâche automatique en cours doit être terminée avant d'en lancer une autre dessus
-            if ($p['etat'] === 'ouverte' && $p['project'] !== null && in_array($p['project'], $enLigne, true) && !in_array($p['project'], $occupes, true)
+            if ($p['etat'] === 'ouverte' && empty($p['externe']) && $p['project'] !== null && in_array($p['project'], $enLigne, true) && !in_array($p['project'], $occupes, true)
                 && (!$portee || in_array($p['project'], $portee, true))) { $choix = &$p; break; }
         }
         if (!$choix) { unset($p); $refus('aucune proposition'); }

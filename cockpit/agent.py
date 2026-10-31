@@ -500,6 +500,7 @@ class Runner:
         self.main_users: dict[str, int] = {}  # tâches affectées au dossier principal, par projet
         self.workspaces: dict[str, str] = {}  # "conversation:projet" -> worktree ("" : dossier principal)
         self.running: set[str] = set()  # tâches dont l'agent tourne
+        self.cancelled: set[str] = set()  # tâches annulées : plus aucun changement de statut ne doit les ranimer
         self.limited: dict[str, int] = {}  # task_id -> heure de réinitialisation, pour les tâches arrêtées par la limite du forfait
         self.clients: dict[str, ClaudeSDKClient] = {}  # task_id -> client actif
         # Création de tâches filles (fournie par le worker) : async (parent, [{"instruction", "projet"}]) -> [ids]
@@ -524,15 +525,22 @@ class Runner:
         return locks.setdefault(key, asyncio.Lock())
 
     async def cancel(self, task: Task) -> None:
-        client = self.clients.get(task.id)
-        if client:
-            await client.interrupt()
+        # D'abord l'état (statut, validations refusées), puis l'interruption : si elle échoue (CLI déjà arrêtée, délai
+        # dépassé), la tâche est quand même annulée et rien ne reste en attente sur le téléphone.
+        self.cancelled.add(task.id)
         for a in self.store.approvals.values():
             if a.task_id == task.id and a.future and not a.future.done():
                 a.future.set_result("deny")
         self.store.task_update(task, status="cancelled")
+        if client := self.clients.get(task.id):
+            try:
+                await client.interrupt()
+            except Exception as e:
+                log.warning("interruption de %s impossible : %s", task.id, e)
 
     async def request_approval(self, task: Task, project: Project, tool: str, tool_input: dict, reason: str) -> bool:
+        if task.id in self.cancelled:  # annulée pendant le démarrage de l'agent : rien n'est demandé, rien ne repart
+            return False
         loop = asyncio.get_running_loop()
         approval = Approval(
             id=new_id(), task_id=task.id, project=project.id, tool=tool,
@@ -542,10 +550,16 @@ class Runner:
         self.store.approvals[approval.id] = approval
         self.store.task_update(task, status="waiting_approval")
         self.store.publish("approval", {"task_id": task.id, "approval": approval.public()})
+        decision = "deny"
         try:
             decision = await asyncio.wait_for(approval.future, timeout=self.policy.timeout)
         except asyncio.TimeoutError:
             decision = "timeout"
+        finally:
+            if approval.decision is None and decision == "deny" and not approval.future.done():
+                # Attente coupée (agent interrompu, client fermé) : la carte du téléphone ne doit pas rester en attente
+                approval.decision = "deny"
+                self.store.publish("approval", {"task_id": task.id, "approval": approval.public()})
         approval.decision = decision
         self.store.publish("approval", {"task_id": task.id, "approval": approval.public()})
         self.store.audit("approval", task=task.id, project=project.id, tool=tool,
@@ -704,6 +718,8 @@ class Runner:
         self.store.audit("model_choice", task=task.id, project=project.id, model=choice, reason=reason)
 
     async def run(self, task: Task, project: Project) -> None:
+        if task.id in self.cancelled or task.status == "cancelled":  # annulée pendant le routage
+            return
         self.store.task_update(task, status="queued", project=project.id)
         await self.choose_model(task, project)
         conv = task.conversation or task.id
@@ -739,70 +755,84 @@ class Runner:
 
     async def _execute(self, task: Task, project: Project, cwd: str) -> None:
         async with self.slots:  # au plus max_agents agents simultanés dans ce pod
-            if task.status == "cancelled":
+            if task.status == "cancelled" or task.id in self.cancelled:
                 return
-            session = self._session(task, project, cwd)
             self.running.add(task.id)
-            self.store.task_update(task, status="running")
-            self.store.audit("task_start", task=task.id, project=project.id, instruction=task.instruction,
-                             **({"worktree": task.worktree["branch"]} if task.worktree else {}))
-            before = await self._snapshot(cwd)
-            edited: set[str] = set()
-            final: dict = {}
-            duration, tokens = 0, {}
-            session_before = self.session_usage() if self.session_usage else None
             try:
-                async with ClaudeSDKClient(self._options(task, project, cwd, session, edited)) as client:
-                    self.clients[task.id] = client
-                    prompt = self._prompt(task, session)
-                    if early := self.steers.pop(task.id, None):  # précisions envoyées avant le démarrage
-                        prompt += "\n\nPrécisions de l'utilisateur :\n" + "\n".join(early)
-                    await client.query(prompt)
-                    while True:
-                        async for msg in client.receive_response():
-                            if r := self._relay(task, msg):
-                                duration += r.pop("duration_s", 0)
-                                for k, v in r.pop("tokens", {}).items():  # plusieurs tours (recadrage) : cumul
-                                    tokens[k] = tokens.get(k, 0) + v
-                                final = r
-                        # Message de l'utilisateur pendant le travail : l'agent a été interrompu, il reprend avec.
-                        pending = self.steers.pop(task.id, None)
-                        if not pending or task.status == "cancelled":
-                            break
-                        await client.query("Message de l'utilisateur pendant ton travail (tu as été interrompu) :\n"
-                                           + "\n".join(pending) + "\nTiens-en compte et poursuis la tâche.")
+                await self._execute_inner(task, project, cwd)
             except Exception as e:
-                final = {"status": "error", "result": f"{type(e).__name__}: {e}"}
+                # Erreur hors de l'agent (disque plein pour le journal, git, tests…) : la tâche ne reste jamais « en cours »
+                log.exception("tâche %s", task.id)
+                if task.status not in ("done", "error", "cancelled", "paused"):
+                    self.store.task_update(task, status="error", result=f"Erreur du worker : {type(e).__name__}: {e}")
             finally:
-                self.clients.pop(task.id, None)
                 self.running.discard(task.id)
-                if late := self.steers.pop(task.id, None):  # arrivé après la dernière réponse de l'agent
-                    self.store.publish("message", {"task_id": task.id, "type": "steer_late", "text": "\n".join(late)})
-            if (reset := self.limited.pop(task.id, None)) is not None and task.status != "cancelled" and final.get("status") != "done":
-                # Limite du forfait : pas d'échec, la tâche est suspendue et reprise après la réinitialisation (mode hard / full auto)
-                at = reset if reset > time.time() else int(time.time()) + 3600
-                final = {"status": "paused", "resume_at": at,
-                         "result": f"⏸ Mise en pause : limite du forfait atteinte, reprise après la réinitialisation ({time.strftime('%H:%M', time.localtime(at))})."}
-            final["duration_s"] = duration
-            if tokens:
-                final["tokens"] = {**tokens, "total": sum(tokens.values())}
-            changes = await self._changes(task, cwd, before, edited)
-            if task.status == "cancelled":
-                final = {k: v for k, v in final.items() if k != "status"}
-            elif final.get("status") == "done" and changes and changes.get("file_count"):
-                final |= await self._tests(task, project, cwd)
-            if final.get("status") == "done" and not task.question and not self.is_hard(project.id):
-                if q := detect_question(final.get("result", "")):
-                    final["question"] = q
-            # Statut final et modifications publiés ensemble : la notification de fin peut les résumer.
-            self.store.task_update(task, **final, changes=changes)
-            self.store.audit("task_end", task=task.id, project=project.id, status=task.status,
-                             cost_usd=task.cost_usd, result=_short(task.result, 2000),
-                             files=(changes or {}).get("file_count", 0))
-            if changes and changes.get("commits") and changes.get("upstream") and not changes.get("ahead"):
-                self._spawn(self._watch_ci(task, cwd))
-            if self.refresh_usage and session_before is not None:
-                self._spawn(self._session_delta(task, session_before))
+                self.clients.pop(task.id, None)
+
+    async def _execute_inner(self, task: Task, project: Project, cwd: str) -> None:
+        session = self._session(task, project, cwd)
+        self.store.task_update(task, status="running")
+        self.store.audit("task_start", task=task.id, project=project.id, instruction=task.instruction,
+                         **({"worktree": task.worktree["branch"]} if task.worktree else {}))
+        before = await self._snapshot(cwd)
+        edited: set[str] = set()
+        final: dict = {}
+        duration, tokens = 0, {}
+        session_before = self.session_usage() if self.session_usage else None
+        try:
+            async with ClaudeSDKClient(self._options(task, project, cwd, session, edited)) as client:
+                self.clients[task.id] = client
+                if task.id in self.cancelled:  # annulée pendant le démarrage du client : rien n'est lancé
+                    raise RuntimeError("tâche annulée avant son démarrage")
+                prompt = self._prompt(task, session)
+                if early := self.steers.pop(task.id, None):  # précisions envoyées avant le démarrage
+                    prompt += "\n\nPrécisions de l'utilisateur :\n" + "\n".join(early)
+                await client.query(prompt)
+                while True:
+                    async for msg in client.receive_response():
+                        if r := self._relay(task, msg):
+                            duration += r.pop("duration_s", 0)
+                            for k, v in r.pop("tokens", {}).items():  # plusieurs tours (recadrage) : cumul
+                                tokens[k] = tokens.get(k, 0) + v
+                            final = r
+                    # Message de l'utilisateur pendant le travail : l'agent a été interrompu, il reprend avec.
+                    pending = self.steers.pop(task.id, None)
+                    if not pending or task.status == "cancelled":
+                        break
+                    await client.query("Message de l'utilisateur pendant ton travail (tu as été interrompu) :\n"
+                                       + "\n".join(pending) + "\nTiens-en compte et poursuis la tâche.")
+        except Exception as e:
+            final = {"status": "error", "result": f"{type(e).__name__}: {e}"}
+        finally:
+            self.clients.pop(task.id, None)
+            self.running.discard(task.id)
+            if late := self.steers.pop(task.id, None):  # arrivé après la dernière réponse de l'agent
+                self.store.publish("message", {"task_id": task.id, "type": "steer_late", "text": "\n".join(late)})
+        if (reset := self.limited.pop(task.id, None)) is not None and task.status != "cancelled" and final.get("status") != "done":
+            # Limite du forfait : pas d'échec, la tâche est suspendue et reprise après la réinitialisation (mode hard / full auto)
+            at = reset if reset > time.time() else int(time.time()) + 3600
+            final = {"status": "paused", "resume_at": at,
+                     "result": f"⏸ Mise en pause : limite du forfait atteinte, reprise après la réinitialisation ({time.strftime('%H:%M', time.localtime(at))})."}
+        final["duration_s"] = duration
+        if tokens:
+            final["tokens"] = {**tokens, "total": sum(tokens.values())}
+        changes = await self._changes(task, cwd, before, edited)
+        if task.status == "cancelled":
+            final = {k: v for k, v in final.items() if k != "status"}
+        elif final.get("status") == "done" and changes and changes.get("file_count"):
+            final |= await self._tests(task, project, cwd)
+        if final.get("status") == "done" and not task.question and not self.is_hard(project.id):
+            if q := detect_question(final.get("result", "")):
+                final["question"] = q
+        # Statut final et modifications publiés ensemble : la notification de fin peut les résumer.
+        self.store.task_update(task, **final, changes=changes)
+        self.store.audit("task_end", task=task.id, project=project.id, status=task.status,
+                         cost_usd=task.cost_usd, result=_short(task.result, 2000),
+                         files=(changes or {}).get("file_count", 0))
+        if changes and changes.get("commits") and changes.get("upstream") and not changes.get("ahead"):
+            self._spawn(self._watch_ci(task, cwd))
+        if self.refresh_usage and session_before is not None:
+            self._spawn(self._session_delta(task, session_before))
 
     async def _session_delta(self, task: Task, before: float) -> None:
         """Part de la session de 5 h consommée par la tâche : usage relu juste après (approximatif si plusieurs

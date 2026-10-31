@@ -98,6 +98,16 @@ async def pair() -> None:
     print("Valable 10 minutes, pour un seul appareil.")
 
 
+# Parties d'une réponse de w_poll qui sont du travail à faire une seule fois (le reste : réglages, à appliquer à chaque fois)
+WORK_KEYS = {"tasks", "decisions", "cancels", "choices", "worktree_actions", "steers", "memory_edits"}
+
+
+def _log_failure(t: asyncio.Task) -> None:
+    """Une tâche de fond qui échoue le dit tout de suite dans le journal (et pas au ramasse-miettes, ou jamais)."""
+    if not t.cancelled() and (e := t.exception()):
+        log.error("tâche de fond en échec : %s", e, exc_info=e)
+
+
 class Worker:
     def __init__(self, relay: Relay):
         self.relay = relay
@@ -140,6 +150,7 @@ class Worker:
         t = asyncio.create_task(coro)
         self._background.add(t)
         t.add_done_callback(self._background.discard)
+        t.add_done_callback(_log_failure)
 
     def projects_payload(self) -> list[dict]:
         return [
@@ -485,6 +496,8 @@ class Worker:
             self.store.task_update(task, status="routing")
             r = await route(self.routing_text(task), self.all_projects or self.projects, with_model=not task.model)
             self.store.audit("route", task=task.id, project=r.project, confidence=r.confidence, reason=r.reason)
+            if task.id in self.runner.cancelled:  # annulée pendant le routage : ni transmise à un autre pod, ni lancée
+                return
             if r.project is None:
                 self.store.task_update(task, status="needs_project", route_reason=r.reason)
                 return
@@ -505,6 +518,8 @@ class Worker:
             self.store.task_update(task, status="error", result=f"Réaffectation impossible : {e}")
             return
         self.store.audit("hand_over", task=task.id, project=project_id, worker=target)
+        # La tâche appartient désormais à l'autre worker : sa copie locale (pending) ne doit plus compter comme du travail en cours
+        self.store.tasks.pop(task.id, None)
 
     def handle(self, msg: dict) -> None:
         if ORCHESTRATOR:
@@ -514,6 +529,8 @@ class Worker:
                 for p in msg.get("all_projects", [])
             } | self.projects
         for t in msg.get("tasks", []):
+            if (known := self.store.tasks.get(t["id"])) and known.status in ACTIVE:
+                continue  # déjà reçue et en cours : jamais deux agents pour la même tâche
             task = Task(id=t["id"], instruction=t["instruction"], project=t.get("project"),
                         conversation=t.get("conversation"), context=t.get("context") or [],
                         resume_session=t.get("resume_session"), parent=t.get("parent"), model=t.get("model"),
@@ -599,10 +616,15 @@ class Worker:
                 await asyncio.sleep(pause)
                 hello = True
                 continue
+            # Lot déjà traité (renvoyé parce que l'accusé de réception s'est perdu) : seuls les réglages sont repris
+            if (lot := msg.get("lot")) and lot == self.relay.ack:
+                msg = {k: v for k, v in msg.items() if k not in WORK_KEYS}
             try:
                 self.handle(msg)
             except Exception:
                 log.exception("message du relais non traité : %s", msg)
+            if lot:
+                self.relay.ack = lot
 
 
 def main() -> None:
