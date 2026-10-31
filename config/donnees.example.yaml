@@ -1,0 +1,18 @@
+# Espace « 📊 Données » : copier en config/donnees.yaml dans le pod qui l'héberge (il lui faut les identifiants S3 d'Onyxia,
+# injectés automatiquement dans un service VSCode). Questions en français, réponses agrégées, lecture seule.
+seuil: 11                       # secret statistique : une case de moins de 11 individus est masquée (« s »)
+
+# LLM privé (API compatible OpenAI, par exemple sur le cloud du ministère). Sans cette section : Claude, tel que configuré
+# pour le cockpit (ANTHROPIC_BASE_URL d'une passerelle interne, le cas échéant).
+llm:
+  url: https://llm.exemple.gouv.fr/v1
+  modele: mistral-large-latest
+  cle_env: COCKPIT_DONNEES_LLM_KEY   # variable d'environnement (ou secret Onyxia) qui contient la clé
+
+jeux:
+  - id: salaires                # nom de la table dans les requêtes (minuscules, chiffres, _)
+    nom: Salaires des agents de l'État
+    chemin: s3://mon-bucket/diffusion/salaires/*.parquet   # Parquet (partitions hive comprises) ou .csv
+    description: >
+      Une ligne par agent et par année : annee, corps (gendarme, policier, professeur…), grade, sexe, age,
+      salaire_net_annuel en euros courants, quotite de temps de travail.

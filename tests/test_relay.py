@@ -92,6 +92,23 @@ def paired_phone(relay):
     return p
 
 
+def cbor(v):
+    """Encodeur CBOR minimal (entiers, octets, chaînes, tables) pour fabriquer une attestation WebAuthn."""
+    def head(major, n):
+        if n < 24:
+            return bytes([major << 5 | n])
+        for info, size in ((24, 1), (25, 2), (26, 4), (27, 8)):
+            if n < 256 ** size:
+                return bytes([major << 5 | info]) + n.to_bytes(size, "big")
+    if isinstance(v, int):
+        return head(0, v) if v >= 0 else head(1, -1 - v)
+    if isinstance(v, bytes):
+        return head(2, len(v)) + v
+    if isinstance(v, str):
+        return head(3, len(v.encode())) + v.encode()
+    return head(5, len(v)) + b"".join(cbor(k) + cbor(x) for k, x in v.items())
+
+
 class Authenticator:
     """Authentificateur WebAuthn logiciel (ES256), comme Face ID / Touch ID."""
 
@@ -103,14 +120,23 @@ class Authenticator:
     def client_data(self, type_, challenge, origin=None):
         return json.dumps({"type": type_, "challenge": challenge, "origin": origin or self.origin}).encode()
 
-    def register(self, options):
+    def register(self, options, flags=0x45, rp_id="localhost", key=None):
+        """Attestation « none » : authData avec l'identifiant et la clé COSE, comme un vrai authentificateur."""
+        pub = (key or self.key).public_key()
         spki = self.key.public_key().public_bytes(serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo)
+        nums = pub.public_numbers()
+        cred_id = base64.urlsafe_b64decode(self.id + "=" * (-len(self.id) % 4))
+        cose = cbor({1: 2, 3: -7, -1: 1, -2: nums.x.to_bytes(32, "big"), -3: nums.y.to_bytes(32, "big")})
+        auth = (hashlib.sha256(rp_id.encode()).digest() + bytes([flags]) + b"\0\0\0\0" + bytes(16)
+                + len(cred_id).to_bytes(2, "big") + cred_id + cose)
         return {"id": self.id, "clientDataJSON": b64u(self.client_data("webauthn.create", options["challenge"])),
-                "publicKey": b64u(spki), "alg": -7, "name": "Test"}
+                "publicKey": b64u(spki), "alg": -7, "name": "Test",
+                "attestationObject": b64u(cbor({"fmt": "none", "attStmt": {}, "authData": auth}))}
 
     def assert_(self, options, flags=0x05, origin=None, rp_id="localhost"):
         cd = self.client_data("webauthn.get", options["challenge"], origin)
-        auth = hashlib.sha256(rp_id.encode()).digest() + bytes([flags]) + b"\0\0\0\1"
+        self.counter = getattr(self, "counter", 0) + 1
+        auth = hashlib.sha256(rp_id.encode()).digest() + bytes([flags]) + self.counter.to_bytes(4, "big")
         sig = self.key.sign(auth + hashlib.sha256(cd).digest(), ec.ECDSA(hashes.SHA256()))
         return {"id": self.id, "clientDataJSON": b64u(cd), "authenticatorData": b64u(auth), "signature": b64u(sig)}
 
@@ -142,7 +168,17 @@ def test_passkey(relay):
     auth = Authenticator(relay["origin"])
     opts = call(p, "passkey_options_creation", {}).json()
     assert opts["rp"]["id"] == "localhost"
-    assert call(p, "passkey_creer", auth.register(opts)).status_code == 200
+    # Attestation : sans vérification biométrique, autre rpId, clé annoncée différente de la clé attestée
+    assert call(p, "passkey_creer", auth.register(opts, flags=0x41)).status_code == 401
+    other = ec.generate_private_key(ec.SECP256R1())
+    assert call(p, "passkey_creer", auth.register(call(p, "passkey_options_creation", {}).json(), key=other)).status_code == 401
+    assert call(p, "passkey_creer", auth.register(call(p, "passkey_options_creation", {}).json(), rp_id="evil.example")).status_code == 401
+    sans = auth.register(call(p, "passkey_options_creation", {}).json())
+    del sans["attestationObject"]
+    assert call(p, "passkey_creer", sans).status_code == 401
+    assert call(p, "passkey_creer", auth.register(call(p, "passkey_options_creation", {}).json())).status_code == 200
+    # Une passkey existante ne peut pas être remplacée
+    assert call(p, "passkey_creer", auth.register(call(p, "passkey_options_creation", {}).json())).status_code == 409
 
     # Nouvel appareil / PWA installée sans cookie : connexion par passkey seule
     q = phone(relay)
@@ -161,6 +197,22 @@ def test_passkey(relay):
     pirate.id = auth.id
     assert call(r, "passkey_connexion", pirate.assert_(call(r, "passkey_options_connexion", {}).json())).status_code == 401
     assert call(r, "etat").status_code == 401
+    # Compteur de signatures qui recule : clé clonée
+    auth.counter = 0
+    assert call(r, "passkey_connexion", auth.assert_(call(r, "passkey_options_connexion", {}).json())).status_code == 401
+    auth.counter = 10
+
+    # Fermer les autres sessions : q est déconnecté, p reste connecté
+    assert call(p, "sessions_fermer", {}).json()["closed"] >= 1
+    assert call(q, "etat").status_code == 401
+    assert call(p, "etat").status_code == 200
+    s = phone(relay)
+    assert call(s, "passkey_connexion", auth.assert_(call(s, "passkey_options_connexion", {}).json())).status_code == 200
+    q = s
+
+    # Les routes qui modifient quelque chose refusent le GET (un <img src> d'une autre page du domaine)
+    assert call(q, "autopilote").status_code == 405
+    assert call(q, "mode_hard").status_code == 405
 
     # Déconnexion
     assert call(q, "deconnexion", {}).status_code == 200
@@ -438,7 +490,7 @@ def test_nouveau_pod_et_bilan(relay):
                 {"nom": "np-onyxia"}, {"nom": "x", "branche": "a b"}]:
         assert call(p, "lancer_pod", bad).status_code == 400, bad
     t = call(p, "lancer_pod", {"nom": "drones", "depot_git": "https://github.com/th-e-o/drones", "branche": "dev", "cpu": "4"}).json()
-    assert t["kind"] == "service" and t["instruction"] == "🚀 Nouveau pod « drones » : th-e-o/drones (dev)"
+    assert t["kind"] == "service" and t["instruction"] == "Nouveau pod « drones » : th-e-o/drones (dev)"
     livrees = [x for x in wpoll(relay, "orch-np", True)["tasks"] if x["id"] == t["id"]]
     assert livrees[0]["action"] == {"type": "lancer_service", "nom": "drones", "depot_git": "https://github.com/th-e-o/drones",
                                     "branche": "dev", "cpu": "4", "memoire": "8Gi", "disque": "10Gi", "gpu": False,
@@ -505,7 +557,7 @@ def test_suite_et_notifications(relay):
     # Nouveau pod sur un nouveau dépôt GitHub
     assert call(p, "lancer_pod", {"nom": "drones", "creer_depot": {"nom": "a b"}}).status_code == 400
     t2 = call(p, "lancer_pod", {"nom": "drones", "depot_git": "https://ignoré", "creer_depot": {"nom": "Drones.vols", "prive": False}}).json()
-    assert t2["instruction"] == "🚀 Nouveau pod « drones » : nouveau dépôt GitHub public « Drones.vols »"
+    assert t2["instruction"] == "Nouveau pod « drones » : nouveau dépôt GitHub public « Drones.vols »"
     wid = last_status(p)[t2["id"]]["worker"]  # orchestrateur en ligne le plus récent (d'autres tests en ont lancé)
     livrees = wpoll(relay, wid, True, instance="inst-orch-2" if wid == "orch" else None)["tasks"]
     act = [x for x in livrees if x["id"] == t2["id"]][0]["action"]
@@ -613,7 +665,7 @@ def test_etat_ne_renvoie_que_les_blocs_modifies(relay):
     p = paired_phone(relay)
     wpoll(relay, "pod-h", False, [{"id": "eh", "name": "EH"}], hello=True)
     s1 = call(p, "etat").json()
-    assert {"projects", "workers", "memory", "hard"} <= s1.keys() and len(s1["h"].split(".")) == 7
+    assert {"projects", "workers", "memory", "hard"} <= s1.keys() and len(s1["h"].split(".")) == 8
     s2 = call(p, "etat", since=s1["last_id"], h=s1["h"]).json()
     assert not {"projects", "memory", "autopilot", "hard", "week", "deleted_projects"} & s2.keys()
     assert {"events", "last_id", "worker_online", "pending", "h"} <= s2.keys()
@@ -1088,3 +1140,200 @@ def test_reprise_manuelle_d_une_tache_en_pause(relay_neuf):
     st = last_status(p)
     assert st[t["id"]]["status"] == "cancelled" and st[r["task_id"]]["status"] == "pending"
     assert call(p, "reprendre", {"task_id": t["id"]}).status_code == 409  # déjà reprise
+
+
+def test_mode_hard_limite_a_son_perimetre(relay_neuf):
+    """Armer le mode hard sur un projet n'approuve pas les validations en attente des autres ; un périmètre disparu est refusé."""
+    p = paired_phone(relay_neuf)
+    for wid, proj in (("pod-pa", "pa"), ("pod-pb", "pb")):
+        wpoll(relay_neuf, wid, wid == "pod-pa", [{"id": proj, "name": proj}], hello=True)
+    ids = {}
+    for wid, proj in (("pod-pa", "pa"), ("pod-pb", "pb")):
+        t = call(p, "tache", {"instruction": f"travail {proj}", "project": proj}).json()
+        wpoll(relay_neuf, wid, wid == "pod-pa")
+        worker_call(relay_neuf, "w_evenements", {"worker_id": wid, "events": [
+            {"kind": "task", "task_id": t["id"], "task": {"status": "waiting_approval", "project": proj}},
+            {"kind": "approval", "task_id": t["id"], "approval": {"id": f"ap-{proj}", "task_id": t["id"], "tool": "Bash",
+             "tool_input": {"command": "rm -rf /tmp/x"}, "reason": "opération sensible : rm", "expires": 9999999999}}]})
+        ids[proj] = f"ap-{proj}"
+    assert call(p, "mode_hard", {"enabled": True, "hours": 1, "projects": ["inconnu"]}).status_code == 400
+    assert call(p, "mode_hard", {"enabled": True, "hours": 1, "projects": ["pa"], "auto": False}).json()["projects"] == ["pa"]
+    attente = [a["id"] for a in call(p, "resume").json()["approvals"]]
+    assert attente == ["ap-pb"]  # celle de pa est approuvée, celle de pb attend toujours ta réponse
+    call(p, "mode_hard", {"enabled": False})
+
+
+def test_idees_externes_selon_le_choix_fait_en_armant(relay_neuf):
+    """Une idée arrivée par la clé d'API est marquée externe ; le full auto ne la lance que si l'option a été laissée cochée."""
+    p = paired_phone(relay_neuf)
+    wpoll(relay_neuf, "pod-ext", True, [{"id": "ext", "name": "Ext"}], hello=True)
+    r = worker_call(relay_neuf, "proposition_api", {"titre": "Bot", "instruction": "Ajoute un export CSV.", "project": "ext"}, key=CLE_API)
+    assert r.status_code == 200
+    prop = call(p, "etat").json()["memory"]["proposals"][0]
+    assert prop["externe"] is True
+    # Désarmé de l'option : rien n'est lancé, et l'aperçu ne la compte pas
+    call(p, "autopilote", {"enabled": True, "hours": 2, "external": False})
+    assert worker_call(relay_neuf, "w_auto_tache", {}).json() == {"skipped": "aucune proposition"}
+    apercu = call(p, "hard_apercu", external="0").json()
+    assert apercu["counts"]["external"] == 1 and not [x for x in apercu["plan"] if x["kind"] == "proposition"]
+    # Option laissée (par défaut) : elle entre dans le plan et part
+    assert [x["titre"] for x in call(p, "hard_apercu").json()["plan"] if x.get("external")] == ["Bot"]
+    call(p, "autopilote", {"enabled": True, "hours": 2})
+    assert worker_call(relay_neuf, "w_auto_tache", {}).json()["titre"] == "Bot"
+
+def test_livraison_avec_accuse_de_reception(relay_neuf):
+    """Une réponse de w_poll perdue (coupure réseau) est renvoyée au poll suivant tant que le worker ne l'a pas confirmée."""
+    p = paired_phone(relay_neuf)
+    wpoll(relay_neuf, "pod-ack", True, [{"id": "ack", "name": "Ack"}], hello=True, ack=None)
+    t = call(p, "tache", {"instruction": "à ne pas perdre", "project": "ack"}).json()
+    first = wpoll(relay_neuf, "pod-ack", True, ack=None)
+    assert [x["id"] for x in first["tasks"]] == [t["id"]] and first["lot"]
+    # Réponse perdue : le worker n'a rien reçu et redemande sans accusé
+    again = wpoll(relay_neuf, "pod-ack", True, ack=None)
+    assert [x["id"] for x in again["tasks"]] == [t["id"]] and again["lot"] == first["lot"]
+    # Accusé reçu : plus rien à livrer
+    done = wpoll(relay_neuf, "pod-ack", True, ack=first["lot"])
+    assert done["tasks"] == [] and done["lot"] is None
+    # Un ancien worker (sans « ack ») garde la livraison simple, sans renvoi
+    t2 = call(p, "tache", {"instruction": "ancien worker", "project": "ack"}).json()
+    assert [x["id"] for x in wpoll(relay_neuf, "pod-ack", True)["tasks"]] == [t2["id"]]
+    assert wpoll(relay_neuf, "pod-ack", True)["tasks"] == []
+
+
+
+def test_idee_de_nouveau_projet_lancee_par_l_orchestrateur(relay_neuf):
+    """Une idée sans projet (bot, saisie sur Auto) entre dans le plan du mode hard et part chez l'orchestrateur, qui crée le projet."""
+    p = paired_phone(relay_neuf)
+    wpoll(relay_neuf, "orch-idee", True, [{"id": "onyxia", "name": "Onyxia", "description": "On y crée un NOUVEAU projet."},
+                                          {"id": "cockpit", "name": "Cockpit", "description": "Le cockpit."}], hello=True)
+    # Sans titre : tiré de l'instruction ; projet donné par son nom, sans tenir compte de la casse
+    r = worker_call(relay_neuf, "proposition_api", {"instruction": "Un bot Telegram qui révise les cartes Anki chaque matin"}, key=CLE_API).json()
+    assert r["kind"] == "nouveau_projet" and r["titre"].startswith("Un bot Telegram")
+    assert worker_call(relay_neuf, "proposition_api", {"instruction": "Corrige le thème", "project": "COCKPIT"}, key=CLE_API).json()["project"] == "cockpit"
+    assert worker_call(relay_neuf, "proposition_api", {"instruction": "x", "project": "inconnu"}, key=CLE_API).status_code == 400
+    plan = call(p, "hard_apercu").json()
+    assert [x["kind"] for x in plan["plan"]].count("idee") == 1 and plan["counts"]["ideas"] == 1
+    assert not [x for x in call(p, "hard_apercu", ideas="0").json()["plan"] if x["kind"] == "idee"]
+    call(p, "mode_hard", {"enabled": True, "hours": 2, "max_parallel": 3})
+    lances = [worker_call(relay_neuf, "w_auto_tache", {}).json() for _ in range(2)]
+    taches = {t["id"]: t for t in wpoll(relay_neuf, "orch-idee", True)["tasks"]}
+    idee = next(taches[x["task_id"]] for x in lances if x["task_id"] in taches and "Nouveau projet" in taches[x["task_id"]]["instruction"])
+    assert idee["project"] == "onyxia" and "Anki" in idee["instruction"]
+    call(p, "mode_hard", {"enabled": False})
+
+
+def test_prochaines_etapes_suivent_la_conversation(relay_neuf):
+    """Une étape lancée depuis la carte ferme la proposition correspondante ; une proposition d'étape continue sa conversation."""
+    p = paired_phone(relay_neuf)
+    wpoll(relay_neuf, "pod-st", True, [{"id": "st", "name": "St"}], hello=True)
+    t = call(p, "tache", {"instruction": "écris le module", "project": "st"}).json()
+    wpoll(relay_neuf, "pod-st", True)
+    steps = [{"titre": "Ajouter les tests", "instruction": "Ajoute les tests du module."},
+             {"titre": "Documenter", "instruction": "Documente le module."}]
+    worker_call(relay_neuf, "w_evenements", {"worker_id": "pod-st", "events": [
+        {"kind": "task", "task_id": t["id"], "task": {"status": "done", "project": "st", "result": "ok", "next_steps": steps}}]})
+    props = call(p, "etat").json()["memory"]["proposals"]
+    assert sorted(x["titre"] for x in props) == ["Ajouter les tests", "Documenter"]
+    # Lancer la proposition « Documenter » : suite de la même conversation (contexte et session repris)
+    doc = next(x for x in props if x["titre"] == "Documenter")
+    lancee = call(p, "proposition", {"action": "lancer", "id": doc["id"]}).json()["task_id"]
+    suite = next(x for x in wpoll(relay_neuf, "pod-st", True)["tasks"] if x["id"] == lancee)
+    assert suite["conversation"] == t["id"] and suite["reply_to"] == t["id"]
+    # La conversation a avancé : l'autre étape (dépassée) n'est plus proposée au full auto
+    assert call(p, "etat").json()["memory"]["proposals"] == []
+
+    # Depuis la carte : même instruction que l'étape -> proposition marquée lancée, pas relancée plus tard
+    t2 = call(p, "tache", {"instruction": "autre module", "project": "st"}).json()
+    wpoll(relay_neuf, "pod-st", True)
+    worker_call(relay_neuf, "w_evenements", {"worker_id": "pod-st", "events": [
+        {"kind": "task", "task_id": t2["id"], "task": {"status": "done", "project": "st", "result": "ok", "next_steps": steps[:1]}}]})
+    assert len(call(p, "etat").json()["memory"]["proposals"]) == 1
+    call(p, "tache", {"instruction": "Ajoute les tests du module.", "reply_to": t2["id"]})
+    assert call(p, "etat").json()["memory"]["proposals"] == []
+    # Ignorer les étapes d'une tâche les retire aussi des propositions
+    t3 = call(p, "tache", {"instruction": "troisième", "project": "st"}).json()
+    wpoll(relay_neuf, "pod-st", True)
+    worker_call(relay_neuf, "w_evenements", {"worker_id": "pod-st", "events": [
+        {"kind": "task", "task_id": t3["id"], "task": {"status": "done", "project": "st", "result": "ok", "next_steps": steps[1:]}}]})
+    assert len(call(p, "etat").json()["memory"]["proposals"]) == 1
+    call(p, "ignorer_suite", {"task_id": t3["id"]})
+    assert call(p, "etat").json()["memory"]["proposals"] == []
+
+
+def test_memoire_ecrite_des_le_demarrage_d_un_pod(relay_neuf):
+    """Pod lancé depuis le téléphone sur un dépôt existant, sans CLAUDE.md : Claude écrit la mémoire dès la connexion du pod.
+    Pas pour un nouveau dépôt (vide), ni si une tâche attend déjà le projet (elle commencera par la mémoire)."""
+    p = paired_phone(relay_neuf)
+    wpoll(relay_neuf, "orch-mem", True, [{"id": "orchmem", "name": "Orch"}], hello=True)
+    for nom, extra in (("depot-existant", {"depot_git": "https://github.com/a/existant"}),
+                       ("depot-neuf", {"creer_depot": {"nom": "depot-neuf"}})):
+        assert call(p, "lancer_pod", {"nom": nom, **extra}).status_code == 200
+    taches = {}
+    for nom in ("depot-existant", "depot-neuf"):
+        # Comme le vrai worker : la mémoire (vide) est publiée avant la première annonce au relais
+        worker_call(relay_neuf, "w_memoire", {"project": nom, "content": "", "hash": "vide", "worker_id": f"pod-{nom}"})
+        taches[nom] = wpoll(relay_neuf, f"pod-{nom}", False, [{"id": nom, "name": nom}], hello=True)["tasks"]
+    assert len(taches["depot-existant"]) == 1 and "CLAUDE.md" in taches["depot-existant"][0]["instruction"]
+    assert taches["depot-neuf"] == []
+    # La carte du tableau de bord sait que la mémoire est en cours d'écriture
+    t = next(e["task"] for e in call(p, "etat").json()["events"] if e["kind"] == "task" and e["task_id"] == taches["depot-existant"][0]["id"])
+    assert t["memory_init"] is True
+
+
+def test_fichier_d_une_tache(relay):
+    """Rapport produit par un worker : déposé pour sa tâche, téléchargé en pièce jointe par le téléphone seulement."""
+    import base64
+
+    p = paired_phone(relay)
+    wpoll(relay, "pod-fic", False, [{"id": "fic", "name": "Fic"}], hello=True)
+    t = call(p, "tache", {"instruction": "rapport", "project": "fic"}).json()
+    wpoll(relay, "pod-fic", False)
+    corps = {"task_id": t["id"], "nom": "rapport final.html", "type": "text/html", "worker_id": "pod-fic",
+             "data": base64.b64encode(b"<html>ok</html>").decode()}
+    assert worker_call(relay, "w_fichier", {**corps, "worker_id": "autre"}).status_code == 403
+    fid = worker_call(relay, "w_fichier", corps).json()["id"]
+    r = call(p, "fichier", id=fid)
+    assert r.status_code == 200 and r.content == b"<html>ok</html>"
+    assert r.headers["content-disposition"] == 'attachment; filename="rapport-final.html"'
+    assert call(phone(relay), "fichier", id=fid).status_code == 401
+    assert call(p, "fichier", id="../../config").status_code == 404
+
+
+def test_objectif_atelier_plan_et_etapes(relay_neuf):
+    """Objectif : atelier de décision (lecture seule) qui boucle avec l'utilisateur, plan validé, étapes enchaînées dans l'ordre."""
+    p = paired_phone(relay_neuf)
+    wpoll(relay_neuf, "pod-obj", True, [{"id": "obj", "name": "Obj"}], hello=True)
+    r = call(p, "objectif_creer", {"texte": "Rendre le projet présentable vendredi", "project": "obj", "horizon": "vendredi"}).json()
+    atelier = next(t for t in wpoll(relay_neuf, "pod-obj", True)["tasks"] if t["id"] == r["task_id"])
+    assert atelier["mode"] == "atelier" and atelier["objective"] == r["id"] and "Atelier de décision" in atelier["instruction"]
+    o = call(p, "etat").json()["objectives"][0]
+    assert o["etat"] == "atelier" and o["horizon"] == "vendredi" and o["titre"].startswith("Rendre le projet")
+    # Boucle de décision : la réponse de l'utilisateur reste dans l'atelier
+    rep = call(p, "tache", {"instruction": "Option B, sans toucher à l'API", "reply_to": r["task_id"]}).json()
+    suite = next(t for t in wpoll(relay_neuf, "pod-obj", True)["tasks"] if t["id"] == rep["id"])
+    assert suite["mode"] == "atelier" and suite["objective"] == r["id"]
+    # Plan proposé (definir_plan) puis validé : l'étape 1 part, l'étape 2 attend qu'elle soit faite
+    etapes = [{"titre": "Nettoyer l'interface", "instruction": "Simplifie l'écran d'accueil.", "projet": "obj"},
+              {"titre": "Préparer la démo", "instruction": "Écris le scénario de démonstration.", "projet": "inconnu"}]
+    assert worker_call(relay_neuf, "w_plan", {"objectif": r["id"], "task_id": rep["id"], "resume": "Option B.", "etapes": etapes}).json()["etapes"] == 2
+    o = call(p, "etat").json()["objectives"][0]
+    assert o["etat"] == "plan_propose" and [e["projet"] for e in o["etapes"]] == ["obj", None]
+    assert any("Objectif" in x["titre"] for x in call(p, "hard_apercu").json()["plan"]) is False  # pas encore validé
+    t1 = call(p, "objectif", {"action": "valider", "id": r["id"], "lancer": True}).json()["task_id"]
+    livree = next(t for t in wpoll(relay_neuf, "pod-obj", True)["tasks"] if t["id"] == t1)
+    assert "Étape 1/2 — Nettoyer l'interface" in livree["instruction"] and "Plan validé" in livree["instruction"]
+    assert call(p, "objectif", {"action": "etape", "id": r["id"]}).status_code == 409  # étape 1 pas finie
+    call(p, "autopilote", {"enabled": True, "hours": 2})
+    assert "skipped" in worker_call(relay_neuf, "w_auto_tache", {}).json()
+    worker_call(relay_neuf, "w_evenements", {"worker_id": "pod-obj", "events": [
+        {"kind": "task", "task_id": t1, "task": {"status": "done", "project": "obj", "result": "ok"}}]})
+    # Le full auto enchaîne l'étape 2 (projet inconnu : celui de l'objectif), avant toute proposition
+    t2 = worker_call(relay_neuf, "w_auto_tache", {}).json()
+    assert "étape 2" in t2["titre"]
+    worker_call(relay_neuf, "w_evenements", {"worker_id": "pod-obj", "events": [
+        {"kind": "task", "task_id": t2["task_id"], "task": {"status": "done", "project": "obj", "result": "ok"}}]})
+    o = call(p, "etat").json()["objectives"][0]
+    assert o["etat"] == "atteint" and o["faites"] == 2
+    assert any("Objectif atteint" in a["titre"] for a in call(p, "resume").json()["alerts"])
+    # Une fois lancé, l'atelier ne propose plus de plan
+    assert worker_call(relay_neuf, "w_plan", {"objectif": r["id"], "etapes": etapes}).status_code == 404

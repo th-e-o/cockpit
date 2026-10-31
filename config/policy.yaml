@@ -28,7 +28,7 @@ ask_tools: [WebFetch, NotebookEdit, mcp__services__lancer_service, mcp__services
 # Écriture de fichiers (Write, Edit, MultiEdit)
 files:
   # dans le dossier du projet => auto, sauf ces chemins
-  ask_paths: ['/\.git/', '\.github/workflows/', '(^|/)\.env', 'Dockerfile$', '(^|/)values.*\.ya?ml$']
+  ask_paths: ['/\.git/', '\.github/workflows/', '(^|/)\.env', 'Dockerfile$', '(^|/)values.*\.ya?ml$', '/policy\.(ya?ml|py)$']
   deny_paths: ['/\.claude/', '/\.ssh/', '/\.kube/', '/\.aws/', '/etc/']
   # hors du dossier du projet => ask
 
@@ -36,8 +36,11 @@ bash:
   # Si un segment correspond => refus immédiat
   deny:
     - 'kubectl\s+delete\s+(ns|namespace)\b'
-    - 'rm\s+(-\w*\s+)*-\w*[rR]\w*\s+(-\w+\s+)*(/|~|\$HOME)(\s|$)'
-    - 'git\s+push\s+.*(--force|-f\b).*\b(main|master)\b'
+    # rm de la racine, du dossier personnel, de ~/work (tous les projets) ou de tout leur contenu, quelles que soient les
+    # options et les guillemets
+    - '\brm\s+(-\S+\s+)*["'']?(/|~|\$HOME|\$\{HOME\}|/home/[\w.-]+)(/work)?["'']?/?\*?(\s|$)'
+    - '\bfind\s+["'']?(/|~|\$HOME|\$\{HOME\})["'']?/?\s.*-delete\b'
+    - 'git\s+push\b.*(--force|\s-\w*f\b|\s\+).*\b(main|master)\b|git\s+push\b.*\b(main|master)\b.*(--force|\s-\w*f\b)'
     - '\bvault\s+(kv\s+)?(put|delete|write|destroy)'
     - '\b(cat|less|head|tail)\b.*(\.ssh|\.kube/config|credentials|\.env\b)'
     - 'printenv|^env$|\benv\s*\|'
@@ -47,12 +50,13 @@ bash:
   ask:
     - '\bgit\s+(reset\s+--hard|clean|rebase|branch\s+-D)'
     # git push : validation, sauf la forme sûre autorisée plus bas (branche de travail nommée explicitement)
-    - '^(?!git\s+push(\s+(-u|--set-upstream))?\s+origin\s+(?!(main|master|HEAD)\s*$)[\w./-]+\s*$).*\bgit\s+push\b'
+    - '^(?!git\s+push(\s+(-u|--set-upstream))?\s+origin\s+(?!(refs/heads/)?(main|master|HEAD)\s*$)[\w.][\w./-]*\s*$).*\bgit\s+push\b'
     - '\bhelm\s+(install|upgrade|uninstall|delete|rollback)'
     - '\bkubectl\s+(apply|create|delete|patch|scale|edit|replace|exec|rollout|drain|cordon)'
     - '\b(pip|uv\s+pip|npm|apt(-get)?|conda|mamba)\s+(install|uninstall|remove)'
     - '\buv\s+(add|remove)'
     - '\b(mc|aws\s+s3|s3cmd|rclone)\b.*\b(rm|cp|mv|sync|put|del|rb)\b'
+    - '\b(aws\s+s3api|mc\s+(mirror|admin))\b'
     - '\brm\s'
     - '\bfind\b.*\s-(delete|exec|execdir|ok)\b'
     - '\bxargs\b'
@@ -80,7 +84,7 @@ bash:
     - '^gh\s+api\b(?!.*(-X|--method)\s*(POST|PUT|PATCH|DELETE))(?!.*\s(-f|-F|--field|--raw-field|--input)\s)'
     # Push d'une branche de travail : « git push [-u] origin <branche> », sans main/master/HEAD, sans
     # refspec (« a:main »), sans option (--force, --all, --tags, --delete…) => validation sinon.
-    - '^git\s+push(\s+(-u|--set-upstream))?\s+origin\s+(?!(main|master|HEAD)\s*$)[\w./-]+\s*$'
+    - '^git\s+push(\s+(-u|--set-upstream))?\s+origin\s+(?!(refs/heads/)?(main|master|HEAD)\s*$)[\w.][\w./-]*\s*$'
     - '^(python3?|uv\s+run|pytest|ruff|black|mypy|node|npm\s+(test|run))\b'
     - '^kubectl\s+(get|describe|logs|top|explain|config\s+(view|current-context)|auth\s+can-i)\b'
     - '^helm\s+(list|ls|status|get|history|show|search|template|lint)\b'
@@ -98,7 +102,7 @@ trust:
   default: true
   tools: [NotebookEdit, WebFetch, mcp__services__lancer_service, mcp__cockpit__creer_depot, mcp__cockpit__lancer_en_parallele]
   scratch_paths: ['^/tmp/', '^/home/onyxia/work/']   # hors du projet : fichiers temporaires et espace de travail du pod
-  paths_never: ['/\.git/']   # historique git (le modifier à la main le corrompt)
+  paths_never: ['/\.git/', '/policy\.(ya?ml|py)$']   # historique git (le modifier à la main le corrompt) ; la politique elle-même
   unknown_commands: true   # commandes non répertoriées (make, docker build, scripts du projet…)
   opaque: true             # substitutions et redirections, contrôlées par « never » sur la commande entière
   bash:
@@ -106,6 +110,8 @@ trust:
   never:
     - '\bhelm\s+(uninstall|delete)'                         # supprime un service et son stockage
     - '\bkubectl\s+(delete|drain|cordon)'
-    - '\bgit\s+push\b.*(--force|-f\b|--delete|--mirror|:)'  # réécrit ou efface l'historique distant
+    - '\bgit\s+push\b.*(--force|--delete|--mirror|--prune|\s-\w*[fd]\b|\s\+|:)'  # réécrit ou efface l'historique distant
     - '\b(mc|aws\s+s3|s3cmd|rclone)\b.*\b(rm|rb|del|delete|purge)\b'   # efface des données S3
+    - '\baws\s+s3api\s+delete|\bmc\s+mirror\b.*--remove'
+    - 'policy\.(ya?ml|py)\b'   # la politique elle-même : un agent ne la modifie jamais sans toi (lecture : autorisée)
     - '\bvault\b'                                            # secrets : jamais lus ni écrits sans toi

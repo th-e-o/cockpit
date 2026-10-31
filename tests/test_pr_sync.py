@@ -70,11 +70,11 @@ def test_pr_fermee_quitte_a_valider(relay):
     with sync_playwright() as pw:
         browser = pw.chromium.launch()
         page, errors = browser_page(p, browser, relay, viewport={"width": 1440, "height": 900})
-        page.wait_for_selector(".sect >> text=Pull requests à valider · 2")
+        page.wait_for_selector(".sect h3:has-text(\"Pull requests à valider\") .count:text-is(\"2\")")
         worker_call(relay, "w_evenements", {"worker_id": "pod-pr2", "events": [
             {"kind": "message", "task_id": t["id"], "type": "pr_merged", "url": u1, "ts": time.time()},
             {"kind": "message", "task_id": t["id"], "type": "pr_closed", "url": u2, "ts": time.time()}]})
-        page.wait_for_selector(f"#t-{t['id']} .prbox.merged >> text=✅ fusionnée")
+        page.wait_for_selector(f"#t-{t['id']} .prbox.merged >> text=fusionnée")
         page.wait_for_selector(f"#t-{t['id']} .prbox.closed >> text=fermée")
         assert page.locator(".sect >> text=Pull requests à valider").count() == 0
         assert page.locator("[data-merge-url]").count() == 0  # plus de bouton « Fusionner » sur une PR fermée

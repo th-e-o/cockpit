@@ -3,7 +3,7 @@
 #   ./run.sh          démarre le worker en arrière-plan (journal : data/worker.log)
 #   ./run.sh pair     affiche un QR code pour connecter un téléphone
 #   ./run.sh init     génère la clé du worker (une seule fois)
-#   ./run.sh logs     suit le journal ; ./run.sh stop arrête le worker
+#   ./run.sh logs     suit le journal ; ./run.sh stop arrête le worker (lancé par ./run.sh, il est relancé s'il plante)
 #   ./run.sh usage    usage du forfait Claude tel que le lit le cockpit (diagnostic)
 #   ./run.sh cle-api  crée une clé d'API pour un outil externe (ajout de propositions seulement)
 set -euo pipefail
@@ -36,15 +36,26 @@ case "${1:-start}" in
     printf '%s' "$cle" | sha256sum | cut -d' ' -f1 >> config/api_keys.sha256
     echo "Clé d'API : $cle"
     echo "Empreinte ajoutée à config/api_keys.sha256 : versionne-la et pousse sur main pour la déployer." ;;
-  stop) pkill -f "cockpit.worker run" && echo "Worker arrêté." || echo "Aucun worker actif." ;;
+  stop) pkill -f "run.sh supervise" || true; pkill -f "cockpit.worker run" && echo "Worker arrêté." || echo "Aucun worker actif." ;;
+  supervise)  # relance le worker s'il s'arrête sur une erreur (plantage, mémoire épuisée), avec un délai croissant
+    delai=5
+    while true; do
+      debut=$(date +%s)
+      $PY -m cockpit.worker run && exit 0   # arrêt voulu (un autre worker tourne pour ce pod) : pas de relance
+      code=$?
+      [ $(( $(date +%s) - debut )) -gt 600 ] && delai=5   # il a tourné un moment : ce n'est pas une boucle de plantages
+      echo "$(date '+%F %T') worker arrêté (code $code), relance dans ${delai}s" >&2
+      sleep "$delai"
+      delai=$(( delai * 2 > 300 ? 300 : delai * 2 ))
+    done ;;
   fg)   exec $PY -m cockpit.worker run ;;
   start)
     [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}${ANTHROPIC_API_KEY:-}" ] || echo "⚠️  Aucun identifiant Claude : lance 'claude setup-token' (voir README)." >&2
-    if pgrep -f "cockpit.worker run" >/dev/null; then echo "Worker déjà actif (./run.sh logs)."; exit 0; fi
+    if pgrep -f "cockpit.worker run|run.sh supervise" >/dev/null; then echo "Worker déjà actif (./run.sh logs)."; exit 0; fi
     # Navigateur des captures d'écran (outil capturer_ecran), installé une fois en arrière-plan
     ls "${PLAYWRIGHT_BROWSERS_PATH:-$HOME/.cache/ms-playwright}"/chromium-* >/dev/null 2>&1 \
       || nohup $PY -m playwright install chromium >> data/worker.log 2>&1 &
-    nohup $PY -m cockpit.worker run >> data/worker.log 2>&1 &
+    nohup "$0" supervise >> data/worker.log 2>&1 &
     sleep 2
     tail -n 3 data/worker.log
     echo "Worker démarré (pid $!). Journal : ./run.sh logs" ;;

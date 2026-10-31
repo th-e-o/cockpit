@@ -48,7 +48,7 @@ function notifications(s) {
     out.push({ key: `v-${a.id}`, title: '⚠️ Validation requise', tag: `validation-${a.id}`, urgent: true,
       body: `${a.reason}${a.preview && !a.reason.includes(a.preview) ? `\n${a.preview}` : ''}`,
       actions: [{ action: 'approve', title: '✅ Approuver' }, { action: 'deny', title: '⛔ Refuser' }],
-      data: { approval: a.id } });
+      data: { approval: a.id, task: a.task_id } });
   }
   for (const p of s.new_pods || []) {
     out.push({ key: `p-${p.id}-${p.since}`, title: `🟢 Pod « ${p.name} » connecté`, tag: `pod-${p.id}`,
@@ -110,7 +110,9 @@ self.addEventListener('push', (e) => {
     // Chaque push doit afficher une notification : rien de neuf -> rappel discret de la plus importante.
     if (!nouvelles.length) {
       const n = liste[0] || { title: 'Cockpit', body: 'Du nouveau dans le cockpit.', tag: 'cockpit', data: {} };
-      await self.registration.showNotification(n.title, { body: n.body, tag: n.tag, actions: n.actions || [], data: n.data, silent: true, ...ICONE });
+      // Même tag que l'original : garder requireInteraction, sinon une validation en attente perdrait sa notification persistante.
+      await self.registration.showNotification(n.title, { body: n.body, tag: n.tag, actions: n.actions || [], data: n.data, silent: true,
+        requireInteraction: !!n.urgent, ...ICONE });
     }
   })());
 });

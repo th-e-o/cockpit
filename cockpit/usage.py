@@ -113,6 +113,9 @@ async def probe(token: str | None = None) -> tuple[dict[str, dict], str]:
             last = r.status_code
             if r.status_code not in (400, 404):  # modèle inconnu : essai suivant ; autre erreur : abandon
                 break
+    if last == 429 or last >= 500:
+        # API surchargée ou limite atteinte : passager, le worker réessaiera au prochain tour (UsageError l'arrêterait pour de bon)
+        raise RuntimeError(f"API indisponible pour le moment (HTTP {last})")
     raise UsageError(f"aucun en-tête d'usage dans les réponses de l'API (HTTP {last})")
 
 
