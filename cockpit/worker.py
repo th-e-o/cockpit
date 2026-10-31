@@ -145,6 +145,7 @@ class Worker:
         self.runner.project_status = self.relay.projet_etat
         self.runner.session_usage = self.session_usage
         self.runner.refresh_usage = self.refresh_usage
+        self.runner.submit_plan = self.submit_plan
         self._memory: dict[str, str] = {}  # projet -> empreinte du CLAUDE.md publié
         self.usage = usage.Usage()
         self.autopilot = Autopilot(relay, self.usage)
@@ -514,6 +515,11 @@ class Worker:
         return (f"{launched}\n\n⚠ Toujours pas connecté au bout de {STARTUP_TIMEOUT // 60} min ({shown or 'état inconnu'}). "
                 f"Ouvre VSCode du pod et regarde ~/work/cockpit/data/worker.log, ou relance ./run.sh dans un terminal.", "error")
 
+    async def submit_plan(self, task: Task, resume: str, etapes: list[dict]) -> None:
+        """Plan proposé par un atelier d'objectif : au relais, qui le présente à l'utilisateur pour validation."""
+        await self.relay.call("w_plan", {"objectif": task.objective, "task_id": task.id, "resume": resume, "etapes": etapes,
+                                         "worker_id": self.relay.worker_id})
+
     def project_online(self, project_id: str) -> bool:
         return self._online.get(project_id, False)
 
@@ -613,7 +619,8 @@ class Worker:
                         conversation=t.get("conversation"), context=t.get("context") or [],
                         resume_session=t.get("resume_session"), parent=t.get("parent"), model=t.get("model"),
                         model_hint=t.get("model_hint"),
-                        isolate=bool(t.get("isolate")), group=t.get("group"), reply_to_task=t.get("reply_to"))
+                        isolate=bool(t.get("isolate")), group=t.get("group"), reply_to_task=t.get("reply_to"),
+                        mode=t.get("mode"), objective=t.get("objective"))
             self.store.tasks[task.id] = task
             if t.get("action"):
                 self.spawn(self.run_action(task, t["action"]))

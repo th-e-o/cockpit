@@ -723,3 +723,31 @@ dialog::backdrop { background: rgb(15 20 30 / .45); backdrop-filter: blur(2px); 
 /* Recadrage : la saisie est signalée, le bouton d'envoi garde la couleur de l'action principale */
 #composer.steering #send { background: var(--accent); color: var(--on-accent); }
 .dot { flex: none; }
+
+/* Objectifs : cartes d'avancement, étapes, plan à valider */
+.objs { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, 340px), 1fr)); gap: 12px; }
+.objcard { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--accent); border-radius: var(--radius);
+  padding: 14px 16px; display: flex; flex-direction: column; gap: 8px; box-shadow: var(--shadow); }
+.objcard.plan_propose { border-left-color: var(--warn); }
+.objcard.atteint { border-left-color: var(--ok); }
+.objstate { font-size: 11.5px; font-weight: 600; padding: 1px 8px; border-radius: 5px; background: var(--panel2); color: var(--muted); white-space: nowrap; }
+.objstate.plan_propose { background: color-mix(in srgb, var(--warn) 14%, var(--panel)); color: var(--warn); }
+.objstate.en_cours { background: var(--soft); color: var(--accent); }
+.objstate.atteint { background: color-mix(in srgb, var(--ok) 14%, var(--panel)); color: var(--ok); }
+.objmeter { grid-template-columns: 40px minmax(40px, 1fr) auto; }
+.objsteps { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 2px; }
+.objsteps li { display: flex; align-items: center; gap: 8px; font-size: 13.5px; min-height: 30px; }
+.objsteps li > span:not(.spin):not(.todo-dot) { flex: 1; min-width: 0; }
+.objsteps li.faite > span { color: var(--muted); }
+.objsteps li.en_cours > span:not(.spin) { font-weight: 600; }
+.todo-dot { width: 12px; height: 12px; flex: none; border: 2px solid var(--line-strong); border-radius: 50%; }
+.planbox, .reviewbox { margin-top: 10px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--panel2); }
+.planbox ol { margin: 6px 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; }
+.planbox p, .reviewbox p { margin: 6px 0; }
+.reviewbox > summary { cursor: pointer; font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.reviewbox.clean > summary { color: var(--ok); }
+.reviewbox.err > summary { color: var(--muted); }
+.reviewbox ul { margin: 8px 0 0; padding-left: 18px; font-size: 13px; display: flex; flex-direction: column; gap: 4px; }
+.rvtag { font-size: 11px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); margin-right: 4px; }
+.reviewbox li.bad .rvtag { color: var(--bad); } .reviewbox li.warn .rvtag { color: var(--warn); }
+.objcard > .muted { font-size: 13px; }

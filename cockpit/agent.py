@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import dataclasses
 import os
 import re
 import time
@@ -31,7 +32,7 @@ import base64
 
 from . import apercu, github, gitstate, projet
 from . import services as svc
-from .policy import ALLOW, DENY, Policy
+from .policy import ALLOW, DENY, Decision, Policy
 from .router import MODEL_CHOICES, Project, choose_model
 from .store import Approval, Store, Task, new_id
 
@@ -110,6 +111,43 @@ fois avec poser_question (une question par sujet, avec des choix courts), et arr
 répondu, fais le travail (ou transmets un cahier des charges complet, réponses comprises). Si la demande est claire ou
 simple, avance directement sans poser de question.
 """
+
+ATELIER_APPEND = """
+ATELIER DE DÉCISION (objectif de l'utilisateur). Tu n'exécutes rien ici : lecture seule (lire le code, la mémoire, l'état des
+projets avec etat_projet ; aucune écriture, aucune commande qui modifie quoi que ce soit). Ton rôle : aider l'utilisateur à
+DÉCIDER comment atteindre son objectif, puis proposer le plan. Déroulé, sur plusieurs échanges :
+1. Comprendre : lis ce qui est utile (CLAUDE.md, état du projet, code). Reformule l'objectif en une phrase et donne le critère
+   de réussite (comment on saura qu'il est atteint).
+2. Explorer : propose 2 ou 3 options vraiment différentes (par exemple : minimale et rapide, solide, ambitieuse). Pour chacune :
+   en quoi elle consiste, avantages, inconvénients, risques, effort (nombre de tâches, durée, ordre de grandeur des tokens), ce
+   qu'elle laisse de côté. Un tableau comparatif court aide. Termine par TA recommandation, argumentée.
+3. Faire décider : pose avec poser_question les 1 à 4 questions qui tranchent (choix de l'option, arbitrages, contraintes,
+   priorités), avec des choix courts, puis arrête-toi : tu reprendras à leurs réponses.
+4. Itérer : à chaque réponse, affine. N'hésite pas à challenger une contrainte, à signaler un risque oublié, à proposer une
+   variante si l'utilisateur hésite, ou à reposer une question si un point reste flou. Plusieurs tours valent mieux qu'un
+   mauvais plan.
+5. Conclure : quand la direction est claire, appelle definir_plan : un résumé de la décision et 3 à 10 étapes ordonnées,
+   chacune une tâche autonome pour Claude Code (instruction complète, critère de fin, sur le bon projet). L'utilisateur
+   validera le plan sur son téléphone ou demandera des ajustements ; s'il en demande, révise et rappelle definir_plan.
+Réponses : titres courts, listes, pas de code. Pas de prochaines étapes (proposer_suite) : le plan les remplace.
+"""
+
+REVIEW_PROMPT = """Tu es le relecteur d'un travail que vient de faire un autre agent Claude dans ce dépôt. Demande d'origine :
+
+{instruction}
+
+Fichiers modifiés : {files}
+
+Relis les modifications (git diff, git log -p sur les commits récents de la branche, fichiers concernés) comme un relecteur
+exigeant : bugs, cas limites oubliés, régressions, sécurité (secrets, injections), tests manquants, incohérences avec la demande.
+Corrige toi-même ce qui est sûr et local (et commite si l'auteur avait commité) ; ne réécris pas le travail, ne change pas
+l'approche choisie, ne pousse rien. Lance les tests s'il y en a.
+Termine ta réponse par un bloc JSON seul sur ses lignes :
+{{"remarques": [{{"gravite": "bloquant" | "important" | "mineur", "fichier": "<chemin>", "texte": "<remarque courte>", "corrigee": true | false}}],
+  "avis": "<une phrase : le travail est-il bon à garder ?>"}}
+Liste vide si tout est bon."""
+REVIEW_MIN_LINES = int(os.environ.get("COCKPIT_RELECTURE_LIGNES", "15"))  # relecture au-delà de ce nombre de lignes modifiées
+REVIEW = os.environ.get("COCKPIT_RELECTURE", "1") != "0"
 
 MEMORY_FILE = "CLAUDE.md"
 MEMORY_MIN = 150  # caractères : en dessous, la mémoire du projet est considérée comme absente
@@ -309,7 +347,7 @@ def detect_question(result: str) -> dict | None:
 
 
 def cockpit_server(cwd: str, on_next, spawn=None, pub=None, upload=None, delegate=None, on_question=None, status=None,
-                   hard=None):
+                   hard=None, plan=None):
     """Outils propres au cockpit : prochaines étapes, dépôts et PR GitHub, captures d'écran, agents en parallèle."""
 
     @tool("proposer_suite",
@@ -485,7 +523,59 @@ def cockpit_server(cwd: str, on_next, spawn=None, pub=None, upload=None, delegat
                          "connecté, et l'utilisateur la suit dans le cockpit. Tu n'as pas à l'attendre.")
 
         tools.append(confier)
+    if plan:
+        @tool("definir_plan",
+              "Atelier de décision : propose à l'utilisateur le plan qui atteint l'objectif, une fois la direction décidée avec lui. "
+              "resume : la décision prise et pourquoi (2 à 5 phrases) ; etapes : 1 à 12 étapes ORDONNÉES, chacune une tâche "
+              "autonome pour Claude Code {titre (quelques mots), instruction (complète, avec son critère de fin), projet "
+              "(identifiant du projet concerné, facultatif)}. L'utilisateur le valide sur son téléphone, puis les étapes sont "
+              "lancées une à une ; s'il demande des ajustements, révise et rappelle definir_plan.",
+              {"type": "object", "properties": {"resume": {"type": "string"}, "etapes": {"type": "array", "minItems": 1, "maxItems": 12,
+               "items": {"type": "object", "properties": {"titre": {"type": "string"}, "instruction": {"type": "string"},
+                                                          "projet": {"type": "string"}}, "required": ["titre", "instruction"]}}},
+               "required": ["resume", "etapes"]})
+        async def definir_plan(args: dict) -> dict:
+            etapes = [e for e in (args.get("etapes") or []) if isinstance(e, dict) and str(e.get("titre", "")).strip()
+                      and str(e.get("instruction", "")).strip()]
+            if not etapes:
+                return _text("etapes : 1 à 12 objets {titre, instruction, projet?}", error=True)
+            try:
+                await plan(str(args.get("resume", "")), etapes[:12])
+            except Exception as e:
+                return _text(f"plan non transmis : {e}", error=True)
+            if pub:
+                pub(type="plan", resume=str(args.get("resume", ""))[:2000], etapes=etapes[:12])
+            return _text(f"Plan de {len(etapes[:12])} étape(s) transmis : l'utilisateur le valide ou demande des ajustements. "
+                         "Termine par une réponse courte qui résume la décision, sans répéter les étapes.")
+
+        tools.append(definir_plan)
     return create_sdk_mcp_server("cockpit", tools=tools)
+
+
+def parse_review(text: str) -> tuple[list[dict], str]:
+    """Bloc JSON final du relecteur -> (remarques nettoyées, avis) ; sans bloc lisible : aucune remarque, avis = fin du texte."""
+    for m in reversed(list(re.finditer(r"\{[^{}]*\"remarques\".*\}", text or "", re.S))):
+        try:
+            data = json.loads(m.group(0))
+        except ValueError:
+            continue
+        out = []
+        for r in (data.get("remarques") or [])[:20]:
+            if isinstance(r, dict) and str(r.get("texte", "")).strip():
+                g = str(r.get("gravite", "mineur")).lower()
+                out.append({"gravite": g if g in ("bloquant", "important", "mineur") else "mineur",
+                            "fichier": str(r.get("fichier") or "")[:200], "texte": str(r["texte"])[:500], "corrigee": bool(r.get("corrigee"))})
+        return out, str(data.get("avis") or "")[:400]
+    return [], " ".join((text or "").split())[-300:]
+
+
+def atelier_interdit(tool: str, d) -> bool:
+    """Atelier de décision : seules la lecture et les outils de conversation sont permis."""
+    short = tool.removeprefix(svc.TOOL_PREFIX).removeprefix("mcp__cockpit__")
+    if tool in FILE_TOOLS or short in ("creer_depot", "ouvrir_pr", "lancer_en_parallele", "confier_au_projet", "lancer_service",
+                                       "arreter_service", "capturer_ecran"):
+        return True
+    return tool == "Bash" and d.action != ALLOW
 
 
 class Runner:
@@ -514,6 +604,7 @@ class Runner:
         self.project_status = None  # async (projet) -> état vu du relais (outil etat_projet), fourni par le worker
         self.session_usage = None  # () -> utilisation de la session de 5 h (0-1) ou None, fourni par le worker
         self.refresh_usage = None  # async () -> utilisation relue juste après une tâche, fourni par le worker
+        self.submit_plan = None  # async (tâche, résumé, étapes) -> None : plan d'un atelier d'objectif, fourni par le worker
         self._background: set[asyncio.Task] = set()
 
     def is_hard(self, project_id: str | None) -> bool:
@@ -576,6 +667,8 @@ class Runner:
             tool = input_data["tool_name"]
             tool_input = input_data.get("tool_input", {})
             d = self.policy.evaluate(tool, tool_input, cwd)
+            if task.mode == "atelier" and atelier_interdit(tool, d):
+                d = Decision(DENY, "atelier de décision : lecture seule, rien n'est modifié avant la validation du plan")
             if d.action != DENY and tool.startswith(svc.TOOL_PREFIX):
                 d.reason = await svc.describe(tool, tool_input) or d.reason
             if d.action != DENY and tool == REPO_TOOL:
@@ -632,17 +725,21 @@ class Runner:
         upload = (lambda b64, caption: self.upload_image(task.id, b64, caption)) if self.upload_image else None
         delegate = ((lambda projet, instruction: self.spawn_tasks(task, [{"instruction": instruction, "projet": projet}],
                                                                   defer=True)) if self.spawn_tasks else None)
+        plan = ((lambda resume, etapes: self.submit_plan(task, resume, etapes))
+                if task.mode == "atelier" and task.objective and self.submit_plan else None)
         servers["cockpit"] = cockpit_server(cwd, lambda steps: setattr(task, "next_steps", steps), spawn,
                                             pub=lambda **kw: self.store.publish("message", {"task_id": task.id, **kw}),
                                             upload=upload, delegate=delegate,
                                             on_question=lambda q: setattr(task, "question", q), status=self.project_status,
-                                            hard=lambda: self.is_hard(project.id))
+                                            hard=lambda: self.is_hard(project.id), plan=plan)
         if self.preview:
             append += PREVIEW_APPEND.format(**self.preview)
         if not self.services and delegate:
             append += PROJECT_APPEND.format(project=project.id)
         append += MEMORY_INIT_APPEND if memory_missing(project.cwd) else MEMORY_UPKEEP_APPEND  # le dossier principal, pas le worktree
-        if self.is_hard(project.id):
+        if task.mode == "atelier":
+            append += ATELIER_APPEND
+        elif self.is_hard(project.id):
             append += HARD_APPEND
         elif not task.context and not task.parent and not task.reply_to_task:  # première demande d'une conversation
             append += FIRST_APPEND
@@ -821,6 +918,15 @@ class Runner:
             final = {k: v for k, v in final.items() if k != "status"}
         elif final.get("status") == "done" and changes and changes.get("file_count"):
             final |= await self._tests(task, project, cwd)
+            if self._needs_review(task, changes):
+                review = await self._review(task, project, cwd, changes, edited)
+                if review and review["tokens"]:
+                    t = final.get("tokens") or {}
+                    final["tokens"] = {k: t.get(k, 0) + review["tokens"].get(k, 0) for k in set(t) | set(review["tokens"])}
+                    final["tokens"]["total"] = sum(v for k, v in final["tokens"].items() if k != "total")
+                if review and review["corrigees"]:  # le relecteur a corrigé : modifications et tests à jour
+                    changes = await self._changes(task, cwd, before, edited)
+                    final |= await self._tests(task, project, cwd)
         if final.get("status") == "done" and not task.question and not self.is_hard(project.id):
             if q := detect_question(final.get("result", "")):
                 final["question"] = q
@@ -833,6 +939,51 @@ class Runner:
             self._spawn(self._watch_ci(task, cwd))
         if self.refresh_usage and session_before is not None:
             self._spawn(self._session_delta(task, session_before))
+
+    def _needs_review(self, task: Task, changes: dict) -> bool:
+        """Relecture par un second agent : travail qui modifie du code de façon notable (pas un atelier, pas une broutille)."""
+        lines = int(changes.get("added") or 0) + int(changes.get("removed") or 0)
+        return REVIEW and task.mode != "atelier" and task.status != "cancelled" and lines >= REVIEW_MIN_LINES
+
+    async def _review(self, task: Task, project: Project, cwd: str, changes: dict, edited: set[str]) -> dict | None:
+        """Un second agent, sans l'historique du premier, relit le travail, corrige ce qui est sûr et liste ses remarques.
+
+        Même politique et mêmes validations que l'auteur ; ses étapes s'affichent sur la carte (« Relecture · … »).
+        Renvoie {remarques, corrigees, tokens}, ou None si la relecture n'a pas pu se faire (le travail reste tel quel)."""
+        pub = lambda **kw: self.store.publish("message", {"task_id": task.id, **kw})  # noqa: E731
+        pub(type="tool_use", tool="Relecture", text="{}", label="Relecture par un second agent")
+        relecteur = dataclasses.replace(task, events=[], next_steps=None, question=None, mode="relecture", context=[],
+                                        reply_to_task=task.id)  # même identifiant : ses validations arrivent sur la carte
+        files = ", ".join(f["path"] for f in (changes.get("files") or [])[:30]) or "(voir git status)"
+        text, tokens = "", {}
+        try:
+            async with ClaudeSDKClient(self._options(relecteur, project, cwd, None, edited)) as client:
+                self.clients[task.id] = client
+                await client.query(REVIEW_PROMPT.format(instruction=task.instruction[:3000], files=files))
+                async for msg in client.receive_response():
+                    if isinstance(msg, AssistantMessage):
+                        for b in msg.content:
+                            if isinstance(b, TextBlock):
+                                text += b.text
+                            elif isinstance(b, ToolUseBlock) and (label := tool_label(b.name, b.input)):
+                                pub(type="tool_use", tool=b.name, text=_short(b.input, 300), label=f"Relecture · {label}")
+                    elif isinstance(msg, ResultMessage):
+                        text = msg.result or text
+                        u = msg.usage or {}
+                        tokens = {"input": int(u.get("input_tokens") or 0), "output": int(u.get("output_tokens") or 0),
+                                  "cache_read": int(u.get("cache_read_input_tokens") or 0),
+                                  "cache_write": int(u.get("cache_creation_input_tokens") or 0)}
+        except Exception as e:
+            log.warning("relecture de %s impossible : %s", task.id, e)
+            pub(type="relecture", remarques=[], avis=f"Relecture impossible : {type(e).__name__}", erreur=True)
+            return None
+        finally:
+            self.clients.pop(task.id, None)
+        remarques, avis = parse_review(text)
+        pub(type="relecture", remarques=remarques, avis=avis)
+        self.store.audit("review", task=task.id, project=project.id, remarques=len(remarques),
+                         corrigees=sum(1 for r in remarques if r["corrigee"]))
+        return {"remarques": len(remarques), "corrigees": sum(1 for r in remarques if r["corrigee"]), "tokens": tokens}
 
     async def _session_delta(self, task: Task, before: float) -> None:
         """Part de la session de 5 h consommée par la tâche : usage relu juste après (approximatif si plusieurs

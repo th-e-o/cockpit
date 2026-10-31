@@ -988,3 +988,45 @@ def test_reponse_de_l_espace_donnees(relay):
         page.wait_for_selector("section.suite .user >> text=Fais-en un rapport Quarto")
         assert not errors, errors
         browser.close()
+
+
+def test_objectif_et_relecture(relay):
+    """Objectif : atelier, plan à valider sur la carte, avancement ; travail relu par un second agent."""
+    from test_relay import call, paired_phone, worker_call, wpoll
+
+    p = paired_phone(relay)
+    wpoll(relay, "pod-ob", False, [{"id": "ob-proj", "name": "Projet démo"}], hello=True)
+    r = call(p, "objectif_creer", {"texte": "Préparer la démonstration au ministère", "project": "ob-proj", "horizon": "vendredi"}).json()
+    wpoll(relay, "pod-ob", False)
+    etapes = [{"titre": "Nettoyer l'interface", "instruction": "Simplifie l'accueil.", "projet": "ob-proj"},
+              {"titre": "Scénario de démo", "instruction": "Écris le scénario.", "projet": "ob-proj"}]
+    worker_call(relay, "w_evenements", {"worker_id": "pod-ob", "events": [
+        {"kind": "message", "task_id": r["task_id"], "type": "plan", "resume": "Option B : sobre et rapide.", "etapes": etapes},
+        {"kind": "task", "task_id": r["task_id"], "task": {"status": "done", "project": "ob-proj", "result": "Je recommande l'option B."}}]})
+    worker_call(relay, "w_plan", {"objectif": r["id"], "task_id": r["task_id"], "resume": "Option B : sobre et rapide.", "etapes": etapes})
+    # Une tâche relue par un second agent
+    t = call(p, "tache", {"instruction": "Refactorise le module", "project": "ob-proj"}).json()
+    wpoll(relay, "pod-ob", False)
+    worker_call(relay, "w_evenements", {"worker_id": "pod-ob", "events": [
+        {"kind": "message", "task_id": t["id"], "type": "relecture", "avis": "Bon à garder.",
+         "remarques": [{"gravite": "important", "fichier": "a.py", "texte": "cas vide non géré", "corrigee": True},
+                       {"gravite": "mineur", "fichier": "b.py", "texte": "nom peu clair", "corrigee": False}]},
+        {"kind": "task", "task_id": t["id"], "task": {"status": "done", "project": "ob-proj", "result": "Fait."}}]})
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        page, errors = browser_page(p, browser, relay, viewport={"width": 1440, "height": 900})
+        card = page.locator(".objcard", has_text="Préparer la démonstration")
+        card.wait_for()
+        assert "Plan à valider" in card.inner_text() and "échéance : vendredi" in card.inner_text()
+        rv = page.locator(f"#t-{t['id']} .reviewbox")
+        assert "2 remarque(s), 1 corrigée(s)" in rv.inner_text() and "cas vide non géré" in rv.inner_text()
+        plan = page.locator(f"#t-{r['task_id']} .planbox")
+        assert "Scénario de démo" in plan.inner_text()
+        page.screenshot(path=SHOTS / "27-objectif-plan.png")
+        plan.locator("[data-obj='valider'][data-lancer]").click()
+        card.locator(".objstate.en_cours").wait_for()
+        assert "0/2" in card.inner_text()
+        card.screenshot(path=SHOTS / "28-objectif-en-cours.png")
+        assert not errors, errors
+        browser.close()
+    assert call(p, "etat").json()["objectives"][0]["etapes"][0]["tache"]

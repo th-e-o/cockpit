@@ -665,7 +665,7 @@ def test_etat_ne_renvoie_que_les_blocs_modifies(relay):
     p = paired_phone(relay)
     wpoll(relay, "pod-h", False, [{"id": "eh", "name": "EH"}], hello=True)
     s1 = call(p, "etat").json()
-    assert {"projects", "workers", "memory", "hard"} <= s1.keys() and len(s1["h"].split(".")) == 7
+    assert {"projects", "workers", "memory", "hard"} <= s1.keys() and len(s1["h"].split(".")) == 8
     s2 = call(p, "etat", since=s1["last_id"], h=s1["h"]).json()
     assert not {"projects", "memory", "autopilot", "hard", "week", "deleted_projects"} & s2.keys()
     assert {"events", "last_id", "worker_online", "pending", "h"} <= s2.keys()
@@ -1297,3 +1297,43 @@ def test_fichier_d_une_tache(relay):
     assert r.headers["content-disposition"] == 'attachment; filename="rapport-final.html"'
     assert call(phone(relay), "fichier", id=fid).status_code == 401
     assert call(p, "fichier", id="../../config").status_code == 404
+
+
+def test_objectif_atelier_plan_et_etapes(relay_neuf):
+    """Objectif : atelier de décision (lecture seule) qui boucle avec l'utilisateur, plan validé, étapes enchaînées dans l'ordre."""
+    p = paired_phone(relay_neuf)
+    wpoll(relay_neuf, "pod-obj", True, [{"id": "obj", "name": "Obj"}], hello=True)
+    r = call(p, "objectif_creer", {"texte": "Rendre le projet présentable vendredi", "project": "obj", "horizon": "vendredi"}).json()
+    atelier = next(t for t in wpoll(relay_neuf, "pod-obj", True)["tasks"] if t["id"] == r["task_id"])
+    assert atelier["mode"] == "atelier" and atelier["objective"] == r["id"] and "Atelier de décision" in atelier["instruction"]
+    o = call(p, "etat").json()["objectives"][0]
+    assert o["etat"] == "atelier" and o["horizon"] == "vendredi" and o["titre"].startswith("Rendre le projet")
+    # Boucle de décision : la réponse de l'utilisateur reste dans l'atelier
+    rep = call(p, "tache", {"instruction": "Option B, sans toucher à l'API", "reply_to": r["task_id"]}).json()
+    suite = next(t for t in wpoll(relay_neuf, "pod-obj", True)["tasks"] if t["id"] == rep["id"])
+    assert suite["mode"] == "atelier" and suite["objective"] == r["id"]
+    # Plan proposé (definir_plan) puis validé : l'étape 1 part, l'étape 2 attend qu'elle soit faite
+    etapes = [{"titre": "Nettoyer l'interface", "instruction": "Simplifie l'écran d'accueil.", "projet": "obj"},
+              {"titre": "Préparer la démo", "instruction": "Écris le scénario de démonstration.", "projet": "inconnu"}]
+    assert worker_call(relay_neuf, "w_plan", {"objectif": r["id"], "task_id": rep["id"], "resume": "Option B.", "etapes": etapes}).json()["etapes"] == 2
+    o = call(p, "etat").json()["objectives"][0]
+    assert o["etat"] == "plan_propose" and [e["projet"] for e in o["etapes"]] == ["obj", None]
+    assert any("Objectif" in x["titre"] for x in call(p, "hard_apercu").json()["plan"]) is False  # pas encore validé
+    t1 = call(p, "objectif", {"action": "valider", "id": r["id"], "lancer": True}).json()["task_id"]
+    livree = next(t for t in wpoll(relay_neuf, "pod-obj", True)["tasks"] if t["id"] == t1)
+    assert "Étape 1/2 — Nettoyer l'interface" in livree["instruction"] and "Plan validé" in livree["instruction"]
+    assert call(p, "objectif", {"action": "etape", "id": r["id"]}).status_code == 409  # étape 1 pas finie
+    call(p, "autopilote", {"enabled": True, "hours": 2})
+    assert "skipped" in worker_call(relay_neuf, "w_auto_tache", {}).json()
+    worker_call(relay_neuf, "w_evenements", {"worker_id": "pod-obj", "events": [
+        {"kind": "task", "task_id": t1, "task": {"status": "done", "project": "obj", "result": "ok"}}]})
+    # Le full auto enchaîne l'étape 2 (projet inconnu : celui de l'objectif), avant toute proposition
+    t2 = worker_call(relay_neuf, "w_auto_tache", {}).json()
+    assert "étape 2" in t2["titre"]
+    worker_call(relay_neuf, "w_evenements", {"worker_id": "pod-obj", "events": [
+        {"kind": "task", "task_id": t2["task_id"], "task": {"status": "done", "project": "obj", "result": "ok"}}]})
+    o = call(p, "etat").json()["objectives"][0]
+    assert o["etat"] == "atteint" and o["faites"] == 2
+    assert any("Objectif atteint" in a["titre"] for a in call(p, "resume").json()["alerts"])
+    # Une fois lancé, l'atelier ne propose plus de plan
+    assert worker_call(relay_neuf, "w_plan", {"objectif": r["id"], "etapes": etapes}).status_code == 404

@@ -47,6 +47,8 @@ class Task:
     tokens: dict | None = None  # {input, output, cache_read, cache_write, total} consommés par la tâche
     resume_at: int | None = None  # tâche en pause (limite du forfait) : heure de réinitialisation après laquelle elle est reprise
     session_delta: float | None = None  # part de la session de 5 h consommée pendant la tâche (0-1, approximative)
+    mode: str | None = None  # « atelier » : atelier de décision d'un objectif (lecture seule, definir_plan)
+    objective: str | None = None  # objectif auquel la tâche appartient (atelier ou étape)
 
 
 @dataclass

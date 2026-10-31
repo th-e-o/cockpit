@@ -426,7 +426,7 @@ function taskHtml(e) {
       <div class="actions">${state.projects.map((p) => `<button class="btn" data-choose="${esc(p.id)}">${esc(p.name)}</button>`).join('')}</div>`;
   }
   if (t.result && !ACTIVE.has(t.status)) body += `<div class="result">${md(t.result)}</div>`;
-  body += dataHtml(e);
+  body += dataHtml(e) + planHtml(e) + reviewHtml(e);
   if (openQuestion(e)) body += questionHtml(t);
   if (!active) body += changesHtml(e) + testsHtml(e) + ciPrHtml(e) + worktreeHtml(e) + nextStepsHtml(e);
 
@@ -893,6 +893,100 @@ $('#memForm').addEventListener('submit', async (ev) => {
 });
 
 // ---------- captures, tests, CI, pull request, revue
+/** Relecture par un second agent : avis et remarques (corrigées ou à voir). */
+function reviewHtml(e) {
+  const r = [...e.events].reverse().find((x) => x.type === 'relecture');
+  if (!r) return '';
+  const grav = { bloquant: 'bad', important: 'warn', mineur: '' };
+  const items = (r.remarques || []).map((x) => `<li class="${grav[x.gravite] || ''}"><span class="rvtag">${esc(x.gravite)}</span>
+      ${x.fichier ? `<code>${esc(x.fichier)}</code> ` : ''}${esc(x.texte)}${x.corrigee ? ` <span class="okt">${ic('check')} corrigée</span>` : ''}</li>`).join('');
+  const n = (r.remarques || []).length, fixed = (r.remarques || []).filter((x) => x.corrigee).length;
+  return `<details class="reviewbox ${r.erreur ? 'err' : n ? '' : 'clean'}" data-k="relecture"${n && n > fixed ? ' open' : ''}>
+    <summary>${ic('shield')} ${r.erreur ? 'Relecture non faite' : n ? `Relu par un second agent : ${n} remarque(s), ${fixed} corrigée(s)` : 'Relu par un second agent : rien à signaler'}</summary>
+    ${r.avis ? `<p>${esc(r.avis)}</p>` : ''}${items ? `<ul>${items}</ul>` : ''}</details>`;
+}
+
+/** Plan proposé par un atelier d'objectif, avec la décision : valider (et lancer), ou demander des ajustements. */
+function planHtml(e) {
+  const p = [...e.events].reverse().find((x) => x.type === 'plan');
+  if (!p) return '';
+  const o = (state.objectives || []).find((x) => x.id === e.task.objective || x.conversation === conversationOf(e.task.id));
+  const pending = o?.etat === 'plan_propose';
+  return `<div class="planbox"><div class="datatitle">${ic('list')} Plan proposé</div>${p.resume ? `<p>${esc(p.resume)}</p>` : ''}
+    <ol>${(p.etapes || []).map((x) => `<li><b>${esc(x.titre)}</b>${x.projet ? ` <span class="muted">· ${esc(projectName(x.projet))}</span>` : ''}
+      <div class="hint">${esc(String(x.instruction).slice(0, 240))}</div></li>`).join('')}</ol>
+    ${pending ? `<div class="actions"><button class="btn primary" data-obj="valider" data-id="${esc(o.id)}" data-lancer="1">${ic('play')} Valider et lancer l'étape 1</button>
+      <button class="btn" data-obj="valider" data-id="${esc(o.id)}">Valider sans lancer</button>
+      <button class="btn ghost" data-obj="ajuster" data-task="${esc(e.task.id)}">${ic('chat')} Demander des ajustements</button></div>`
+    : o ? `<div class="hint">${{ en_cours: 'Plan validé : en cours.', atteint: 'Objectif atteint.', abandonne: 'Objectif abandonné.' }[o.etat] || ''}</div>` : ''}</div>`;
+}
+
+const OBJ_ETATS = { atelier: 'Atelier de décision', plan_propose: 'Plan à valider', en_cours: 'En cours', atteint: 'Atteint', abandonne: 'Abandonné' };
+
+/** Objectifs : atelier en cours, plan à valider, étapes enchaînées et avancement ; « ＋ Objectif » ouvre un atelier. */
+function objectivesHtml() {
+  const list = (state.objectives || []).filter((o) => o.etat !== 'abandonne' && !(o.etat === 'atteint' && Date.now() / 1000 - o.maj > 7 * 86400));
+  const stIc = { faite: stIcon('done'), en_cours: '<span class="spin"></span>', erreur: stIcon('error'), a_faire: '<span class="todo-dot"></span>' };
+  const cards = list.map((o) => {
+    const n = o.etapes.length, pct = n ? Math.round((o.faites / n) * 100) : 0;
+    const steps = n ? `<ol class="objsteps">${o.etapes.map((x, i) => `<li class="${x.etat}">${stIc[x.etat] || ''}<span>${esc(x.titre)}</span>
+        ${x.tache ? `<button class="btn ghost" data-jump="${esc(x.tache)}">Voir</button>` : ''}
+        ${x.etat === 'erreur' ? `<button class="btn ghost" data-obj="etape" data-id="${esc(o.id)}" data-etape="${i}">${ic('refresh')} Relancer</button>` : ''}</li>`).join('')}</ol>` : '';
+    const actions = {
+      atelier: `<button class="btn" data-jump="${esc(o.conversation)}">${ic('chat')} Ouvrir l'atelier</button>`,
+      plan_propose: `<button class="btn primary" data-obj="valider" data-id="${esc(o.id)}" data-lancer="1">${ic('play')} Valider et lancer</button>
+        <button class="btn" data-jump="${esc(o.conversation)}">Voir le plan et ajuster</button>`,
+      en_cours: `${o.suivante != null ? `<button class="btn primary" data-obj="etape" data-id="${esc(o.id)}">${ic('play')} Lancer l'étape ${o.suivante + 1}</button>` : ''}
+        <button class="btn ghost" data-obj="abandonner" data-id="${esc(o.id)}">Abandonner</button>`,
+    }[o.etat] || '';
+    return `<article class="objcard ${o.etat}"><div class="fhead"><b>${esc(o.titre)}</b><span class="objstate ${o.etat}">${OBJ_ETATS[o.etat] || o.etat}</span></div>
+      <div class="muted">${o.projet ? esc(projectName(o.projet)) : 'Projet choisi par Claude'}${o.horizon ? ` · échéance : ${esc(o.horizon)}` : ''}</div>
+      ${n ? `<div class="meter objmeter"><span>${o.faites}/${n}</span><div class="bar"><i data-w="${pct}"></i></div><span class="mv">${pct} %</span></div>` : ''}
+      ${o.resume ? `<div class="hint">${esc(o.resume)}</div>` : ''}${steps}<div class="actions">${actions}</div></article>`;
+  }).join('');
+  return `<section class="sect"><div class="secthead"><h3>Objectifs${list.length ? ` <span class="count">${list.length}</span>` : ''}</h3>
+    <button type="button" class="btn ghost" data-obj="nouveau">${ic('plus')} Objectif</button></div>
+    ${cards ? `<div class="objs">${cards}</div>` : '<div class="emptyd">Donnez un objectif (« rendre le projet présentable vendredi ») : Claude vous aide à décider comment l\'atteindre, puis enchaîne les étapes.</div>'}</section>`;
+}
+
+function openObjective() {
+  const opts = state.projects.filter((p) => p.id).map((p) => `<option value="${esc(p.id)}">${esc(p.name || p.id)}</option>`).join('');
+  $('#objProject').innerHTML = `<option value="">Choisi par Claude</option>${opts}`;
+  $('#objProject').value = state.selected || '';
+  $('#objText').value = '';
+  $('#objHorizon').value = '';
+  $('#objDlg').showModal();
+  $('#objText').focus();
+}
+$('#objForm').addEventListener('submit', async (ev) => {
+  ev.preventDefault();
+  try {
+    const r = await api('objectif_creer', { texte: $('#objText').value.trim(), project: $('#objProject').value || null, horizon: $('#objHorizon').value.trim() });
+    $('#objDlg').close();
+    state.pendingJump = r.task_id;
+    setView('chat');
+    await poll();
+  } catch (e) { $('#objHint').textContent = e.message; }
+});
+
+async function objectiveAction(b) {
+  const a = b.dataset.obj;
+  if (a === 'nouveau') return openObjective();
+  if (a === 'ajuster') {  // la demande d'ajustement est un message de l'atelier
+    setReplyTo(b.dataset.task);
+    setView('chat');
+    input.placeholder = 'Ce que vous voulez changer dans le plan…';
+    input.focus();
+    return;
+  }
+  if (a === 'abandonner' && !confirm('Abandonner cet objectif ? Les étapes déjà faites restent.')) return;
+  b.disabled = true;
+  const r = await api('objectif', { action: a, id: b.dataset.id, ...(b.dataset.lancer ? { lancer: true } : {}),
+    ...(b.dataset.etape ? { etape: Number(b.dataset.etape) } : {}) });
+  if (r.task_id) state.pendingJump = r.task_id;
+  poll();
+}
+
 /** Espace Données : tableau agrégé (cases sous le seuil masquées « s »), graphique, requête ; rapport Quarto à télécharger. */
 function dataHtml(e) {
   let out = '';
@@ -1472,6 +1566,7 @@ function renderDash() {
   const weekIncite = state.week && state.week.hours_left <= 48 && state.week.remaining >= 0.2 && !state.hard?.enabled;
   const html = `<div class="dashwrap">
     ${approvalsSection(tasks)}
+    ${objectivesHtml()}
     ${questionsSection(tasks)}
     ${prsSection(tasks)}
     ${variantsHtml(tasks)}
@@ -2004,6 +2099,11 @@ async function poll() {
     }
     $('#conn').classList.toggle('on', s.worker_online);
     $('#conn').title = s.worker_online ? 'worker Onyxia connecté' : 'worker Onyxia hors ligne';
+    if ('objectives' in s) {  // avant le rendu : le plan d'un atelier affiche ses boutons selon l'état de l'objectif
+      state.objectives = s.objectives || [];
+      const convs = new Set(state.objectives.map((o) => o.conversation));
+      for (const id of state.order) if (convs.has(conversationOf(id))) touched.add(id);
+    }
     render(touched);
     if (state.pendingJump && document.getElementById(`t-${state.pendingJump}`)) { jumpTo(state.pendingJump); state.pendingJump = null; }
     if ('workers' in s) state.workers = s.workers || [];
@@ -2067,6 +2167,8 @@ async function onClick(ev) {
       b.disabled = true;
       await api('reprendre', { task_id: b.dataset.resume });
       poll();
+    } else if (b.dataset.obj) {
+      await objectiveAction(b);
     } else if (b.dataset.rapport) {
       b.disabled = true;
       const t = await api('tache', { instruction: 'Fais-en un rapport Quarto', reply_to: b.dataset.rapport });

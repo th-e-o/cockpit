@@ -188,6 +188,22 @@
   </dialog>
 
   <!-- Nouvelle idée : pour un projet existant, ou idée de nouveau projet (l'orchestrateur créera le dépôt et le pod) -->
+  <!-- Nouvel objectif : un atelier de décision s'ouvre (options, arbitrages, questions), puis un plan à valider -->
+  <dialog id="objDlg">
+    <div class="dlghead"><h2>Nouvel objectif</h2><button class="icon" data-close aria-label="fermer"><span data-ic="x"></span></button></div>
+    <form id="objForm" class="podform">
+      <label>Objectif<textarea id="objText" rows="4" required maxlength="4000"
+        placeholder="Ex. : rendre le projet drones présentable pour une démonstration vendredi"></textarea></label>
+      <div class="row2">
+        <label>Projet<select id="objProject"></select></label>
+        <label>Échéance (facultatif)<input id="objHorizon" maxlength="40" placeholder="vendredi, fin du mois…" autocomplete="off"></label>
+      </div>
+      <p class="hint" id="objHint">Claude ouvre un atelier de décision : il étudie la situation, vous propose plusieurs options avec leurs
+        avantages et leurs risques, pose les questions qui tranchent, puis un plan d'étapes. Rien n'est modifié avant que vous validiez le plan.</p>
+      <button type="submit">Ouvrir l'atelier</button>
+    </form>
+  </dialog>
+
   <dialog id="ideaDlg">
     <div class="dlghead"><h2>Nouvelle idée</h2><button class="icon" data-close aria-label="fermer"><span data-ic="x"></span></button></div>
     <form id="ideaForm" class="podform">

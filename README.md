@@ -280,6 +280,28 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
 - ☰ : journal d'audit, notifications, passkeys (ajout/suppression), déconnexion.
 - `./run.sh logs | stop | fg` côté Onyxia.
 
+## Objectifs : décider avec Claude, puis le laisser enchaîner
+
+*Tableau de bord → Objectifs → ＋ Objectif* : « Rendre le projet drones présentable vendredi ». Plutôt qu'une tâche, un but.
+
+1. **Atelier de décision** (une conversation, en **lecture seule** : rien n'est modifié tant que le plan n'est pas validé).
+   Claude lit la mémoire, l'état et le code, reformule l'objectif et son critère de réussite, propose **2 ou 3 options
+   contrastées** (avantages, inconvénients, risques, effort), recommande, puis pose les questions qui tranchent. Vous
+   répondez, il affine, challenge, propose des variantes : la boucle dure autant d'échanges que nécessaire.
+2. **Plan** : quand la direction est claire, Claude propose 3 à 10 étapes ordonnées (outil `definir_plan`). Sur la carte :
+   *Valider et lancer l'étape 1*, *Valider sans lancer* ou *Demander des ajustements* (un message dans l'atelier, qui révise).
+3. **Exécution** : chaque étape est une tâche qui rappelle l'objectif et le plan ; la suivante attend que la précédente soit
+   faite (*Lancer l'étape suivante*, ou automatiquement : le full auto et le mode hard font passer les étapes d'objectifs
+   avant les propositions). Une étape en erreur se relance d'un geste. Avancement (k/n), notification « Objectif atteint ».
+
+## Relecture par un second agent
+
+Après chaque travail qui modifie au moins 15 lignes (`COCKPIT_RELECTURE_LIGNES`), un second agent Claude, sans l'historique du
+premier, relit les modifications : bugs, cas limites, régressions, sécurité, tests manquants. Il corrige ce qui est sûr et local
+(même politique et mêmes validations), sans changer l'approche ni rien pousser ; modifications et tests sont alors recalculés.
+Sur la carte : « Relu par un second agent : N remarque(s), K corrigée(s) », avec la gravité de chacune et son avis. Ses tokens
+s'ajoutent à ceux de la tâche. `COCKPIT_RELECTURE=0` la désactive.
+
 ## Espace « 📊 Données » : interroger S3 en français
 
 Une puce **📊 Données** à côté des projets : « Évolution du salaire moyen des gendarmes depuis 2015 ? », puis « et pour
