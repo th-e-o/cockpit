@@ -898,3 +898,32 @@ def test_idees_et_fin_de_semaine(relay):
         assert not errors, errors
         browser.close()
     call(p, "mode_hard", {"enabled": False})
+
+
+def test_une_seule_carte_autonomie(relay):
+    """Full auto et mode hard : une seule carte, un seul dialogue ; « sans validations » est une option du même dialogue."""
+    from test_relay import call, paired_phone, wpoll
+
+    p = paired_phone(relay)
+    wpoll(relay, "orch-auto1", True, [{"id": "auto1", "name": "Auto un"}], hello=True)
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch()
+        page, errors = browser_page(p, browser, relay, viewport={"width": 390, "height": 844}, has_touch=True, is_mobile=True)
+        page.click("#tabDash")
+        page.wait_for_selector("[data-autonomy='on']")
+        assert page.locator(".autocard .arow").count() == 1
+        page.click("[data-autonomy='on']")
+        assert page.is_hidden("#hardAutoRow") and page.input_value("#hardPerDay") == "12"
+        page.check("#hardMode")  # option sans validations : réglages du mode hard, case « enchaîner » visible
+        assert page.is_visible("#hardAutoRow") and page.input_value("#hardPerDay") == "40"
+        assert "sans validations" in page.inner_text("#hardGo")
+        page.uncheck("#hardMode")
+        page.click("#hardGo")
+        page.wait_for_selector(".autocard .arow.on >> text=Full auto")
+        page.wait_for_selector("[data-hard='on'] >> text=Passer sans validations")
+        page.screenshot(path=SHOTS / "24-autonomie.png")
+        page.click("[data-autonomy='off']")
+        page.wait_for_selector("[data-autonomy='on']")
+        assert not errors, errors
+        browser.close()
+    assert call(p, "etat").json()["autopilot"]["enabled"] is False

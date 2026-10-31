@@ -221,10 +221,13 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
   nombre de tâches moyennes équivalent). Quand il reste au moins 20 % à 48 h de la réinitialisation (puis 10 % à 12 h), une
   notification « ☠ Il reste N % de la semaine » propose le mode hard, avec le bouton *Utiliser le reste* qui préremplit la
   durée jusqu'à la réinitialisation. L'aperçu du dialogue chiffre aussi les tokens du plan affiché.
-- **Full auto : même dialogue que le mode hard** (🤖 *Armer le full auto*) : projets au choix (● pod en ligne / ○ hors ligne),
-  durée en heures, projets de front, tâches par jour, seuil de session, et le même **aperçu** de ce qu'il compte faire (travail
-  resté en plan d'abord, puis propositions). Il garde les rares validations restantes (refusées au bout de 15 min sans réponse).
-- **Mode hard** (☠, tableau de bord) : pleine autonomie, pour une durée choisie (1 h à 14 jours) :
+- **Une seule carte *Autonomie*** (tableau de bord) et un seul dialogue (⚡ *Armer l'autonomie…*) : projets au choix (● pod en
+  ligne / ○ hors ligne), durée, projets de front, idées à inclure, réglages avancés (tâches par jour, seuil de session) repliés,
+  et l'**aperçu** de ce que Claude compte faire (travail resté en plan d'abord, puis propositions et idées) chiffré en tokens.
+  Sans autre option, c'est le **full auto** : il garde les rares validations restantes (refusées au bout de 15 min sans
+  réponse). Cocher **☠ Sans validations** en fait le **mode hard** (réglages par défaut plus rapides). Armée, la carte montre ce
+  qui tourne, *Arrêter* (tout) et, en full auto, *☠ Passer sans validations…*.
+- **Mode hard** (option *Sans validations*) : pleine autonomie, pour une durée choisie (1 h à 14 jours) :
   - plus aucune validation (écriture hors du projet, push sur main, cluster, `sudo`…), chaque action reste journalisée
     (`policy: hard`) ; les validations en attente sont approuvées à l'activation ;
   - plus aucune question : Claude tranche seul (l'outil `poser_question` lui dit de décider), et s'il en a posé une quand même,
@@ -235,7 +238,7 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
     à un pod en ligne sans jamais avancer : elles sont reprises dans leur conversation, les bloquées sont annulées puis
     relancées), puis les propositions de l'état de mémoire. Les projets dont le pod est hors ligne restent à l'arrêt (le
     cockpit ne sait pas relancer un pod) : l'aperçu les signale avec leurs tâches en attente ;
-  - le full auto est armé par défaut (case à décocher dans le dialogue), pour la même durée et sur les mêmes projets : il mène
+  - les propositions sont enchaînées par défaut (case « Enchaîner aussi… » à décocher), pour la même durée et sur les mêmes projets : il mène
     **plusieurs projets de front** (jusqu'à 6, un projet à la fois, un pod par projet), en enchaînant le travail resté en plan
     puis les propositions de l'état de mémoire ;
   - **compte rendu** (tableau de bord, *📋 Compte rendu*) : par projet, ce qui a été fait (résultat, fichiers, commits, branche,

@@ -156,9 +156,11 @@
   </dialog>
 
   <dialog id="hardDlg">
-    <div class="dlghead"><h2 id="hardTitle">☠ Mode hard</h2><button class="icon" data-close aria-label="fermer">✕</button></div>
+    <div class="dlghead"><h2 id="hardTitle">⚡ Autonomie</h2><button class="icon" data-close aria-label="fermer">✕</button></div>
     <form id="hardForm" class="podform">
       <p class="hint" id="hardIntro"></p>
+      <!-- Une seule autonomie : le mode hard en est l'option « sans validations » -->
+      <label class="check hardmode"><input type="checkbox" id="hardMode"> ☠ <b>Sans validations</b> (mode hard) : Claude ne te demande plus rien</label>
       <div class="hardsel"><span class="muted">Projets :</span>
         <button type="button" class="btn ghost" id="hardAll">Tous</button>
         <button type="button" class="btn ghost" id="hardOnline">En ligne</button>
@@ -168,7 +170,7 @@
         <label>Durée (heures)<input id="hardHours" type="number" min="1" max="336" value="8"></label>
         <label>Projets de front<input id="hardParallel" type="number" min="1" max="6" value="3"></label>
       </div>
-      <label class="check" id="hardAutoRow"><input type="checkbox" id="hardAuto" checked> 🤖 Armer aussi le full auto (enchaîne les propositions)</label>
+      <label class="check" id="hardAutoRow"><input type="checkbox" id="hardAuto" checked> 🤖 Enchaîner aussi les propositions et les idées (décoché : seulement plus de validations)</label>
       <!-- Options affichées seulement quand de telles idées attendent -->
       <label class="check hidden" id="hardIdeasRow"><input type="checkbox" id="hardIdeas" checked> <span id="hardIdeasText"></span></label>
       <label class="check hidden" id="hardExternalRow"><input type="checkbox" id="hardExternal" checked> <span id="hardExternalText"></span></label>
@@ -179,7 +181,7 @@
         </div>
       </details>
       <div class="hardpreview" id="hardPreview"></div>
-      <button type="submit" id="hardGo">☠ Activer le mode hard</button>
+      <button type="submit" id="hardGo">⚡ Armer l'autonomie</button>
     </form>
   </dialog>
 

@@ -599,3 +599,6 @@ details.adv[open] > summary { margin-bottom: 8px; }
 #ideaText { font: inherit; padding: 8px 10px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel2); color: var(--text); resize: vertical; }
 /* Très petit écran (iPhone SE 1re génération, 320 px) : le titre laisse la place aux boutons de l'en-tête */
 @media (max-width: 359px) { header h1 { display: none; } }
+/* Option « sans validations » du dialogue d'autonomie : bien visible, et en alerte quand elle est cochée */
+.check.hardmode { padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--panel2); }
+#hardDlg.hardon .check.hardmode { border-color: var(--bad); background: color-mix(in srgb, var(--bad) 8%, var(--panel)); }
