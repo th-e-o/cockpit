@@ -30,6 +30,11 @@ jobs:
       FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
       LFTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
     steps:
+      - name: Nettoyer les secrets FTP (espaces et sauts de ligne parasites)
+        run: |
+          echo "FTP_SERVER=$(printf %s "$FTP_SERVER" | tr -d '[:space:]')" >> "$GITHUB_ENV"
+          echo "FTP_USERNAME=$(printf %s "$FTP_USERNAME" | tr -d '[:space:]')" >> "$GITHUB_ENV"
+
       - name: Installer lftp
         run: sudo apt-get install -y -qq lftp >/dev/null
 
