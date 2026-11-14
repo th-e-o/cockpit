@@ -46,7 +46,7 @@ def lancer_relais():
     with socket.socket() as s:
         s.bind(("127.0.0.1", 0))
         port = s.getsockname()[1]
-    # Comme en production : le cockpit est un sous-dossier du site (https://deltastat.fr/cockpit/)
+    # Le cockpit sait encore tourner dans un sous-dossier (COCKPIT_BASE) : on le vérifie ici
     docroot = Path(tempfile.mkdtemp())
     web = docroot / "cockpit"
     shutil.copytree(ROOT / "web", web, ignore=shutil.ignore_patterns("*.db*", "config.php"))

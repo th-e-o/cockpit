@@ -6,9 +6,9 @@
 
 ## État actuel (commit de référence : voir `git log`)
 
-**En production** sur https://deltastat.fr/cockpit/ :
-- `web/` : PWA + relais PHP/SQLite, déployés par GitHub Actions (FTP) dans `www/cockpit/` de l'hébergement OVH.
-  Indépendant de PLFMarket (`www/`), car chaque workflow ne gère que ses propres fichiers.
+**En production** sur https://cockpit.deltastat.fr/ :
+- `web/` : PWA + relais PHP/SQLite, déployés par GitHub Actions (rsync) dans `/srv/cockpit/web` du VPS,
+  sous-domaine et pool PHP dédiés (isolé de PLFMarket et des autres apps).
 - Authentification : appairage par QR code (`./run.sh pair`), puis passkey. Push Web sans contenu (VAPID).
 - `cockpit/` : worker Python qui interroge le relais en long-polling (`w_poll`), route les instructions
   (`router.py`) et lance les agents via Claude Agent SDK (`agent.py`). La politique est appliquée dans un hook
