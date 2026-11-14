@@ -1,0 +1,24 @@
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+          cache: pip
+      - run: pip install -r requirements.txt ruff
+      - name: Chromium pour les tests UI (Playwright)
+        run: python -m playwright install --with-deps chromium
+      - name: Ruff
+        run: ruff check .
+      - name: Pytest
+        run: python -m pytest -q
