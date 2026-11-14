@@ -11,8 +11,8 @@ if (!preg_match('/^[0-9a-f]{64}$/', $empreinte)) {
 // Clés d'API (outils externes autorisés à ajouter des propositions) : une empreinte SHA-256 par ligne, fichier facultatif.
 $cles_api = array_values(array_filter(array_map('trim', @file("$racine/config/api_keys.sha256") ?: []),
                                       fn($l) => preg_match('/^[0-9a-f]{64}$/', $l)));
-$hote = getenv('COCKPIT_HOTE') ?: 'deltastat.fr';
-$base = '/' . trim(getenv('COCKPIT_BASE') ?: 'cockpit', '/') . '/';  // sous-dossier du site ('/' si sous-domaine dédié)
+$hote = getenv('COCKPIT_HOTE') ?: 'cockpit.deltastat.fr';
+$base = '/' . trim(getenv('COCKPIT_BASE') ?: '/', '/') . '/';  // '/' : sous-domaine dédié (ex. /cockpit/ pour un sous-dossier)
 $base = $base === '//' ? '/' : $base;
 $config = [
     'worker_cle_sha256' => $empreinte,

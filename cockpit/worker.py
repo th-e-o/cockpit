@@ -32,7 +32,7 @@ from .store import Task
 ROOT = Path(__file__).resolve().parent.parent
 CONFIG = Path(os.environ.get("COCKPIT_CONFIG", ROOT / "config"))
 DATA = Path(os.environ.get("COCKPIT_DATA", ROOT / "data"))
-RELAY_URL = os.environ.get("COCKPIT_RELAY_URL", "https://deltastat.fr/cockpit")
+RELAY_URL = os.environ.get("COCKPIT_RELAY_URL", "https://cockpit.deltastat.fr")
 WORKER_ID = os.environ.get("COCKPIT_WORKER_ID") or os.environ.get("HOSTNAME") or "principal"
 WORKER_NAME = os.environ.get("COCKPIT_WORKER_NAME") or WORKER_ID
 # « orchestrateur » : route les instructions sans projet et gère les services ; « projet » : pod d'un seul projet.

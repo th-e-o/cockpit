@@ -1,0 +1,72 @@
+name: Migration OVH → VPS (une seule fois)
+
+# À lancer à la main (Actions → Migration OVH → VPS → Run workflow), APRÈS que cockpit.deltastat.fr
+# réponde depuis le VPS (DNS créé + premier déploiement).
+#
+# « basculer » :
+#   1. remplace www/cockpit/.htaccess sur OVH par une redirection vers cockpit.deltastat.fr :
+#      plus aucune écriture dans l'ancienne base ;
+#   2. télécharge www/cockpit/data/ (base SQLite, WAL et sauvegardes) ;
+#   3. l'envoie dans /srv/cockpit/web/data/ sur le VPS (remplace la base vide créée au premier passage).
+# « nettoyer » (après vérification) : supprime www/cockpit/ sur OVH. La racine de deltastat.fr
+#   continue de rediriger /cockpit/… vers le sous-domaine.
+
+on:
+  workflow_dispatch:
+    inputs:
+      etape:
+        description: "basculer ou nettoyer"
+        required: true
+        type: choice
+        options: [basculer, nettoyer]
+
+concurrency: deploiement-cockpit
+
+jobs:
+  migrer:
+    runs-on: ubuntu-latest
+    env:
+      FTP_SERVER: ${{ secrets.FTP_SERVER }}
+      FTP_USERNAME: ${{ secrets.FTP_USERNAME }}
+      LFTP_PASSWORD: ${{ secrets.FTP_PASSWORD }}
+    steps:
+      - name: Installer lftp
+        run: sudo apt-get install -y -qq lftp >/dev/null
+
+      - name: Rediriger l'ancien dossier OVH et récupérer data/
+        if: inputs.etape == 'basculer'
+        run: |
+          printf '%s\n' '# Ancienne adresse : le cockpit est servi sur https://cockpit.deltastat.fr/' \
+            'RewriteEngine On' 'RewriteRule ^(.*)$ https://cockpit.deltastat.fr/$1 [R=308,L]' > redirection.htaccess
+          mkdir -p donnees
+          lftp --env-password -u "$FTP_USERNAME" "$FTP_SERVER" -e "
+            set cmd:fail-exit yes;
+            put redirection.htaccess -o www/cockpit/.htaccess;
+            mirror --verbose www/cockpit/data/ donnees/;
+            bye"
+          ls -la donnees
+
+      - name: Envoyer data/ sur le VPS
+        if: inputs.etape == 'basculer'
+        env:
+          CLE: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOTES_CONNUS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+          HOTE: ${{ vars.DEPLOY_HOST || '217.182.169.200' }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$CLE" > ~/.ssh/deploiement && chmod 600 ~/.ssh/deploiement
+          printf '%s\n' "$HOTES_CONNUS" > ~/.ssh/known_hosts
+          test -f donnees/cockpit.db || { echo "::error::www/cockpit/data/cockpit.db introuvable sur OVH"; exit 1; }
+          # --delete : la base vide éventuellement créée au premier passage (et son WAL) est remplacée.
+          rsync -rlptz --delete --chmod=D700,F600 --exclude='/.htaccess' \
+            -e 'ssh -i ~/.ssh/deploiement -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes' \
+            donnees/ "cockpit@$HOTE:/data/"
+
+      - name: Supprimer l'ancien dossier sur OVH
+        if: inputs.etape == 'nettoyer'
+        run: |
+          lftp --env-password -u "$FTP_USERNAME" "$FTP_SERVER" -e "
+            set cmd:fail-exit yes;
+            rm -rf www/cockpit;
+            cls www/;
+            bye"

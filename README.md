@@ -1,6 +1,6 @@
 # Cockpit Onyxia × Claude Code
 
-PWA mobile (`https://deltastat.fr/cockpit/`) pour piloter des agents Claude Code qui tournent dans Onyxia,
+PWA mobile (`https://cockpit.deltastat.fr/`) pour piloter des agents Claude Code qui tournent dans Onyxia,
 avec une forte autonomie et une validation humaine pour les opérations sensibles.
 
 ```
@@ -32,12 +32,16 @@ Chaque `git push` sur `main` qui touche `web/` redéploie le relais (*Actions �
 Il ne peut rien faire d'autre : la proposition attend dans la file comme une proposition ajoutée à la main.
 `./run.sh cle-api` crée une clé et ajoute son empreinte à `config/api_keys.sha256` (une par ligne) ; pour révoquer, retirer la ligne.
 
-### 2. OVH : rien à faire
-Le cockpit est déployé dans `www/cockpit/` et servi sur **https://deltastat.fr/cockpit/**, car la formule
-d'hébergement n'autorise pas de domaine rattaché supplémentaire. Les deux projets restent indépendants : chaque
-workflow ne met à jour ou ne supprime que les fichiers qu'il a lui-même envoyés (pas de `dangerous-clean-slate`).
-Pour passer plus tard sur un sous-domaine dédié : variables GitHub `COCKPIT_HOTE`, `COCKPIT_BASE=/` et
-`FTP_DOSSIER`, plus `COCKPIT_RELAY_URL` côté worker. Les passkeys sont liées au domaine : il faudra en recréer.
+### 2. Hébergement : VPS, sous-domaine dédié
+Le cockpit est servi sur **https://cockpit.deltastat.fr/** par le VPS (Caddy + PHP-FPM, pool PHP dédié à
+l'utilisateur `cockpit`, dossier `/srv/cockpit/web`). Sous-domaine à part : origine web séparée des autres apps
+de deltastat.fr, si bien qu'une faille XSS chez l'une ne donne pas accès à la session cockpit.
+
+Le workflow de déploiement envoie `web/` par rsync, avec une clé (`DEPLOY_SSH_KEY`) qui ne peut que lancer rsync
+dans `/srv/cockpit/web` ; `data/` n'est jamais envoyé ni écrasé. Variables GitHub : `DEPLOY_KNOWN_HOSTS`
+(obligatoire, `ssh-keyscan -t ed25519 217.182.169.200`), `DEPLOY_HOST` (facultatif). `COCKPIT_HOTE`
+(`cockpit.deltastat.fr` par défaut) et `COCKPIT_BASE` (`/` par défaut) permettent encore un autre domaine ou
+un sous-dossier. Les passkeys sont liées au domaine : en changer impose d'en recréer.
 
 ### 3. Onyxia : identifiant Claude
 Le CLI du pod n'est pas connecté (l'extension VSCode utilise sa propre session). Dans un terminal :
@@ -53,7 +57,7 @@ du worker d'un service à l'autre, ajoute aussi `COCKPIT_WORKER_KEY` avec le con
 ./run.sh          # démarre le worker en arrière-plan
 ./run.sh pair     # QR code (téléphone) + clé d'appairage à saisir (ordinateur)
 ```
-Sur un **ordinateur** sans appareil photo, ouvre `https://deltastat.fr/cockpit/` et saisis la clé d'appairage
+Sur un **ordinateur** sans appareil photo, ouvre `https://cockpit.deltastat.fr/` et saisis la clé d'appairage
 affichée sous le QR code (`XXXXX-XXXXX`, insensible à la casse), puis crée une passkey (Windows Hello, Touch ID,
 clé de sécurité ou ton téléphone).
 
@@ -252,7 +256,7 @@ Puis installe l'application et ouvre-la depuis son icône, puis ☰ → *Activer
 - `config/policy.yaml` : règles `deny > ask > allow > défaut (ask)` par outil, chemin de fichier et commande shell.
   Les commandes composées (`&&`, `|`, `;`) sont évaluées segment par segment. Les substitutions et les redirections
   `>` passent toujours en validation.
-- Variables : `COCKPIT_RELAY_URL` (défaut `https://deltastat.fr/cockpit`), `COCKPIT_WORKER_KEY`,
+- Variables : `COCKPIT_RELAY_URL` (défaut `https://cockpit.deltastat.fr`), `COCKPIT_WORKER_KEY`,
   `COCKPIT_MAX_AGENTS` (agents simultanés par pod, défaut 3) et `COCKPIT_WORKTREES` (dossier des worktrees).
 
 ## Sécurité : ce qu'il faut savoir
@@ -287,11 +291,6 @@ en même temps, qui les a arrêtés pour toujours) a conduit à ces garde-fous :
 - Le serveur d'hébergement utilise SQLite 3.27.2, antérieur au correctif du bug « WAL reset » (3.51.3) : à faire mettre à jour.
 
 ## Limites connues
-
-- **Même origine web que PLFMarket** (`deltastat.fr`). Une faille XSS dans PLFMarket permettrait à un script
-  d'utiliser ta session cockpit, toujours bornée par les validations. Une relecture de PLFMarket (octobre 2026)
-  n'a rien montré d'évident : saisies échappées, liens d'articles limités à `http(s)`. À garder en tête quand
-  PLFMarket évolue.
 
 - Les agents tournent dans le pod où le worker est lancé : les projets doivent être sur son disque.
   Le worker s'arrête avec le pod ; il faut le relancer avec `./run.sh` (ou via le script d'initialisation du service Onyxia).

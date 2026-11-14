@@ -1,4 +1,4 @@
-name: Déploiement OVH
+name: Déploiement VPS (cockpit.deltastat.fr)
 
 on:
   push:
@@ -6,7 +6,7 @@ on:
     paths: ['web/**', 'config/worker_key.sha256', 'config/api_keys.sha256', 'scripts/**', '.github/workflows/**']
   workflow_dispatch:
 
-concurrency: deploiement-ovh-cockpit
+concurrency: deploiement-cockpit
 
 jobs:
   deployer:
@@ -26,17 +26,17 @@ jobs:
       - name: Versionner CSS et JS (contourne le cache des navigateurs)
         run: sed -i "s/__VERSION__/${GITHUB_SHA::8}/g" web/index.html web/sw.js
 
-      - name: Envoyer sur l'hébergement OVH (FTP)
-        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
-        with:
-          server: ${{ secrets.FTP_SERVER }}
-          username: ${{ secrets.FTP_USERNAME }}
-          password: ${{ secrets.FTP_PASSWORD }}
-          local-dir: ./web/
-          # Sous-dossier de www/ : https://deltastat.fr/cockpit/. Indépendant de PLFMarket : chaque
-          # déploiement ne met à jour ou ne supprime que les fichiers qu'il a lui-même envoyés.
-          server-dir: ${{ vars.FTP_DOSSIER || 'www/cockpit/' }}
-          exclude: |
-            **/.git*
-            **/.git*/**
-            data/*.db*
+      - name: Envoyer sur le VPS (rsync)
+        # La clé DEPLOY_SSH_KEY ne peut que lancer rsync dans /srv/cockpit/web (rrsync côté serveur) :
+        # elle ne peut ni toucher aux autres apps ni exécuter de commande. data/ n'est jamais envoyé ni écrasé.
+        env:
+          CLE: ${{ secrets.DEPLOY_SSH_KEY }}
+          HOTES_CONNUS: ${{ vars.DEPLOY_KNOWN_HOSTS }}
+          HOTE: ${{ vars.DEPLOY_HOST || '217.182.169.200' }}
+        run: |
+          install -m 700 -d ~/.ssh
+          printf '%s\n' "$CLE" > ~/.ssh/deploiement && chmod 600 ~/.ssh/deploiement
+          printf '%s\n' "$HOTES_CONNUS" > ~/.ssh/known_hosts
+          rsync -rlptz --delete --chmod=D750,F640 --exclude='/data/' --exclude='.git*' \
+            -e 'ssh -i ~/.ssh/deploiement -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes' \
+            web/ "cockpit@$HOTE:/"
